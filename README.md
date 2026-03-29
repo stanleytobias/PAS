@@ -47,7 +47,7 @@ cd PAS
 .\pas_runner.ps1 -Suite scenarios\suites\detection_coverage_v1.yml
 
 # Hunt mode — generate artifacts, skip verdict prompt
-.\pas_runner.ps1 -Scenario scenarios\discovery\T1082_system_info.yml -HuntMode
+.\pas_runner.ps1 -Scenario scenarios\reconnaissance\T1595.001_scanning_ip_blocks.yml -HuntMode
 
 # Generate HTML coverage report
 .\pas_runner.ps1 -Report -Out results\
@@ -109,6 +109,8 @@ PAS/
   scenarios/
     suites/                   # Multi-scenario suite definitions
     reconnaissance/
+    resource_development/
+    initial_access/
     execution/
     persistence/
     privilege_escalation/
@@ -117,8 +119,8 @@ PAS/
     discovery/
     lateral_movement/
     collection/
-    exfiltration/
     command_and_control/
+    exfiltration/
     impact/
   docs/
     getting_started.md
