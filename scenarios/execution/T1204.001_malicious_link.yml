@@ -1,0 +1,73 @@
+id: T1204.001_malicious_link
+name: "User Execution — Malicious Link"
+mitre_technique: "T1204.001"
+mitre_tactic: "execution"
+description: >
+  Adversaries rely on users clicking malicious links delivered via email, messaging
+  services, or web pages that result in code execution. The link may direct to a
+  drive-by download, a credential harvest page, or a file that auto-executes.
+  Detection focuses on browser or email client processes making connections to
+  suspicious domains and downloading unexpected file types.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1204/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1204.001 — Malicious Link simulates user clicking a link that triggers execution"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate link click resulting in outbound HTTP request — loopback only"
+    command: |
+      Write-Host "[PAS] Simulating malicious link click artifact (loopback only):"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/pas_malicious_link_test" `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Outbound HTTP artifact generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate file download following link click — writes executable marker to Downloads"
+    command: |
+      $dlPath = "$env:USERPROFILE\Downloads\pas_link_download_test.exe"
+      [System.IO.File]::WriteAllBytes($dlPath, [byte[]]@(77,90,0,0))
+      $zoneFile = "$dlPath`:Zone.Identifier"
+      "ZoneId=3" | Set-Content $zoneFile -Encoding ASCII -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Simulated link-downloaded file written to: $dlPath"
+      Write-Host "[PAS] Zone.Identifier (Mark of the Web ZoneId=3) applied"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — executable written to Downloads with Zone.Identifier and outbound HTTP should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove simulated downloaded file and Zone.Identifier from Downloads"
+    command: |
+      Remove-Item "$env:USERPROFILE\Downloads\pas_link_download_test.exe" `
+          -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:USERPROFILE\Downloads\pas_link_download_test.exe:Zone.Identifier" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious link test artifacts removed"
+
+analyst_checklist:
+  - "File event: .exe written to Downloads folder with Zone.Identifier ZoneId=3 (internet zone)"
+  - "Network event: outbound HTTP connection to unexpected host from browser or email client"
+  - "Process event: browser spawning a download helper or executing a downloaded file"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Downloads' and FileName endswith '.exe'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName in ('chrome.exe','msedge.exe','OUTLOOK.EXE') and RemoteUrl not in known-good"
+  - "MDE alert: 'Suspicious file downloaded from internet' or 'Potential drive-by download'"
+  - "CONTROL CHECK: Is Defender SmartScreen enforced to block downloaded files from unknown publishers?"

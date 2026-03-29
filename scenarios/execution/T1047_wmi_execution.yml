@@ -1,0 +1,79 @@
+id: T1047_wmi_execution
+name: "Windows Management Instrumentation"
+mitre_technique: "T1047"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse Windows Management Instrumentation (WMI) to execute commands,
+  enumerate systems, and maintain persistence. WMI process creation via Win32_Process
+  is a common lateral movement and execution technique because it spawns processes
+  as a child of WmiPrvSE.exe rather than the calling process, breaking parent-child
+  process chains. Key signals include wmiprvse.exe spawning unexpected child processes
+  and PowerShell invoking Win32_Process.Create.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1047/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1047 — WMI execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "WMI process creation via Win32_Process.Create — primary execution technique"
+    command: |
+      Write-Host "[PAS] Creating process via WMI Win32_Process.Create:"
+      $wmi = [wmiclass]"Win32_Process"
+      $result = $wmi.Create("cmd.exe /c echo [PAS] WMI Win32_Process execution > `"$env:TEMP\pas_wmi_output.txt`"")
+      Write-Host "[PAS] Win32_Process.Create result: ReturnValue=$($result.ReturnValue) PID=$($result.ProcessId)"
+      if ($result.ReturnValue -eq 0) {
+          Write-Host "[PAS] Process created successfully — wmiprvse.exe child process artifact generated"
+      } else {
+          Write-Host "[PAS] Process creation failed (ReturnValue $($result.ReturnValue)) — may be blocked by EDR"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow WMI child process to complete and telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: exec_powershell
+    description: "WMI query for process enumeration — common adversary discovery via WMI"
+    command: |
+      Write-Host "[PAS] WMI process enumeration (Get-WmiObject Win32_Process):"
+      Get-WmiObject Win32_Process |
+          Where-Object { $_.Name -in @("powershell.exe","cmd.exe","wscript.exe","cscript.exe") } |
+          Select-Object Name, ProcessId, ParentProcessId, CommandLine |
+          Format-Table -AutoSize
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — wmiprvse.exe spawning cmd.exe child process should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove WMI output file from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_wmi_output.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] WMI output artifact removed"
+
+analyst_checklist:
+  - "Process event: cmd.exe or powershell.exe with parent process WmiPrvSE.exe"
+  - "Process event: WmiPrvSE.exe spawning any child process — high fidelity WMI execution signal"
+  - "Script block logging (Event ID 4104): Win32_Process.Create invocation visible"
+  - "WMI Activity Event Log (Microsoft-Windows-WMI-Activity/Operational): process creation event"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'WmiPrvSE.exe'"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'Win32_Process' and ProcessCommandLine contains 'Create'"
+  - "MDE alert: 'WMI process creation' or 'Suspicious WMI activity'"
+  - "CONTROL CHECK: Is WMI process creation via Win32_Process logged in Microsoft-Windows-WMI-Activity?"

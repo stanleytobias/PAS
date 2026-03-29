@@ -1,0 +1,87 @@
+id: T1059.001_powershell
+name: "Command and Scripting Interpreter — PowerShell"
+mitre_technique: "T1059.001"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse PowerShell for execution, discovery, lateral movement, and
+  payload download. Key detection signals include encoded command execution
+  (-EncodedCommand), execution policy bypass flags, downloads via Net.WebClient,
+  AMSI bypass strings, and PowerShell spawned from unusual parent processes.
+  This scenario generates the most commonly detected PowerShell execution artifacts.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1059/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1059.001 — PowerShell execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Encoded command execution — most commonly detected PowerShell evasion technique"
+    command: |
+      $cmd = 'Write-Host "[PAS] T1059.001 encoded command executed"'
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+      $proc = Start-Process powershell.exe `
+          -ArgumentList "-NonInteractive -NoProfile -EncodedCommand $encoded" `
+          -PassThru -Wait -NoNewWindow
+      Write-Host "[PAS] Encoded command artifact generated (exit: $($proc.ExitCode))"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execution policy bypass flag — common adversary technique to run unsigned scripts"
+    command: |
+      $proc = Start-Process powershell.exe `
+          -ArgumentList "-ExecutionPolicy Bypass -NonInteractive -NoProfile -Command Write-Host '[PAS] ExecutionPolicy Bypass executed'" `
+          -PassThru -Wait -NoNewWindow
+      Write-Host "[PAS] ExecutionPolicy Bypass artifact generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulated download cradle pattern — Net.WebClient to loopback only"
+    command: |
+      Write-Host "[PAS] Generating download cradle artifact (loopback only):"
+      try {
+          $wc = New-Object System.Net.WebClient
+          $wc.DownloadString("http://127.0.0.1/pas_ps_download_test") | Out-Null
+      } catch {}
+      Write-Host "[PAS] Net.WebClient download cradle artifact generated"
+
+  - step: 5
+    type: exec_powershell
+    description: "AMSI bypass string pattern — generates the script block log artifact"
+    command: |
+      Write-Host "[PAS] Generating AMSI-related script block log artifact:"
+      $bypassString = 'amsiContext'
+      Write-Host "[PAS] AMSI bypass keyword artifact written to script block log: $bypassString"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — encoded command, ExecutionPolicy Bypass, and Net.WebClient artifacts should be visible"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1059.001 cleanup complete — no persistent artifacts created"
+
+analyst_checklist:
+  - "Process event: powershell.exe with -EncodedCommand argument in CommandLine"
+  - "Process event: powershell.exe with -ExecutionPolicy Bypass in CommandLine"
+  - "Script block logging (Event ID 4104): download cradle (Net.WebClient, DownloadString) visible"
+  - "Script block logging (Event ID 4104): AMSI-related keyword in script block"
+  - "Network event: powershell.exe making outbound HTTP connection"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine contains '-EncodedCommand'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine contains 'Bypass'"
+  - "MDE alert: 'Suspicious PowerShell command line' or 'Encoded PowerShell script'"
+  - "CONTROL CHECK: Is PowerShell Script Block Logging enabled via GPO (HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging)?"

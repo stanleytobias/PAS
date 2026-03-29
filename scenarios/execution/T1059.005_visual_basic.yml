@@ -1,0 +1,89 @@
+id: T1059.005_visual_basic
+name: "Command and Scripting Interpreter — Visual Basic"
+mitre_technique: "T1059.005"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse Visual Basic Script (VBScript) via wscript.exe or cscript.exe
+  for execution. Commonly delivered via malicious Office macros, email attachments,
+  or HTA files. Key detection signals include wscript.exe or cscript.exe executing
+  .vbs files from user-writable paths, and shell execution via CreateObject("WScript.Shell").
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1059/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1059.005 — VBScript execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Write benign VBScript to TEMP — simulates attachment-delivered .vbs payload"
+    command: |
+      $vbs = @'
+      ' PAS Test VBScript — T1059.005
+      WScript.Echo "[PAS] VBScript executed via wscript.exe"
+      WScript.Quit 0
+      '@
+      $vbs | Set-Content "$env:TEMP\pas_test.vbs" -Encoding ASCII
+      Write-Host "[PAS] VBScript written to: $env:TEMP\pas_test.vbs"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute VBScript via wscript.exe — primary adversary delivery mechanism"
+    command: |
+      $vbsPath = "$env:TEMP\pas_test.vbs"
+      Start-Process wscript.exe -ArgumentList "//NoLogo //B `"$vbsPath`"" -Wait -NoNewWindow
+      Write-Host "[PAS] wscript.exe execution artifact generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Write VBScript using WScript.Shell CreateObject — common shell execution pattern"
+    command: |
+      $vbs2 = @'
+      ' PAS Test — WScript.Shell pattern
+      Set oShell = CreateObject("WScript.Shell")
+      oShell.Run "cmd.exe /c echo [PAS] WScript.Shell cmd execution", 0, True
+      '@
+      $vbs2 | Set-Content "$env:TEMP\pas_shell_test.vbs" -Encoding ASCII
+      Write-Host "[PAS] WScript.Shell VBScript written to: $env:TEMP\pas_shell_test.vbs"
+
+  - step: 5
+    type: exec_powershell
+    description: "Execute WScript.Shell VBScript via cscript.exe"
+    command: |
+      $vbsPath = "$env:TEMP\pas_shell_test.vbs"
+      Start-Process cscript.exe -ArgumentList "//NoLogo //B `"$vbsPath`"" -Wait -NoNewWindow
+      Write-Host "[PAS] cscript.exe execution artifact generated"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — wscript.exe and cscript.exe executing .vbs files from TEMP should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove VBScript test files from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_test.vbs"       -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\pas_shell_test.vbs"  -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] VBScript test artifacts removed"
+
+analyst_checklist:
+  - "Process event: wscript.exe or cscript.exe executing a .vbs file from %TEMP%"
+  - "Process event: cmd.exe spawned as child of cscript.exe (WScript.Shell pattern)"
+  - "File event: .vbs file written to %TEMP% by powershell.exe"
+  - "Script block logging (Event ID 4104): VBScript content and wscript.exe invocation visible"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('wscript.exe','cscript.exe') and ProcessCommandLine contains '.vbs'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('wscript.exe','cscript.exe') and FileName == 'cmd.exe'"
+  - "MDE alert: 'Script execution from user temp directory' or 'Suspicious VBScript execution'"
+  - "CONTROL CHECK: Is wscript.exe blocked for standard users via AppLocker or Windows Defender Application Control?"

@@ -1,0 +1,83 @@
+id: T1559.002_dynamic_data_exchange
+name: "Inter-Process Communication — Dynamic Data Exchange"
+mitre_technique: "T1559.002"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse Dynamic Data Exchange (DDE) to execute commands via Office
+  documents without macros. DDE fields in Word and Excel can invoke cmd.exe or
+  PowerShell when the document is opened. Detection focuses on Office applications
+  spawning command shells via the DDE protocol, and DDE-related registry entries.
+  Microsoft has disabled DDE by default in newer Office versions but legacy
+  environments remain vulnerable.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1559/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1559.002 — DDE execution simulates artifacts from a DDE-enabled Office document"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check DDE security settings in Office registry — surfaces whether DDE is enabled"
+    command: |
+      Write-Host "[PAS] DDE security configuration in Office registry:"
+      $ddeKeys = @(
+          "HKCU:\Software\Microsoft\Office\16.0\Word\Security",
+          "HKCU:\Software\Microsoft\Office\16.0\Excel\Security",
+          "HKCU:\Software\Microsoft\Office\15.0\Word\Security"
+      )
+      foreach ($key in $ddeKeys) {
+          if (Test-Path $key) {
+              $val = Get-ItemProperty $key -Name "AllowDDE" -ErrorAction SilentlyContinue
+              $status = if ($val) { "AllowDDE=$($val.AllowDDE)" } else { "AllowDDE not set (default disabled)" }
+              Write-Host "  $key`: $status"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate DDE execution chain — cmd.exe spawned from Office process context"
+    command: |
+      Write-Host "[PAS] Simulating DDE execution chain artifact:"
+      Write-Host "  In a real DDE attack: WINWORD.EXE or EXCEL.EXE spawns cmd.exe or powershell.exe"
+      Write-Host "  Generating equivalent process spawn artifact:"
+      $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+      $startInfo.FileName  = "cmd.exe"
+      $startInfo.Arguments = "/c echo [PAS] DDE execution chain simulated > `"$env:TEMP\pas_dde_output.txt`""
+      $startInfo.UseShellExecute  = $false
+      $startInfo.CreateNoWindow   = $true
+      $proc = [System.Diagnostics.Process]::Start($startInfo)
+      $proc.WaitForExit()
+      Write-Host "[PAS] DDE execution chain artifact generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmd.exe spawned from a process chain and DDE registry key checks should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove DDE test output artifact from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_dde_output.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] DDE test artifact removed"
+
+analyst_checklist:
+  - "Registry event: HKCU\\Software\\Microsoft\\Office\\*\\Security AllowDDE set to non-zero value"
+  - "Process event: cmd.exe or powershell.exe spawned from WINWORD.EXE or EXCEL.EXE"
+  - "Script block logging (Event ID 4104): DDE chain simulation and registry query visible"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('WINWORD.EXE','EXCEL.EXE') and FileName in ('cmd.exe','powershell.exe')"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Office' and RegistryValueName == 'AllowDDE'"
+  - "MDE alert: 'Office application spawning shell process' or 'DDE execution attempt'"
+  - "CONTROL CHECK: Is DDE disabled via registry (AllowDDE=0) and Group Policy across all Office versions?"

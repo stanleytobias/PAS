@@ -1,0 +1,99 @@
+id: T1059.009_cloud_api
+name: "Command and Scripting Interpreter — Cloud API"
+mitre_technique: "T1059.009"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse cloud management APIs (Azure REST API, AWS CLI, GCP SDK) to
+  execute commands, enumerate resources, or manipulate cloud infrastructure.
+  Common vectors include compromised service principals, stolen access tokens,
+  and abuse of Azure RunCommand or AWS SSM to execute code on cloud-hosted VMs.
+  This scenario validates cloud API audit logging and detection coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1059/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1059.009 — Cloud API execution covers Azure REST, AWS CLI, and cloud management API abuse"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for Azure PowerShell and Az CLI presence — surfaces cloud API execution capability"
+    command: |
+      Write-Host "[PAS] Cloud API tooling present on this host:"
+      $tools = @{
+          "Az PowerShell module"  = { Get-Module Az -ListAvailable -ErrorAction SilentlyContinue }
+          "Azure CLI (az.cmd)"    = { Get-Command az -ErrorAction SilentlyContinue }
+          "AWS CLI"               = { Get-Command aws -ErrorAction SilentlyContinue }
+          "GCP SDK (gcloud)"      = { Get-Command gcloud -ErrorAction SilentlyContinue }
+      }
+      foreach ($t in $tools.GetEnumerator()) {
+          $found = & $t.Value
+          $status = if ($found) { "PRESENT" } else { "NOT FOUND" }
+          Write-Host "  $status`: $($t.Key)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Azure REST API call pattern — generates HTTP request artifact to management endpoint"
+    command: |
+      Write-Host "[PAS] Simulating Azure REST API call pattern (loopback — no real Azure traffic):"
+      $headers = @{
+          "Authorization" = "Bearer PAS_FAKE_TOKEN_NOT_REAL"
+          "Content-Type"  = "application/json"
+      }
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/pas_azure_api_test/subscriptions" `
+              -Headers $headers -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Azure REST API call pattern artifact generated (loopback only)"
+
+  - step: 4
+    type: exec_powershell
+    description: "Enumerate Azure token cache — surfaces credential material cloud API calls depend on"
+    command: |
+      Write-Host "[PAS] Azure token cache locations:"
+      $tokenPaths = @(
+          "$env:USERPROFILE\.azure",
+          "$env:LOCALAPPDATA\Microsoft\TokenBroker\Cache",
+          "$env:APPDATA\Microsoft.Cli\msal_token_cache.json"
+      )
+      foreach ($p in $tokenPaths) {
+          $status = if (Test-Path $p) { "EXISTS" } else { "NOT PRESENT" }
+          Write-Host "  $status`: $p"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTP request with Authorization Bearer header and Azure token path enumeration should be visible"
+
+  - step: 7
+    type: marker
+    description: "Azure audit logging control check"
+    message: "CONTROL CHECK: Is Azure Activity Log and Entra ID audit logging forwarded to Sentinel?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1059.009 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): cloud API token path enumeration and HTTP header construction visible"
+  - "Network event: powershell.exe making HTTP request with Authorization Bearer header"
+  - "Azure: AzureActivity log — API calls from unexpected service principals or locations"
+  - "Entra ID: AuditLogs — new OAuth token issued or service principal credential added"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'RunCommand' or 'executeCommand'"
+  - "Sentinel: SigninLogs — service principal sign-ins from unexpected IPs or regions"
+  - "CONTROL CHECK: Is Azure Activity Log retention set to at least 90 days and exported to Sentinel?"
+  - "CONTROL CHECK: Are Azure RunCommand and AWS SSM Send-Command restricted to approved principals only?"

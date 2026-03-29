@@ -1,0 +1,71 @@
+id: T1059.007_javascript
+name: "Command and Scripting Interpreter — JavaScript"
+mitre_technique: "T1059.007"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse JavaScript (JScript) via cscript.exe or wscript.exe for execution,
+  or embed JScript in HTA files executed by mshta.exe. JScript on Windows has access
+  to ActiveX objects and COM components enabling shell execution and WMI calls.
+  Key detection signals include cscript.exe or wscript.exe executing .js files from
+  user-writable directories.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1059/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1059.007 — JScript execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Write benign JScript file to TEMP — simulates malicious .js attachment"
+    command: |
+      $js = @'
+      // PAS Test JScript — T1059.007
+      WScript.Echo("[PAS] JScript executed via cscript.exe");
+      var oShell = new ActiveXObject("WScript.Shell");
+      oShell.Run("cmd.exe /c echo [PAS] JScript WScript.Shell execution", 0, true);
+      WScript.Quit(0);
+      '@
+      $js | Set-Content "$env:TEMP\pas_test.js" -Encoding ASCII
+      Write-Host "[PAS] JScript written to: $env:TEMP\pas_test.js"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute JScript via cscript.exe — Windows Script Host JScript engine"
+    command: |
+      $jsPath = "$env:TEMP\pas_test.js"
+      Start-Process cscript.exe -ArgumentList "//NoLogo //B `"$jsPath`"" -Wait -NoNewWindow
+      Write-Host "[PAS] cscript.exe JScript execution artifact generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cscript.exe executing .js file and spawning cmd.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove JScript test file from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_test.js" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] JScript test artifact removed"
+
+analyst_checklist:
+  - "Process event: cscript.exe or wscript.exe executing a .js file from %TEMP% or Downloads"
+  - "Process event: cmd.exe spawned as child of cscript.exe (ActiveXObject shell pattern)"
+  - "File event: .js file written to %TEMP% by powershell.exe"
+  - "Script block logging / file audit: JScript with ActiveXObject WScript.Shell visible"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('cscript.exe','wscript.exe') and ProcessCommandLine contains '.js'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'cscript.exe' and FileName == 'cmd.exe'"
+  - "MDE alert: 'Suspicious JavaScript execution via Windows Script Host'"
+  - "CONTROL CHECK: Is .js file association unregistered or remapped to Notepad via GPO to prevent double-click execution?"

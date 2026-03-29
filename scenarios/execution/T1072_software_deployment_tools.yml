@@ -1,0 +1,85 @@
+id: T1072_software_deployment_tools
+name: "Software Deployment Tools"
+mitre_technique: "T1072"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse software deployment and management tools (SCCM, Intune,
+  Ansible, Puppet, Chef, PDQ Deploy, and RMM platforms) that have broad access
+  to execute commands across an environment. A compromised deployment tool can
+  push malicious payloads to all managed endpoints simultaneously.
+  Detection focuses on unusual deployment jobs, commands executed outside
+  maintenance windows, and lateral movement originating from management infrastructure.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1072/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1072 — Software Deployment Tools covers SCCM, Intune, RMM, and configuration management abuse"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate software deployment agents present on this host"
+    command: |
+      Write-Host "[PAS] Software deployment and management agents on this host:"
+      $agents = @{
+          "SCCM Client"          = "C:\Windows\CCM\CcmExec.exe"
+          "Intune Management"    = "C:\Program Files\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe"
+          "PDQ Deploy Agent"     = "C:\Program Files\Admin Arsenal\PDQ Deploy\PDQDeployRunner*.exe"
+          "ConnectWise Automate" = "C:\Windows\LTSVC\LTSVC.exe"
+          "Ansible (WinRM)"      = { (Get-Service WinRM -ErrorAction SilentlyContinue).Status -eq 'Running' }
+      }
+      foreach ($a in $agents.GetEnumerator()) {
+          $val = $a.Value
+          $found = if ($val -is [scriptblock]) {
+              & $val
+          } else {
+              Test-Path ($val -replace '\*','') -ErrorAction SilentlyContinue
+          }
+          $status = if ($found) { "PRESENT" } else { "NOT FOUND" }
+          Write-Host "  $status`: $($a.Key)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check SCCM client for recently executed deployments — surfaces abuse detection surface"
+    command: |
+      Write-Host "[PAS] Recent SCCM deployment history (if SCCM client present):"
+      $sccmLog = "C:\Windows\CCM\Logs\AppEnforce.log"
+      if (Test-Path $sccmLog) {
+          Get-Content $sccmLog -Tail 10 |
+              Where-Object { $_ -match "Execution" } |
+              Select-Object -First 5 |
+              ForEach-Object { Write-Host "  $_" }
+      } else {
+          Write-Host "  SCCM AppEnforce.log not found (SCCM client not installed)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Deployment tool control check"
+    message: "CONTROL CHECK: Are deployment tool admin credentials MFA-protected and restricted to dedicated management hosts?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1072 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): deployment agent path enumeration and SCCM log query visible"
+  - "Process event: CcmExec.exe or Intune agent spawning cmd.exe or powershell.exe with unusual arguments"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'CcmExec.exe' and FileName in ('cmd.exe','powershell.exe')"
+  - "Sentinel: DeviceProcessEvents — commands deployed via WinRM (Ansible) with unusual timing"
+  - "CONTROL CHECK: Are SCCM and Intune admin roles restricted to dedicated break-glass accounts with MFA?"
+  - "CONTROL CHECK: Is deployment activity outside maintenance windows generating alerts?"
+  - "NOTE: Compromise of a deployment tool is high-impact — treat management infrastructure as Tier 0"

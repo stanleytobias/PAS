@@ -1,0 +1,82 @@
+id: T1648_serverless_execution
+name: "Serverless Execution"
+mitre_technique: "T1648"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse serverless compute platforms (Azure Functions, AWS Lambda,
+  Google Cloud Functions) to execute code without managing servers. Serverless
+  functions can be used for C2, data exfiltration, or as execution proxies.
+  They benefit from auto-scaling, low cost, and reduced attribution since they
+  run on shared infrastructure. Detection is cloud-log-driven.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1648/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1648 — Serverless Execution covers Azure Functions, AWS Lambda, and cloud function abuse"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Azure Functions and serverless tooling present on this host"
+    command: |
+      Write-Host "[PAS] Serverless execution tooling on this host:"
+      $tools = @(
+          "$env:APPDATA\npm\func.cmd",
+          "$env:ProgramFiles\Azure Functions Core Tools\func.exe",
+          "$env:USERPROFILE\.azurefunctions"
+      )
+      $found = $false
+      foreach ($t in $tools) {
+          if (Test-Path $t) {
+              Write-Host "  PRESENT: $t"
+              $found = $true
+          }
+      }
+      if (-not $found) {
+          Write-Host "  Azure Functions Core Tools not found (expected on non-developer host)"
+      }
+
+      Write-Host ""
+      Write-Host "  Checking for Azure Function app config files:"
+      $funcConfig = Get-ChildItem "$env:USERPROFILE" -Filter "local.settings.json" -Recurse `
+                        -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 3
+      if ($funcConfig) {
+          $funcConfig | ForEach-Object { Write-Host "  FOUND: $($_.FullName)" }
+      } else {
+          Write-Host "  No local.settings.json found"
+      }
+
+  - step: 3
+    type: marker
+    description: "Cloud function audit control check"
+    message: "CONTROL CHECK: Is Azure Function App execution logged in Azure Monitor and forwarded to Sentinel?"
+
+  - step: 4
+    type: marker
+    description: "Serverless network control check"
+    message: "CONTROL CHECK: Are Azure Function Apps restricted by VNet integration and outbound firewall rules?"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1648 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): Azure Functions tooling enumeration visible"
+  - "Azure Monitor: FunctionAppLogs — unusual function executions or new function deployments"
+  - "Azure: AzureActivity | where OperationNameValue contains 'Microsoft.Web/sites/functions'"
+  - "Sentinel: AzureActivity — new Function App created or function code updated"
+  - "CONTROL CHECK: Is Azure Function App activity exported to Sentinel via Diagnostic Settings?"
+  - "CONTROL CHECK: Are Function App managed identities scoped to minimum required permissions?"
+  - "NOTE: Primary detection is Azure-side — cloud audit logs are the only reliable signal here"

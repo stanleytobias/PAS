@@ -1,0 +1,98 @@
+id: T1106_native_api
+name: "Native API"
+mitre_technique: "T1106"
+mitre_tactic: "execution"
+description: >
+  Adversaries use Windows Native API functions (NtCreateProcess, CreateProcess,
+  ShellExecute via P/Invoke) to execute code while bypassing higher-level API
+  monitoring. Using native API calls directly avoids some userland hooks placed
+  by security products on Win32 API wrappers. Key detection signals include
+  P/Invoke declarations in script block logs and unusual process creation chains.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1106/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1106 — Native API execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Process creation via P/Invoke CreateProcessW — bypasses PowerShell Start-Process monitoring"
+    command: |
+      Add-Type -TypeDefinition @"
+      using System;
+      using System.Runtime.InteropServices;
+
+      public class PasNativeAPI {
+          [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+          public struct STARTUPINFO {
+              public int cb;
+              public string lpReserved, lpDesktop, lpTitle;
+              public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+              public short wShowWindow, cbReserved2;
+              public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+          }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_INFORMATION {
+              public IntPtr hProcess, hThread;
+              public int dwProcessId, dwThreadId;
+          }
+          [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+          public static extern bool CreateProcess(
+              string lpApp, string lpCmd, IntPtr lpPA, IntPtr lpTA,
+              bool bInherit, uint dwFlags, IntPtr lpEnv, string lpDir,
+              ref STARTUPINFO lpSI, out PROCESS_INFORMATION lpPI);
+          [DllImport("kernel32.dll")]
+          public static extern bool CloseHandle(IntPtr h);
+          [DllImport("kernel32.dll")]
+          public static extern uint WaitForSingleObject(IntPtr h, uint ms);
+      }
+      "@
+
+      $si = New-Object PasNativeAPI+STARTUPINFO
+      $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
+      $pi = New-Object PasNativeAPI+PROCESS_INFORMATION
+
+      $cmd = "cmd.exe /c echo [PAS] Native API CreateProcess executed > `"$env:TEMP\pas_native_output.txt`""
+      Write-Host "[PAS] Invoking CreateProcessW via P/Invoke:"
+      $ok = [PasNativeAPI]::CreateProcess($null, $cmd, [IntPtr]::Zero, [IntPtr]::Zero, $false, 0, [IntPtr]::Zero, $null, [ref]$si, [ref]$pi)
+      if ($ok) {
+          [PasNativeAPI]::WaitForSingleObject($pi.hProcess, 5000) | Out-Null
+          [PasNativeAPI]::CloseHandle($pi.hProcess) | Out-Null
+          [PasNativeAPI]::CloseHandle($pi.hThread) | Out-Null
+          Write-Host "[PAS] CreateProcessW artifact generated (PID was $($pi.dwProcessId))"
+      } else {
+          Write-Host "[PAS] CreateProcessW failed or blocked by EDR"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — P/Invoke DllImport for kernel32.dll and CreateProcess in script block log should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove native API output file from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_native_output.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Native API output artifact removed"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): DllImport kernel32.dll and CreateProcess P/Invoke visible"
+  - "Process event: cmd.exe spawned with unusual parent process chain via native API"
+  - "MDE: DeviceEvents — process creation via native API flagged by behavioral engine"
+  - "Sentinel: DeviceProcessEvents — cmd.exe with InitiatingProcess being powershell.exe via CreateProcess"
+  - "Sentinel: DeviceEvents | where ActionType contains 'NativeApi' or ProcessCommandLine contains 'DllImport'"
+  - "MDE alert: 'Suspicious use of Native API for process creation'"
+  - "CONTROL CHECK: Is PowerShell Script Block Logging enabled to capture P/Invoke declarations?"

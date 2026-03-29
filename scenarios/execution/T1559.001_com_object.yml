@@ -1,0 +1,81 @@
+id: T1559.001_com_object
+name: "Inter-Process Communication — Component Object Model"
+mitre_technique: "T1559.001"
+mitre_tactic: "execution"
+description: >
+  Adversaries use Component Object Model (COM) objects to execute code, bypass
+  application whitelisting, and perform lateral movement. COM objects provide
+  a rich attack surface via PowerShell New-Object -ComObject, VBScript CreateObject,
+  or direct IDispatch invocation. WScript.Shell, Shell.Application, and
+  MMC20.Application are commonly abused COM classes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1559/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1559.001 — COM object execution artifact generation"
+
+  - step: 2
+    type: exec_powershell
+    description: "WScript.Shell COM object execution — most common COM abuse pattern"
+    command: |
+      Write-Host "[PAS] Executing via WScript.Shell COM object:"
+      $shell = New-Object -ComObject WScript.Shell
+      $result = $shell.Run("cmd.exe /c echo [PAS] WScript.Shell COM execution > `"$env:TEMP\pas_com_output.txt`"", 0, $true)
+      Write-Host "[PAS] WScript.Shell.Run result: $result"
+      [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+
+  - step: 3
+    type: exec_powershell
+    description: "Shell.Application COM object — used for executing files and navigating the shell"
+    command: |
+      Write-Host "[PAS] Invoking Shell.Application COM object:"
+      $shellApp = New-Object -ComObject Shell.Application
+      Write-Host "[PAS] Shell.Application created — NameSpace: $($shellApp.NameSpace(0))"
+      [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shellApp) | Out-Null
+      Write-Host "[PAS] Shell.Application COM artifact generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Scripting.FileSystemObject COM object — used for file operations in COM-based attacks"
+    command: |
+      Write-Host "[PAS] Invoking Scripting.FileSystemObject COM object:"
+      $fso = New-Object -ComObject Scripting.FileSystemObject
+      $tmpFile = "$env:TEMP\pas_fso_test.txt"
+      $stream = $fso.CreateTextFile($tmpFile, $true)
+      $stream.WriteLine("[PAS] FSO COM object write test")
+      $stream.Close()
+      [System.Runtime.InteropServices.Marshal]::ReleaseComObject($fso) | Out-Null
+      Write-Host "[PAS] Scripting.FileSystemObject file write artifact generated: $tmpFile"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — COM object instantiation and WScript.Shell spawning cmd.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove COM test output artifacts from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_com_output.txt" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\pas_fso_test.txt"   -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] COM test artifacts removed"
+
+analyst_checklist:
+  - "Process event: cmd.exe spawned with parent process powershell.exe via WScript.Shell COM"
+  - "Script block logging (Event ID 4104): New-Object -ComObject WScript.Shell visible"
+  - "File event: file written to %TEMP% via Scripting.FileSystemObject"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'powershell.exe' and FileName == 'cmd.exe' and InitiatingProcessCommandLine contains 'ComObject'"
+  - "MDE alert: 'COM object abuse for process execution' or 'Suspicious COM invocation'"
+  - "CONTROL CHECK: Are high-risk COM objects (MMC20.Application, ShellBrowserWindow) monitored via COM object auditing?"

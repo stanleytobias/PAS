@@ -1,0 +1,71 @@
+id: T1569.002_service_execution
+name: "System Services — Service Execution"
+mitre_technique: "T1569.002"
+mitre_tactic: "execution"
+description: >
+  Adversaries abuse Windows service control mechanisms to execute commands with
+  SYSTEM-level privileges. Common techniques include sc.exe create/start, PsExec,
+  and direct service binary execution. Service creation followed immediately by
+  start and deletion is a classic lateral movement and execution pattern.
+  Key signals include sc.exe with create or start arguments from non-administrative
+  contexts and services with binPaths pointing to user-writable directories.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1569/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1569.002 — Service Execution artifact generation (requires Administrator)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a transient test service via sc.exe — generates service creation artifact"
+    command: |
+      Write-Host "[PAS] Creating transient test service via sc.exe:"
+      $svcName = "PASTestSvc"
+      $binPath  = "cmd.exe /c echo [PAS] Service execution > `"$env:TEMP\pas_svc_output.txt`""
+      $result = & sc.exe create $svcName binPath= $binPath start= demand 2>&1
+      Write-Host "  sc.exe create result: $result"
+
+  - step: 3
+    type: exec_powershell
+    description: "Start the test service — generates service start and execution artifact"
+    command: |
+      Write-Host "[PAS] Starting test service:"
+      $result = & sc.exe start PASTestSvc 2>&1
+      Write-Host "  sc.exe start result: $result"
+      Start-Sleep -Seconds 2
+
+  - step: 4
+    type: sleep
+    description: "Allow service execution telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sc.exe create/start and services.exe spawning cmd.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Stop and delete the PAS test service"
+    command: |
+      & sc.exe stop   PASTestSvc 2>&1 | Out-Null
+      & sc.exe delete PASTestSvc 2>&1 | Out-Null
+      Remove-Item "$env:TEMP\pas_svc_output.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] PASTestSvc stopped, deleted, and output artifact removed"
+
+analyst_checklist:
+  - "Process event: sc.exe with 'create' argument creating a new service"
+  - "Process event: sc.exe with 'start' argument starting a service"
+  - "Process event: services.exe or svchost.exe spawning cmd.exe (service execution chain)"
+  - "Windows System Event ID 7045: new service installed with binPath"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'sc.exe' and ProcessCommandLine contains 'create'"
+  - "Sentinel: SecurityEvent | where EventID == 7045 and ServiceName == 'PASTestSvc'"
+  - "MDE alert: 'New service created and started' or 'Suspicious service binary path'"
+  - "CONTROL CHECK: Is Event ID 7045 (Service Installed) forwarded to Sentinel from all endpoints?"
