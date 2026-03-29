@@ -118,7 +118,8 @@ PAS/
     lateral_movement/
     collection/
     exfiltration/
-    injection/
+    impact/
+    command_and_control/
   docs/
     getting_started.md
     workflow.md
