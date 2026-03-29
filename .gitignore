@@ -1,0 +1,28 @@
+# PAS — .gitignore
+
+# Result JSON files — contain analyst notes, never commit
+results/*.json
+results/**/*.json
+results/sigma/
+
+# HTML reports
+results/*.html
+
+# PowerShell module cache
+*.psm1.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.suo
+*.user
+
+# Artifacts directory — binaries/scripts used by scenarios
+# Add your own binaries here, never commit them
+artifacts/
+
+# Keep results directory structure
+!results/.gitkeep
