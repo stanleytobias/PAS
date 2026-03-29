@@ -118,8 +118,8 @@ PAS/
     lateral_movement/
     collection/
     exfiltration/
-    impact/
     command_and_control/
+    impact/
   docs/
     getting_started.md
     workflow.md
