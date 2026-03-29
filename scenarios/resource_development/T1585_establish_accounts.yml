@@ -1,0 +1,91 @@
+id: T1585_establish_accounts
+name: "Establish Accounts"
+mitre_technique: "T1585"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries create accounts on social media, email services, or cloud platforms
+  to support operations — building fake personas for spearphishing, social engineering,
+  or establishing cloud-based attack infrastructure. This is a pre-compromise external
+  technique with no host simulation equivalent.
+  Sub-techniques: T1585.001 Social Media Accounts | T1585.002 Email Accounts |
+  T1585.003 Cloud Accounts
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1585/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1585 — Establish Accounts is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1585.001 Social Media Accounts | T1585.002 Email Accounts | T1585.003 Cloud Accounts"
+
+  - step: 3
+    type: marker
+    description: "Social media persona check"
+    message: "T1585.001 — Adversary creates LinkedIn/Twitter profiles impersonating your staff or partners. Monitor for brand impersonation."
+
+  - step: 4
+    type: marker
+    description: "Email account check"
+    message: "T1585.002 — Adversary registers free email accounts (gmail, outlook) to use as sender in spearphishing campaigns"
+
+  - step: 5
+    type: marker
+    description: "Cloud account check"
+    message: "T1585.003 — Adversary registers cloud accounts (Azure, AWS) to stage payloads or build C2 using legitimate cloud infrastructure"
+
+  - step: 6
+    type: exec_powershell
+    description: "Enumerate cloud and SaaS service connections from this host — surfaces what legitimate cloud services are in use"
+    command: |
+      Write-Host "[PAS] Cloud and SaaS service connections visible from this host:"
+      Write-Host "  Current user cloud identity context:"
+      try {
+          $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
+          Write-Host "    AD Domain: $($domain.Name)"
+      } catch {
+          Write-Host "    Not domain-joined or AD unavailable"
+      }
+      Write-Host "  Checking for Azure/M365 credential tokens:"
+      $tokenPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\TokenBroker\Cache",
+          "$env:LOCALAPPDATA\Microsoft\IdentityCache"
+      )
+      foreach ($p in $tokenPaths) {
+          if (Test-Path $p) {
+              Write-Host "    EXISTS: $p"
+          } else {
+              Write-Host "    NOT PRESENT: $p"
+          }
+      }
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Control validation prompt"
+    message: "CONTROL CHECK: Does your threat intel monitor for newly created social media accounts impersonating your brand or executives?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1585 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): cloud identity token path enumeration visible"
+  - "CONTROL CHECK: Monitor for social media accounts impersonating your executives or brand"
+  - "CONTROL CHECK: Enable Entra ID Identity Protection to detect sign-ins from newly created external accounts"
+  - "CONTROL CHECK: Configure Microsoft Defender for Cloud Apps to detect OAuth app abuse"
+  - "Sentinel: AADSignInLogs — sign-ins from free email domains (gmail.com, outlook.com) to your tenant"
+  - "NOTE: Detection focus is on the phishing or social engineering activity that follows account creation"

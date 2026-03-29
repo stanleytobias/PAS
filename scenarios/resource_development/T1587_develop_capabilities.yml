@@ -1,0 +1,110 @@
+id: T1587_develop_capabilities
+name: "Develop Capabilities"
+mitre_technique: "T1587"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries develop their own malware, exploits, or code signing certificates
+  rather than obtaining them from third parties. Custom-developed capabilities are
+  harder to detect via signature-based tools. Victim-side detection focuses on
+  behavioral analysis of the deployed artifacts and on detecting abuse of LOLBin
+  compilers (csc.exe, msbuild.exe) that adversaries use to compile payloads in-memory
+  on the victim host itself.
+  Sub-techniques: T1587.001 Malware | T1587.002 Code Signing Certificates |
+  T1587.003 Digital Certificates | T1587.004 Exploits
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1587/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1587 — Develop Capabilities is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1587.001 Malware | T1587.002 Code Signing Certs | T1587.003 Digital Certs | T1587.004 Exploits"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate code signing certificates in local store — T1587.002 victim-side detection surface"
+    command: |
+      Write-Host "[PAS] Code signing certificates in local trust store:"
+      $codeSignCerts = Get-ChildItem Cert:\LocalMachine\My |
+          Where-Object { $_.EnhancedKeyUsageList -match "Code Signing" }
+      if ($codeSignCerts) {
+          $codeSignCerts | Select-Object Subject, Thumbprint, NotBefore, NotAfter | Format-Table -AutoSize
+      } else {
+          Write-Host "  None found (expected on a non-developer host)"
+      }
+
+      Write-Host "[PAS] User certificate store — certs with private keys:"
+      $userCerts = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.HasPrivateKey }
+      if ($userCerts) {
+          $userCerts | Select-Object Subject, Thumbprint, NotAfter | Format-Table -AutoSize
+      } else {
+          Write-Host "  None found"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate LOLBin compiler abuse — csc.exe invoked outside normal build context, a key T1587.001 detection signal"
+    command: |
+      Write-Host "[PAS] LOLBin compiler presence check (adversaries abuse these to compile payloads on victim):"
+      $compilers = @(
+          "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe",
+          "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+          "C:\Windows\Microsoft.NET\Framework\v4.0.30319\msbuild.exe",
+          "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\msbuild.exe"
+      )
+      foreach ($c in $compilers) {
+          $status = if (Test-Path $c) { "PRESENT" } else { "NOT FOUND" }
+          Write-Host "  $status`: $c"
+      }
+
+      Write-Host ""
+      Write-Host "[PAS] Generating csc.exe invocation artifact (compiling empty source — safe):"
+      $tmpSrc  = "$env:TEMP\pas_csc_test.cs"
+      $tmpExe  = "$env:TEMP\pas_csc_test.exe"
+      $cscPath = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+
+      if (Test-Path $cscPath) {
+          "public class P { public static void Main() {} }" | Set-Content $tmpSrc -Encoding UTF8
+          & $cscPath /nologo /out:$tmpExe $tmpSrc 2>&1 | Out-Null
+          Write-Host "  [PAS] csc.exe invoked — artifact generated for SIEM validation"
+      } else {
+          Write-Host "  csc.exe not found at expected path — skipping compilation artifact"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — csc.exe spawned from powershell.exe outside a build pipeline should be visible"
+
+cleanup:
+  - step: 1
+    type: file_delete
+    description: "Remove csc.exe test source file"
+    path: "C:\\Windows\\Temp\\pas_csc_test.cs"
+
+  - step: 2
+    type: file_delete
+    description: "Remove csc.exe compiled test binary"
+    path: "C:\\Windows\\Temp\\pas_csc_test.exe"
+
+analyst_checklist:
+  - "Process event: csc.exe spawned from powershell.exe — suspicious outside a known build pipeline"
+  - "Process event: msbuild.exe spawned with inline task arguments — common payload compilation vector"
+  - "File event: .exe created in %TEMP% by csc.exe"
+  - "Script block logging (Event ID 4104): csc.exe path invocation and source file creation visible"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('csc.exe','msbuild.exe') and InitiatingProcessFileName != 'devenv.exe'"
+  - "CONTROL CHECK: Are unsigned or self-signed executables blocked by AppLocker or Windows Defender Application Control?"
+  - "MDE: ASR rule — Block executable files from running unless they meet a prevalence, age, or trusted list criterion"

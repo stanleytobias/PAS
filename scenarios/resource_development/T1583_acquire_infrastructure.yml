@@ -1,0 +1,79 @@
+id: T1583_acquire_infrastructure
+name: "Acquire Infrastructure"
+mitre_technique: "T1583"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries acquire infrastructure (domains, servers, VPS, botnets, cloud accounts,
+  serverless functions, web services) to support operations. This is a pre-compromise
+  external technique. Victim-side detection focuses on identifying adversary-controlled
+  infrastructure at the point of contact — C2 beacons, payload downloads, and phishing
+  links resolving to adversary-acquired domains.
+  Sub-techniques: T1583.001 Domains | T1583.002 DNS Server | T1583.003 Virtual Private
+  Server | T1583.004 Server | T1583.005 Botnet | T1583.006 Web Services |
+  T1583.007 Serverless | T1583.008 Malvertising
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1583/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1583 — Acquire Infrastructure is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1583.001 Domains | T1583.002 DNS Server | T1583.003 VPS | T1583.004 Server | T1583.005 Botnet | T1583.006 Web Services | T1583.007 Serverless | T1583.008 Malvertising"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate recently registered certificates and DNS resolver config — victim-side detection surface for adversary-acquired infrastructure"
+    command: |
+      Write-Host "[PAS] Victim-side detection surface for acquired adversary infrastructure:"
+      Write-Host ""
+      Write-Host "  DNS resolvers in use (adversary may poison or control these):"
+      Get-DnsClientServerAddress |
+          Where-Object { $_.ServerAddresses } |
+          Select-Object InterfaceAlias, ServerAddresses |
+          Format-Table -AutoSize
+
+      Write-Host "  Certificates recently added to local machine trust store (last 30 days):"
+      $recent = Get-ChildItem Cert:\LocalMachine\Root |
+          Where-Object { $_.NotBefore -gt (Get-Date).AddDays(-30) }
+      if ($recent) {
+          $recent | Select-Object Subject, NotBefore, Thumbprint | Format-Table -AutoSize
+      } else {
+          Write-Host "    None found in last 30 days (expected on a clean host)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Brand monitoring control check"
+    message: "CONTROL CHECK: Is your threat intel platform monitoring for newly registered domains typosquatting your brand?"
+
+  - step: 6
+    type: marker
+    description: "Certificate transparency control check"
+    message: "CONTROL CHECK: Are you monitoring crt.sh for certificates issued against your domains by unexpected CAs?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1583 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): DNS resolver and certificate store enumeration visible"
+  - "Process event: powershell.exe enumerating DNS client config and certificate trust store"
+  - "CONTROL CHECK: Subscribe to brand monitoring and domain typosquatting detection"
+  - "CONTROL CHECK: Monitor certificate transparency logs (crt.sh) for certs issued against your domains"
+  - "Sentinel: ThreatIntelligenceIndicator — correlate known adversary infrastructure IOCs against DeviceNetworkEvents"
+  - "NOTE: Primary detection is outbound traffic to adversary-acquired domains/IPs correlated against TI feeds"

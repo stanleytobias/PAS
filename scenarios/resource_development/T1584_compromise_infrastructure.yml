@@ -1,0 +1,71 @@
+id: T1584_compromise_infrastructure
+name: "Compromise Infrastructure"
+mitre_technique: "T1584"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries compromise third-party infrastructure (domains, servers, VPS, botnets,
+  web services, network devices) rather than acquiring their own. Compromised legitimate
+  infrastructure is harder to block and attribute. Detection relies on correlating
+  outbound traffic against threat intelligence and spotting anomalous use of legitimate
+  services as C2 or staging infrastructure.
+  Sub-techniques: T1584.001 Domains | T1584.002 DNS Server | T1584.003 VPS |
+  T1584.004 Server | T1584.005 Botnet | T1584.006 Web Services | T1584.007 Serverless |
+  T1584.008 Network Devices
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1584/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1584 — Compromise Infrastructure is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1584.001 Domains | T1584.002 DNS Server | T1584.003 VPS | T1584.004 Server | T1584.005 Botnet | T1584.006 Web Services | T1584.007 Serverless | T1584.008 Network Devices"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate outbound connections to external hosts — mirrors what a detection would look for when victim connects to compromised infra"
+    command: |
+      Write-Host "[PAS] Current outbound network connections (adversary would see similar on victim):"
+      Get-NetTCPConnection -State Established |
+          Where-Object { $_.RemoteAddress -notmatch '^(127\.|::1|0\.0\.0)' } |
+          Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess |
+          ForEach-Object {
+              $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+              [PSCustomObject]@{
+                  LocalPort    = $_.LocalPort
+                  RemoteAddress = $_.RemoteAddress
+                  RemotePort   = $_.RemotePort
+                  Process      = if ($proc) { $proc.Name } else { "Unknown" }
+              }
+          } | Format-Table -AutoSize
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Control validation prompt"
+    message: "CONTROL CHECK: Are outbound connections correlated against threat intelligence for known compromised hosting IPs?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1584 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): Get-NetTCPConnection outbound enumeration visible"
+  - "Process event: powershell.exe running active network connection enumeration"
+  - "CONTROL CHECK: Correlate DeviceNetworkEvents against ThreatIntelligenceIndicator for known compromised hosting"
+  - "CONTROL CHECK: Monitor for outbound connections to known bulletproof hosting ASNs"
+  - "Sentinel: DeviceNetworkEvents | join kind=inner ThreatIntelligenceIndicator — look for IOC matches"
+  - "NOTE: Key detection is TI correlation on outbound traffic, not the infrastructure acquisition itself"

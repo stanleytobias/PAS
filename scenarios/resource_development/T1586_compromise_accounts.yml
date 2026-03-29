@@ -1,0 +1,93 @@
+id: T1586_compromise_accounts
+name: "Compromise Accounts"
+mitre_technique: "T1586"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries compromise existing social media, email, or cloud accounts to use as
+  attack infrastructure. Using compromised legitimate accounts provides a level of
+  trust that newly created accounts lack. Victim-side detection focuses on anomalous
+  sign-in patterns, impossible travel, and suspicious use of legitimate accounts as
+  the source of phishing or C2 activity.
+  Sub-techniques: T1586.001 Social Media Accounts | T1586.002 Email Accounts |
+  T1586.003 Cloud Accounts
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1586/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1586 — Compromise Accounts is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1586.001 Social Media | T1586.002 Email Accounts | T1586.003 Cloud Accounts"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate Entra ID sign-in configuration and MFA status — surfaces the identity controls that prevent compromised account abuse"
+    command: |
+      Write-Host "[PAS] Identity security posture — controls that prevent compromised account abuse:"
+      Write-Host ""
+      Write-Host "  Current user sign-in context:"
+      Write-Host "    Hostname  : $env:COMPUTERNAME"
+      Write-Host "    Domain    : $env:USERDOMAIN"
+      Write-Host "    Username  : $env:USERNAME"
+      Write-Host ""
+      Write-Host "  Checking for cached Entra ID / Azure token presence:"
+      $tokenPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\TokenBroker\Cache",
+          "$env:LOCALAPPDATA\Microsoft\IdentityCache",
+          "$env:LOCALAPPDATA\Microsoft\OneAuth"
+      )
+      foreach ($p in $tokenPaths) {
+          $status = if (Test-Path $p) { "EXISTS" } else { "NOT PRESENT" }
+          Write-Host "    $status`: $p"
+      }
+      Write-Host ""
+      Write-Host "  Recent Windows logon events (last 5 interactive logons):"
+      try {
+          Get-WinEvent -LogName Security -FilterXPath "*[System[EventID=4624] and EventData[Data[@Name='LogonType']='2']]" `
+              -MaxEvents 5 -ErrorAction SilentlyContinue |
+              Select-Object TimeCreated, Message |
+              ForEach-Object {
+                  $user = if ($_.Message -match 'Account Name:\s+(\S+)') { $Matches[1] } else { 'unknown' }
+                  Write-Host "    $($_.TimeCreated) — $user"
+              }
+      } catch {
+          Write-Host "    Unable to query Security log (run as Administrator for full output)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Security event log query and token path enumeration should be visible"
+
+  - step: 6
+    type: marker
+    description: "Identity Protection control check"
+    message: "CONTROL CHECK: Are Entra ID Identity Protection risky sign-in policies configured to block or require MFA for suspicious logins?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1586 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): token path enumeration and Security log query visible"
+  - "Process event: powershell.exe reading Windows Security event log"
+  - "Sentinel: AADRiskySignIns — sign-ins from new countries, impossible travel, or anonymous IPs"
+  - "Sentinel: AADUserRiskEvents — user risk level elevation from Identity Protection"
+  - "Sentinel: EmailEvents — phishing messages originating from a compromised legitimate email account"
+  - "CONTROL CHECK: Enable Entra ID Identity Protection and configure risk-based Conditional Access policies"
+  - "CONTROL CHECK: Enable MFA for all users — a compromised password alone should not grant access"

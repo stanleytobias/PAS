@@ -1,0 +1,96 @@
+id: T1588_obtain_capabilities
+name: "Obtain Capabilities"
+mitre_technique: "T1588"
+mitre_tactic: "resource-development"
+description: >
+  Adversaries obtain capabilities from third-party sources rather than developing
+  their own. This includes purchasing or downloading malware, tools, exploits,
+  code signing certificates, and digital certificates from criminal markets or
+  open sources. Detection focuses on behavioral signatures of commonly obtained
+  tools when they are deployed on victim systems.
+  Sub-techniques: T1588.001 Malware | T1588.002 Tool | T1588.003 Code Signing
+  Certificates | T1588.004 Digital Certificates | T1588.005 Exploits |
+  T1588.006 Vulnerabilities | T1588.007 Artificial Intelligence
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1588/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1588 — Obtain Capabilities is a pre-compromise adversary-side technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1588.001 Malware | T1588.002 Tool | T1588.003 Code Signing Certs | T1588.004 Digital Certs | T1588.005 Exploits | T1588.006 Vulnerabilities | T1588.007 AI"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate commonly obtained offensive tools if present on this host — T1588.002 detection surface"
+    command: |
+      Write-Host "[PAS] Checking for commonly obtained offensive tools on this host:"
+      $toolPaths = @(
+          "$env:ProgramFiles\Sysinternals",
+          "$env:USERPROFILE\Downloads\mimikatz",
+          "$env:USERPROFILE\Downloads\cobalt",
+          "C:\Tools",
+          "C:\Pentest",
+          "$env:TEMP\nc.exe",
+          "$env:TEMP\nmap"
+      )
+      $found = $false
+      foreach ($t in $toolPaths) {
+          $toolMatches = Get-Item $t -ErrorAction SilentlyContinue
+          if ($toolMatches) {
+              foreach ($m in $toolMatches) {
+                  Write-Host "  FOUND: $($m.FullName)"
+                  $found = $true
+              }
+          }
+      }
+      if (-not $found) { Write-Host "  None found at common paths (expected on a clean host)" }
+
+      Write-Host ""
+      Write-Host "[PAS] Recently modified executables in Downloads folder:"
+      $dlExes = Get-ChildItem "$env:USERPROFILE\Downloads" -Filter "*.exe" -ErrorAction SilentlyContinue |
+          Sort-Object LastWriteTime -Descending |
+          Select-Object -First 5 Name, LastWriteTime
+      if ($dlExes) {
+          $dlExes | Format-Table -AutoSize
+      } else {
+          Write-Host "  No executables found in Downloads"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file system enumeration of tool paths and Downloads folder should be visible"
+
+  - step: 6
+    type: marker
+    description: "Vulnerability intelligence control check"
+    message: "T1588.006 — CONTROL CHECK: Is your vulnerability management program tracking actively exploited CVEs against your asset inventory?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1588 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): tool path enumeration and Downloads folder scan visible"
+  - "Process event: powershell.exe enumerating file system for known offensive tool locations"
+  - "CONTROL CHECK: Are known offensive tool hashes (mimikatz, cobalt strike beacons) blocked by Defender AV?"
+  - "CONTROL CHECK: Is Defender for Endpoint real-time protection enabled and blocking known offensive tools?"
+  - "MDE: DeviceFileEvents — known offensive tool filenames written to disk"
+  - "Sentinel: DeviceProcessEvents — execution of processes matching known offensive tool names or hashes"
+  - "NOTE: T1588.007 AI — adversaries using AI to accelerate capability development; detection remains behavioral"
