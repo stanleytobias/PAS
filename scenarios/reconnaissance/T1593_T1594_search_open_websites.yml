@@ -1,0 +1,97 @@
+id: T1593_T1594_search_open_websites
+name: "Search Open Websites/Domains and Victim-Owned Websites"
+mitre_technique: "T1593"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries search social media, search engines, and code repositories to gather
+  information about a target organization prior to compromise. T1594 covers searching
+  the victim's own websites for exposed configuration, backups, or sensitive files.
+  Both techniques are passive external OSINT — no host execution simulation is possible.
+  This scenario validates public code and web exposure controls.
+  T1593 Sub-techniques: T1593.001 Social Media | T1593.002 Search Engines | T1593.003 Code Repositories
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1593/
+  - https://attack.mitre.org/techniques/T1594/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1593/T1594 — Search Open Websites is a passive pre-compromise OSINT technique"
+
+  - step: 2
+    type: marker
+    description: "Social media exposure check"
+    message: "T1593.001 Social Media — Review LinkedIn and Twitter/X for employee and org exposure"
+
+  - step: 3
+    type: marker
+    description: "Search engine exposure check"
+    message: "T1593.002 Search Engines — Google: site:<yourdomain>.com filetype:pdf OR filetype:xlsx OR filetype:docx"
+
+  - step: 4
+    type: marker
+    description: "Code repository exposure check"
+    message: "T1593.003 Code Repositories — Search GitHub for your org name, email domain, or internal hostnames"
+
+  - step: 5
+    type: exec_powershell
+    description: "Check for local git credential and config files that could be exposed in a public repo"
+    command: |
+      Write-Host "[PAS] Checking for git credential exposure artifacts:"
+      $gitcred = "$env:USERPROFILE\.git-credentials"
+      $gitconf = "$env:USERPROFILE\.gitconfig"
+
+      if (Test-Path $gitcred) {
+          Write-Host "  WARNING: .git-credentials file exists at $gitcred"
+          Write-Host "  Ensure this file is never committed to any public repository"
+      } else {
+          Write-Host "  .git-credentials not found (expected)"
+      }
+
+      if (Test-Path $gitconf) {
+          Write-Host "  .gitconfig found — reviewing for sensitive entries:"
+          Get-Content $gitconf | Where-Object { $_ -match "email|name|token|url" } |
+              ForEach-Object { Write-Host "    $_" }
+      }
+
+      Write-Host "[PAS] Checking for .env files in common locations:"
+      $envPaths = @(
+          "$env:USERPROFILE\.env",
+          "C:\inetpub\wwwroot\.env",
+          "$env:USERPROFILE\Documents\.env",
+          "$env:USERPROFILE\Desktop\.env"
+      )
+      foreach ($p in $envPaths) {
+          if (Test-Path $p) {
+              Write-Host "  WARNING: .env file found at $p — ensure this is not in any public repo"
+          }
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Victim-owned website check"
+    message: "T1594 — Spider your own public website: look for exposed backup files, .git directories, or admin panels"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1593/T1594 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): file system checks for .git-credentials and .env files visible"
+  - "CONTROL CHECK: Search GitHub for your email domain — any hardcoded credentials or internal hostnames?"
+  - "CONTROL CHECK: Google site:<yourdomain> filetype:pdf OR xlsx — any sensitive documents indexed?"
+  - "CONTROL CHECK: Search Pastebin and GitHub Gist for your domain — any leaked API keys or tokens?"
+  - "CONTROL CHECK: Run a web crawler against your public site — any exposed backup or config files?"
+  - "CONTROL CHECK: Review LinkedIn — can an adversary fully enumerate your security team and tooling?"
+  - "NOTE: Use GitLeaks or TruffleHog to scan all public repos for committed secrets"

@@ -1,0 +1,74 @@
+id: T1592_gather_victim_host_info
+name: "Gather Victim Host Information"
+mitre_technique: "T1592"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries gather victim host information (hardware, software, firmware, client configs)
+  prior to compromise to shape targeting. This is a passive pre-compromise technique
+  conducted externally. The post-access equivalent — system information discovery — is
+  covered by T1082. This scenario validates OSINT exposure controls and enumerates
+  what host info would be visible to an attacker with local access.
+  Sub-techniques: T1592.001 Hardware | T1592.002 Software | T1592.003 Firmware | T1592.004 Client Configurations
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1592/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1592 — Gather Victim Host Information is a pre-compromise passive recon technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1592.001 Hardware | T1592.002 Software | T1592.003 Firmware | T1592.004 Client Configurations"
+
+  - step: 3
+    type: marker
+    description: "Control validation prompt"
+    message: "CONTROL VALIDATION: Review what host info is publicly exposed before continuing"
+
+  - step: 4
+    type: exec_powershell
+    description: "Enumerate host information visible to an attacker with local access"
+    command: |
+      Write-Host "[PAS] Host info an adversary could gather post-access:"
+      Write-Host "  OS:       $(([Environment]::OSVersion).VersionString)"
+      Write-Host "  Hostname: $env:COMPUTERNAME"
+      Write-Host "  Domain:   $env:USERDOMAIN"
+      Write-Host "  CPU:      $((Get-CimInstance Win32_Processor).Name)"
+      Write-Host "  RAM (GB): $([Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1))"
+      Write-Host "  BIOS:     $((Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion)"
+      Write-Host "  Installed software (first 10):"
+      Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" |
+          Where-Object { $_.DisplayName } |
+          Select-Object DisplayName, DisplayVersion -First 10 |
+          ForEach-Object { Write-Host "    $($_.DisplayName) $($_.DisplayVersion)" }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Review output — confirm sensitive host details are not exposed via OSINT, job postings, or asset leaks"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1592 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): Get-CimInstance hardware/software enumeration visible"
+  - "Process event: powershell.exe running system information enumeration cmdlets"
+  - "CONTROL CHECK: Are asset inventory systems externally accessible or leaking host details?"
+  - "CONTROL CHECK: Do job postings or LinkedIn profiles reveal specific software or hardware versions?"
+  - "CONTROL CHECK: Is firmware or BIOS version exposed via SNMP or management interfaces?"
+  - "NOTE: Primary detection value is post-compromise — pair this with T1082 System Information Discovery"
+  - "Sentinel: DeviceInfo table for host hardware and software inventory visibility"

@@ -1,0 +1,66 @@
+id: T1591_gather_victim_org_info
+name: "Gather Victim Org Information"
+mitre_technique: "T1591"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries gather organizational information (physical locations, business relationships,
+  business tempo, employee roles) from public sources prior to compromise.
+  This is a purely passive pre-compromise OSINT technique — no host execution simulation
+  is possible. This scenario validates OSINT exposure controls across all sub-techniques.
+  Sub-techniques: T1591.001 Physical Locations | T1591.002 Business Relationships |
+  T1591.003 Business Tempo | T1591.004 Identify Roles
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1591/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1591 — Gather Victim Org Information is a pre-compromise passive OSINT technique"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1591.001 Physical Locations | T1591.002 Business Relationships | T1591.003 Business Tempo | T1591.004 Identify Roles"
+
+  - step: 3
+    type: marker
+    description: "Social media exposure check"
+    message: "CONTROL CHECK: Review LinkedIn — are employee roles, org chart, and office locations enumerable?"
+
+  - step: 4
+    type: marker
+    description: "Website and press exposure check"
+    message: "CONTROL CHECK: Do press releases or company website reveal business partners, M&A activity, or key executives?"
+
+  - step: 5
+    type: marker
+    description: "Job posting exposure check"
+    message: "CONTROL CHECK: Do job postings reveal internal tooling, tech stack, or security gaps?"
+
+  - step: 6
+    type: marker
+    description: "Physical location exposure check"
+    message: "CONTROL CHECK: Are physical datacenter or office locations exposed via Google Maps, public filings, or social media?"
+
+  - step: 7
+    type: marker
+    description: "Business tempo exposure check"
+    message: "CONTROL CHECK: Can an adversary infer patch cycles, change freezes, or M&A activity from public sources?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1591 cleanup complete — marker-only scenario, no artifacts created"
+
+analyst_checklist:
+  - "CONTROL CHECK: Review publicly available org info on LinkedIn, company website, Glassdoor"
+  - "CONTROL CHECK: Audit job postings for technology stack and security tooling disclosure"
+  - "CONTROL CHECK: Review SEC filings and press releases for business relationship exposure"
+  - "CONTROL CHECK: Search your domain — what public-facing services and pages are indexed?"
+  - "NOTE: Detection for this technique is primarily via threat intel and spearphishing correlation"
+  - "Sentinel: Correlate targeted spearphishing alerts with IdentityInfo to identify targeted roles"

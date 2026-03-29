@@ -1,0 +1,61 @@
+id: T1597_search_closed_sources
+name: "Search Closed Sources"
+mitre_technique: "T1597"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries purchase or access closed threat intelligence sources, dark web markets,
+  or criminal forums to obtain information about the target — including previously
+  stolen credentials, VPN access, or insider knowledge sold by initial access brokers.
+  This is a fully external threat actor activity with no host simulation equivalent.
+  Detection and defense is threat-intelligence-driven.
+  Sub-techniques: T1597.001 Threat Intel Vendors | T1597.002 Purchase Technical Data
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1597/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1597 — Search Closed Sources is a fully external threat-actor-side technique"
+
+  - step: 2
+    type: marker
+    description: "T1597.001 context"
+    message: "T1597.001 Threat Intel Vendors — Adversary buys access to breach data from private intel feeds"
+
+  - step: 3
+    type: marker
+    description: "T1597.002 context"
+    message: "T1597.002 Purchase Technical Data — Adversary buys VPN credentials, network maps, or access from an IAB"
+
+  - step: 4
+    type: marker
+    description: "Dark web monitoring control check"
+    message: "CONTROL CHECK: Does your org subscribe to threat intel monitoring your domain on dark web markets?"
+
+  - step: 5
+    type: marker
+    description: "MDTI control check"
+    message: "CONTROL CHECK: Is Microsoft Defender Threat Intelligence (MDTI) or equivalent licensed and integrated with Sentinel?"
+
+  - step: 6
+    type: marker
+    description: "Identity Protection control check"
+    message: "CONTROL CHECK: Are Entra ID Identity Protection leaked credential detections active and configured to alert?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1597 cleanup complete — marker-only scenario, no artifacts created"
+
+analyst_checklist:
+  - "CONTROL CHECK: Subscribe to dark web monitoring for your email domain and IP ranges"
+  - "CONTROL CHECK: Enable Entra ID Identity Protection — risky users and leaked credentials alert policies"
+  - "CONTROL CHECK: Confirm MDTI is licensed and ThreatIntelligenceIndicator table is populated in Sentinel"
+  - "Sentinel: AADRiskyUsers — monitor for leaked credential risk events from Identity Protection"
+  - "Sentinel: ThreatIntelligenceIndicator — IOC correlation from MDTI or third-party TI feeds"
+  - "NOTE: IAB activity is typically detected retroactively via threat intel feeds or post-compromise forensics"

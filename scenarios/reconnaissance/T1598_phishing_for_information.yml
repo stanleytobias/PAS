@@ -1,0 +1,87 @@
+id: T1598_phishing_for_information
+name: "Phishing for Information"
+mitre_technique: "T1598"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries send phishing messages to elicit sensitive information (credentials,
+  org details) rather than to deliver malware. This includes spearphishing via
+  email attachment, link, service DM, or voice (vishing) designed to harvest info.
+  This is a social engineering technique — no host execution simulation is meaningful.
+  This scenario validates email gateway, phishing simulation, and credential exposure controls.
+  Sub-techniques: T1598.001 Spearphishing Service | T1598.002 Spearphishing Attachment |
+  T1598.003 Spearphishing Link | T1598.004 Spearphishing Voice
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1598/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1598 — Phishing for Information is a social engineering technique targeting credentials or org data"
+
+  - step: 2
+    type: marker
+    description: "Sub-technique coverage"
+    message: "Covers T1598.001 Service | T1598.002 Attachment | T1598.003 Link | T1598.004 Voice"
+
+  - step: 3
+    type: marker
+    description: "Email gateway control check"
+    message: "CONTROL CHECK: Is Microsoft Defender for Office 365 Safe Links enabled and logging click events?"
+
+  - step: 4
+    type: marker
+    description: "Phishing simulation control check"
+    message: "CONTROL CHECK: Is Microsoft Attack Simulator configured and running regular phishing simulations against users?"
+
+  - step: 5
+    type: marker
+    description: "Service-based phishing check"
+    message: "T1598.001 Service — Are Teams and Slack DM messages from external users restricted or flagged?"
+
+  - step: 6
+    type: exec_powershell
+    description: "Enumerate browser credential storage locations that a harvested credential target could expose"
+    command: |
+      Write-Host "[PAS] Browser credential storage locations on this host:"
+      $browsers = @(
+          "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data",
+          "$env:APPDATA\Mozilla\Firefox\Profiles",
+          "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data"
+      )
+      foreach ($b in $browsers) {
+          if (Test-Path $b) {
+              Write-Host "  EXISTS: $b"
+          } else {
+              Write-Host "  NOT PRESENT: $b"
+          }
+      }
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel EmailEvents for any recent phishing simulation results or real suspicious email events"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1598 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): browser profile path enumeration visible"
+  - "Process event: powershell.exe running credential storage location checks"
+  - "CONTROL CHECK: Is Defender for Office 365 Safe Links enabled with click logging for all users?"
+  - "CONTROL CHECK: Are external sender warnings configured in Exchange Online?"
+  - "CONTROL CHECK: Is Attack Simulator running simulations at least monthly?"
+  - "Sentinel: EmailEvents and EmailUrlInfo tables — phishing link click detection"
+  - "Sentinel: OfficeActivity — suspicious mail forwarding rules set post-credential-harvest"
+  - "MDE: DeviceNetworkEvents — outbound connections to credential-harvest phishing infrastructure"

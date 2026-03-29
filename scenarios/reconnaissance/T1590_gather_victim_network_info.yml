@@ -1,0 +1,87 @@
+id: T1590_gather_victim_network_info
+name: "Gather Victim Network Information"
+mitre_technique: "T1590"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries gather victim network information (DNS, IP ranges, topology, network security
+  appliances) prior to compromise using passive OSINT and active probing.
+  This scenario simulates the post-access equivalent — network enumeration commands
+  an adversary would run on a Windows host to map the environment after initial access.
+  Sub-techniques: T1590.001 Domain Properties | T1590.002 DNS | T1590.003 Network Trust
+  Dependencies | T1590.004 Network Topology | T1590.005 IP Addresses | T1590.006 Network
+  Security Appliances
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1590/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1590 — Network information gathering simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate network interfaces and IP addresses — T1590.005"
+    command: |
+      Write-Host "[PAS] Network interfaces and IP addresses:"
+      Get-NetIPAddress | Where-Object { $_.AddressFamily -eq 'IPv4' } |
+          Select-Object InterfaceAlias, IPAddress, PrefixLength | Format-Table -AutoSize
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate DNS server configuration and cache — T1590.002"
+    command: |
+      Write-Host "[PAS] DNS server configuration:"
+      Get-DnsClientServerAddress | Where-Object { $_.ServerAddresses } |
+          Select-Object InterfaceAlias, ServerAddresses | Format-Table -AutoSize
+      Write-Host "[PAS] DNS cache sample:"
+      Get-DnsClientCache | Select-Object -First 10 | Format-Table -AutoSize
+
+  - step: 4
+    type: exec_powershell
+    description: "Enumerate routing table — T1590.004"
+    command: |
+      Write-Host "[PAS] Routing table:"
+      Get-NetRoute -AddressFamily IPv4 | Where-Object { $_.RouteMetric -lt 9999 } |
+          Select-Object DestinationPrefix, NextHop, InterfaceAlias | Format-Table -AutoSize
+
+  - step: 5
+    type: exec_powershell
+    description: "Enumerate network shares and domain trust relationships — T1590.003"
+    command: |
+      Write-Host "[PAS] Network shares:"
+      Get-SmbShare | Select-Object Name, Path, Description | Format-Table -AutoSize
+      Write-Host "[PAS] Domain trusts (if domain-joined):"
+      try {
+          $result = & nltest /domain_trusts 2>&1
+          $result | ForEach-Object { Write-Host "  $_" }
+      } catch {
+          Write-Host "  nltest not available or not domain-joined"
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — PowerShell network enumeration cmdlets should now be visible"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1590 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): Get-NetIPAddress, Get-DnsClientServerAddress, Get-NetRoute, Get-SmbShare visible"
+  - "Process event: powershell.exe running network enumeration cmdlets"
+  - "Process event: nltest.exe spawned from powershell.exe for domain trust enumeration"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('nltest.exe') or ProcessCommandLine contains 'domain_trusts'"
+  - "MDE alert: 'Network discovery' or 'Suspicious network configuration enumeration'"
+  - "CONTROL CHECK: Is external DNS zone transfer enabled? Test: nslookup -type=axfr <yourdomain>"

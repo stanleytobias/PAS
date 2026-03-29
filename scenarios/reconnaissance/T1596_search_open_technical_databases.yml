@@ -1,0 +1,80 @@
+id: T1596_search_open_technical_databases
+name: "Search Open Technical Databases"
+mitre_technique: "T1596"
+mitre_tactic: "reconnaissance"
+description: >
+  Adversaries search publicly available technical databases (Passive DNS, WHOIS,
+  certificate transparency logs via crt.sh, CDN metadata, Shodan/Censys) to gather
+  information about a target's infrastructure prior to compromise.
+  This scenario validates certificate and DNS exposure controls and simulates the
+  internal DNS enumeration an adversary would run post-access.
+  Sub-techniques: T1596.001 DNS/Passive DNS | T1596.002 WHOIS | T1596.003 Digital
+  Certificates | T1596.004 CDNs | T1596.005 Scan Databases
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1596/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1596 — Search Open Technical Databases (internal DNS recon simulation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate internal DNS subdomain enumeration — mirrors what adversary finds via passive DNS externally"
+    command: |
+      Write-Host "[PAS] DNS enumeration — internal zone queries:"
+      $domain = $env:USERDNSDOMAIN
+      if (-not $domain) { $domain = "pas-test.local" }
+      Write-Host "  Domain: $domain"
+
+      $records = @("www","mail","vpn","remote","owa","autodiscover","ftp","dev","staging","api","portal","sso","adfs")
+      foreach ($r in $records) {
+          try {
+              $result = [System.Net.Dns]::GetHostAddresses("$r.$domain")
+              Write-Host "  RESOLVED: $r.$domain -> $($result[0].IPAddressToString)"
+          } catch {
+              Write-Host "  NXDOMAIN: $r.$domain"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate local machine certificate store — mirrors what adversary finds via crt.sh — T1596.003"
+    command: |
+      Write-Host "[PAS] Certificates in local machine store:"
+      Get-ChildItem Cert:\LocalMachine\My |
+          Select-Object Subject, NotBefore, NotAfter, Thumbprint |
+          Format-Table -AutoSize
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Certificate transparency check"
+    message: "CONTROL CHECK: Search crt.sh for your domain — what subdomains are exposed via certificate transparency?"
+
+  - step: 6
+    type: marker
+    description: "Scan database check"
+    message: "CONTROL CHECK: Search Shodan or Censys for your IP ranges — what services are indexed externally?"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "T1596 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): DNS resolution loop using System.Net.Dns visible"
+  - "Process event: powershell.exe running DNS subdomain enumeration"
+  - "Sentinel: DnsEvents — burst of DNS queries for common subdomain names from single host"
+  - "CONTROL CHECK: Search crt.sh for your domain — document all subdomains exposed via cert transparency"
+  - "CONTROL CHECK: Search Shodan or Censys for your ASN — document all internet-exposed services"
+  - "CONTROL CHECK: Review WHOIS registration details — personal info should be redacted via privacy guard"
