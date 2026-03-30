@@ -1,0 +1,122 @@
+id: T1669_wifi_networks
+name: "Wi-Fi Networks"
+mitre_technique: "T1669"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries gain initial access by connecting to wireless networks — either open
+  Wi-Fi networks used by target devices, or secured networks via stolen credentials
+  or WPA2 handshake cracking. Once on the same network segment, adversaries can
+  conduct ARP poisoning, lateral movement to internal resources, or capture cleartext
+  traffic. Evil twin attacks (rogue AP with same SSID) trick devices into connecting
+  to adversary-controlled access points. This scenario validates wireless security
+  controls and generates Wi-Fi connection telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1669/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1669 — Wi-Fi Networks initial access simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate wireless networks and security configuration"
+    command: |
+      Write-Host "[PAS] Wireless network profile audit:"
+
+      # Current wireless connection
+      $netsh = netsh wlan show interfaces 2>&1
+      $netsh | Select-String "SSID|Authentication|Cipher|Signal" |
+          ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+      Write-Host "[PAS] Saved wireless profiles (potential credential exposure):"
+      netsh wlan show profiles 2>&1 |
+          Select-String "All User Profile" |
+          ForEach-Object {
+              $profileName = ($_.Line -split ':')[1].Trim()
+              # Check security type of each saved profile
+              $profileDetail = netsh wlan show profile name="$profileName" 2>&1
+              $auth = $profileDetail | Select-String "Authentication\s*:" | Select-Object -First 1
+              $open = $auth -match "Open|None"
+              if ($open) {
+                  Write-Host "  RISK: Open/no-auth profile: '$profileName'"
+              } else {
+                  Write-Host "  Profile: '$profileName' — $($auth.Line.Trim())"
+              }
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Scan for open wireless networks in range — evil twin/rogue AP detection"
+    command: |
+      Write-Host "[PAS] Scanning visible wireless networks:"
+      $scanResult = netsh wlan show networks mode=bssid 2>&1
+      $networks   = @()
+      $current    = @{}
+      foreach ($line in $scanResult) {
+          if ($line -match "^SSID\s+\d+\s*:(.+)") {
+              if ($current.Count -gt 0) { $networks += $current }
+              $current = @{ SSID = $matches[1].Trim() }
+          }
+          if ($line -match "Authentication\s*:\s*(.+)") { $current.Auth = $matches[1].Trim() }
+          if ($line -match "Signal\s*:\s*(.+)")          { $current.Signal = $matches[1].Trim() }
+      }
+      if ($current.Count -gt 0) { $networks += $current }
+
+      foreach ($net in $networks) {
+          $risk = if ($net.Auth -match "Open|None") { " *** OPEN — no authentication ***" } else { "" }
+          Write-Host "  SSID: '$($net.SSID)' | Auth: $($net.Auth) | Signal: $($net.Signal)$risk"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Check for wireless network credentials stored on this host"
+    command: |
+      Write-Host "[PAS] Extracting saved wireless profile key material (requires elevation):"
+      netsh wlan show profiles 2>&1 |
+          Select-String "All User Profile" |
+          ForEach-Object {
+              $profileName = ($_.Line -split ':')[1].Trim()
+              $keyOutput   = netsh wlan show profile name="$profileName" key=clear 2>&1
+              $keyLine     = $keyOutput | Select-String "Key Content"
+              if ($keyLine) {
+                  Write-Host "  CREDENTIAL: '$profileName' has stored key (redacted for safety)"
+                  Write-Host "  RISK: Plaintext WPA2 key recoverable by any elevated process"
+              }
+          }
+      Write-Host "[PAS] CONTROL CHECK: Remove saved profiles for networks not in use"
+
+  - step: 5
+    type: marker
+    description: "Evil twin detection check"
+    message: "CONTROL CHECK: Alert on duplicate SSIDs with different BSSID/MAC addresses — potential evil twin attack. Use 802.1X/EAP-TLS with certificate authentication to prevent connections to rogue APs."
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new wireless network connection events, connections to open networks, WLAN profile changes"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1669 cleanup complete — no wireless profiles were modified"
+
+analyst_checklist:
+  - "Event ID 11000/11001/11004 (WLAN-AutoConfig): wireless connection attempt and association"
+  - "Sentinel: DeviceNetworkEvents | where RemoteIPType == 'Private' and InitiatingProcessFileName == 'wlanapi.dll'"
+  - "MDE: DeviceNetworkEvents — new network interface connected to previously unseen SSID"
+  - "CONTROL CHECK: Corporate wireless must use WPA3-Enterprise with 802.1X/EAP-TLS — pre-shared key (PSK) is vulnerable to offline cracking"
+  - "CONTROL CHECK: Disable auto-connect to open networks: GPO Computer Config > Windows Settings > Wireless Network (IEEE 802.11)"
+  - "CONTROL CHECK: Wireless Intrusion Prevention System (WIPS) — detect rogue APs and evil twins"
+  - "CONTROL CHECK: Remove saved profiles for home/hotel/conference networks that provide a target-rich SSID list"
+  - "CONTROL CHECK: VPN enforced on all wireless connections — even corporate WiFi should use Always-On VPN for defence in depth"

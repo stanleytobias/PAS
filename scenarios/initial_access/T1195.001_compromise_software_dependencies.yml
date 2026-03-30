@@ -1,0 +1,140 @@
+id: T1195.001_compromise_software_dependencies
+name: "Supply Chain Compromise — Compromise Software Dependencies and Development Tools"
+mitre_technique: "T1195.001"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries compromise open-source packages (npm, PyPI, NuGet) or development tools
+  that target organizations depend on. Methods include typosquatting (choosing names
+  similar to popular packages), dependency confusion attacks (hosting a public package
+  with the same name as a private one), and directly compromising legitimate packages.
+  When developers or CI/CD pipelines install the compromised package, the malicious
+  code executes — often with developer-level privileges and access to source code,
+  secrets, and internal infrastructure. This scenario simulates the artifact pattern
+  of a typosquatted package installation and validates supply chain monitoring controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1195/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1195.001 — Software Dependency Compromise simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate typosquatted npm package installation and execution"
+    command: |
+      Write-Host "[PAS] Typosquatted package simulation:"
+      Write-Host "[PAS] Examples of real typosquats: 'lodash' vs 'lodahs', 'react' vs 'reacct'"
+
+      # Simulate a malicious package install script execution
+      $pkgDir    = "$env:TEMP\PAS_T1195_001_package"
+      $installJs = "$pkgDir\install.js"
+      New-Item -ItemType Directory $pkgDir -Force | Out-Null
+
+      # Malicious postinstall script (what typosquatted packages contain)
+      Set-Content $installJs @'
+// Simulated malicious npm postinstall script
+// Real attack: exfiltrates env vars, SSH keys, npm tokens, .npmrc credentials
+var os = require('os');
+var path = require('path');
+console.log("PAS-T1195.001-PACKAGE-INSTALL-HOOK");
+console.log("Hostname: " + os.hostname());
+console.log("User: " + os.userInfo().username);
+// Real attack: HTTP POST to attacker C2 with above data
+'@
+      Write-Host "[PAS] Malicious postinstall script created: $installJs"
+
+      # Execute via node.js if available (simulates npm postinstall hook)
+      $node = Get-Command node -ErrorAction SilentlyContinue
+      if ($node) {
+          Write-Host "[PAS] Executing malicious postinstall script via node.js:"
+          Start-Process node.exe -ArgumentList $installJs -Wait -NoNewWindow
+          Write-Host "[PAS] node.exe executed package install hook — telemetry generated"
+      } else {
+          Write-Host "[PAS] node.js not installed — simulating via cmd.exe:"
+          Start-Process cmd.exe -ArgumentList "/c echo PAS-T1195.001-INSTALL-HOOK" `
+              -Wait -NoNewWindow
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate dependency confusion attack — check for private package names on public registry"
+    command: |
+      Write-Host "[PAS] Dependency confusion attack check:"
+      Write-Host "[PAS] Attack: adversary publishes public package with same name as internal private package"
+      Write-Host "[PAS] npm/pip resolves public registry first if version number is higher"
+
+      # Check for .npmrc files that define private registry scope
+      $npmrcPaths = @(
+          "$env:USERPROFILE\.npmrc",
+          "$(Get-Location)\.npmrc",
+          "$env:APPDATA\npm\etc\npmrc"
+      )
+      foreach ($p in $npmrcPaths) {
+          if (Test-Path $p) {
+              Write-Host "  .npmrc found: $p"
+              $content = Get-Content $p | Where-Object { $_ -notmatch 'password|token|_auth' }
+              $content | ForEach-Object { Write-Host "    $_" }
+          }
+      }
+      Write-Host "[PAS] CONTROL CHECK: Are scoped packages (@company/) configured to always resolve from private registry?"
+
+  - step: 4
+    type: exec_powershell
+    description: "Enumerate installed packages for suspicious entries"
+    command: |
+      Write-Host "[PAS] Checking npm global packages for suspicious names:"
+      $npm = Get-Command npm -ErrorAction SilentlyContinue
+      if ($npm) {
+          npm list -g --depth=0 2>&1 | Select-Object -First 20 |
+              ForEach-Object { Write-Host "  $_" }
+      } else {
+          Write-Host "  npm not found on this system"
+      }
+
+      Write-Host "[PAS] Checking pip packages:"
+      $pip = Get-Command pip -ErrorAction SilentlyContinue
+      if ($pip) {
+          pip list 2>&1 | Select-Object -First 20 |
+              ForEach-Object { Write-Host "  $_" }
+      } else {
+          Write-Host "  pip not found on this system"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — node.exe or python.exe executing scripts from package install directories"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove package simulation directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1195_001_package" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Package simulation files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1195.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: node.exe, python.exe, or pip.exe spawning unexpected child processes during package install"
+  - "Network event: node.exe or python.exe making outbound HTTP connections to unknown hosts during install"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('node.exe','python.exe','pip.exe') and InitiatingProcessCommandLine contains 'install'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'node.exe' and RemoteUrl !contains 'npmjs.com' and RemoteUrl !contains 'github.com'"
+  - "CONTROL CHECK: Use npm audit / pip-audit / dependabot in CI/CD pipeline to scan for known-vulnerable packages"
+  - "CONTROL CHECK: Pin package versions in package.json/requirements.txt — avoid open version ranges (^1.0.0)"
+  - "CONTROL CHECK: Configure .npmrc to always resolve scoped packages (@company/) from private registry"
+  - "CONTROL CHECK: Software Composition Analysis (SCA) tools — Snyk, GitHub Advanced Security, JFrog Xray"
+  - "CONTROL CHECK: Monitor outbound network from CI/CD pipeline agents — unexpected destinations during build indicate compromise"

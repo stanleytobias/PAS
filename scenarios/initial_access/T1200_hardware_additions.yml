@@ -1,0 +1,124 @@
+id: T1200_hardware_additions
+name: "Hardware Additions"
+mitre_technique: "T1200"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries physically introduce malicious hardware into a target environment —
+  USB HID attack devices (Rubber Ducky, O.MG Cable), rogue network taps, LAN turtles,
+  rogue WiFi access points, or implanted hardware in servers and workstations.
+  These devices can inject keystrokes, capture credentials, provide persistent
+  network access, or relay communications. Physical access is required, making
+  insider threats, social engineering, or unsupervised hardware delivery the
+  typical entry vector. This scenario validates hardware monitoring controls
+  and simulates the host artifacts produced by USB device insertion.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1200/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1200 — Hardware Additions simulation (USB insertion artifacts and control validation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate recently connected USB devices — detect unauthorized hardware"
+    command: |
+      Write-Host "[PAS] Recently connected USB devices (from registry):"
+      $usbKey = "HKLM:\SYSTEM\CurrentControlSet\Enum\USB"
+      if (Test-Path $usbKey) {
+          Get-ChildItem $usbKey -ErrorAction SilentlyContinue | ForEach-Object {
+              Get-ChildItem $_.PSPath -ErrorAction SilentlyContinue | ForEach-Object {
+                  $props = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                  if ($props.FriendlyName) {
+                      Write-Host "  VID/PID: $($_.PSParentPath.Split('\')[-1]) — $($props.FriendlyName)"
+                  }
+              }
+          }
+      }
+
+      Write-Host "[PAS] USB Storage devices connected (SetupAPI log):"
+      $setupLog = "$env:SystemRoot\inf\setupapi.dev.log"
+      if (Test-Path $setupLog) {
+          Select-String "Storage|HID|Keyboard|USB" $setupLog |
+              Select-Object -Last 10 |
+              ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate USB HID attack device artifact — keystroke injection leaves process traces"
+    command: |
+      Write-Host "[PAS] USB HID (Rubber Ducky) attack simulation:"
+      Write-Host "[PAS] Real attack: device enumerates as keyboard, injects keystrokes at 1000WPM"
+      Write-Host "[PAS] Detection: rapid keyboard input to cmd.exe or PowerShell without user interaction"
+      Write-Host "[PAS] Post-injection artifacts: powershell.exe or cmd.exe started with no parent user session"
+
+      # Simulate what a Rubber Ducky payload would execute
+      $duckPayload = "$env:TEMP\PAS_T1200_ducky_payload.txt"
+      Set-Content $duckPayload "PAS-T1200-HID-INJECT-SIMULATION"
+
+      # Rapid process spawning with no user-interactive parent — HID artifact
+      $wmi    = [wmiclass]"Win32_Process"
+      $result = $wmi.Create("cmd.exe /c echo PAS-T1200-HID-ATTACK > $duckPayload")
+      Write-Host "[PAS] HID-style process creation (no user parent): PID=$($result.ProcessId)"
+      Start-Sleep -Seconds 1
+
+  - step: 4
+    type: exec_powershell
+    description: "Check USB device control policy — validate unauthorized USB blocking"
+    command: |
+      Write-Host "[PAS] USB device control policy check:"
+
+      # Check MDE USB device control policy
+      $usbPolicy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions"
+      if (Test-Path $usbPolicy) {
+          $denyAll = (Get-ItemProperty $usbPolicy -Name DenyRemovableDevices `
+              -ErrorAction SilentlyContinue).DenyRemovableDevices
+          Write-Host "  DenyRemovableDevices policy: $denyAll"
+          if ($denyAll -eq 1) {
+              Write-Host "  [GOOD] Removable device installation blocked by policy"
+          } else {
+              Write-Host "  [RISK] No device installation restriction — USB devices can be inserted freely"
+          }
+      } else {
+          Write-Host "  [RISK] No USB device control policy found"
+          Write-Host "  Deploy via Intune: Device Control policy or GPO DenyRemovableDevices"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new USB device connection events, cmd.exe/powershell.exe with no interactive parent"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove HID simulation artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1200_ducky_payload.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] HID simulation artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1200 cleanup complete"
+
+analyst_checklist:
+  - "Device event: new USB device VID/PID not in approved hardware list — Event ID 6416 (new device installed)"
+  - "Process event: cmd.exe or powershell.exe spawned with Session 0 parent or no interactive session context"
+  - "Sentinel: DeviceEvents | where ActionType == 'PnpDeviceConnected' and AdditionalFields contains 'USB'"
+  - "Sentinel: SecurityEvent | where EventID == 6416 — new removable device driver installed"
+  - "MDE: Device Control reports — unauthorized USB devices connected to managed endpoints"
+  - "CONTROL CHECK: Deploy MDE Device Control policy — whitelist approved USB device VID/PID combinations"
+  - "CONTROL CHECK: Disable USB ports via BIOS/UEFI on sensitive workstations (PAWs, server consoles)"
+  - "CONTROL CHECK: Physical security — lock server room/IDF/MDF rooms; visitor escort policy"
+  - "CONTROL CHECK: Disable AutoPlay: GPO Computer Configuration > Windows Settings > AutoPlay Policies > Turn off AutoPlay = Enabled"

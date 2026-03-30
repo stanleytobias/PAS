@@ -1,0 +1,111 @@
+id: T1659_content_injection
+name: "Content Injection"
+mitre_technique: "T1659"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries inject malicious content into legitimate data-transfer channels — such
+  as HTTP responses (via compromised ISP or MitM position), BGP hijacking, or DNS
+  poisoning — to deliver payloads or redirect victims. Unlike Drive-by Compromise
+  which uses a compromised website, content injection manipulates the network channel
+  itself. This requires a privileged network position (compromised router, ISP,
+  or BGP peer) and is primarily detected via network-layer anomalies rather than
+  host-based telemetry. This scenario validates network integrity controls and
+  generates the DNS/network telemetry associated with this technique.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1659/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1659 — Content Injection: adversary with network position injects malicious content into HTTP/DNS traffic"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check DNS integrity — validate DNSSEC and DNS-over-HTTPS configuration"
+    command: |
+      Write-Host "[PAS] DNS integrity controls check:"
+
+      # Check DNS resolver configuration
+      $dnsServers = Get-DnsClientServerAddress -AddressFamily IPv4 |
+          Where-Object { $_.ServerAddresses } |
+          Select-Object InterfaceAlias, ServerAddresses
+      Write-Host "  Configured DNS servers:"
+      $dnsServers | ForEach-Object {
+          Write-Host "    $($_.InterfaceAlias): $($_.ServerAddresses -join ', ')"
+          $_.ServerAddresses | ForEach-Object {
+              if ($_ -notin @("8.8.8.8","8.8.4.4","1.1.1.1","1.0.0.1","9.9.9.9","208.67.222.222")) {
+                  # Non-well-known resolver — may be corporate DNS
+                  Write-Host "      [INFO] Custom resolver: $_ — verify this is the approved corporate DNS"
+              }
+          }
+      }
+
+      # Check DNS-over-HTTPS setting
+      $dohKey = "HKLM:\SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"
+      $dohValue = (Get-ItemProperty $dohKey -Name EnableAutoDoh -ErrorAction SilentlyContinue).EnableAutoDoh
+      Write-Host "  DNS-over-HTTPS (DoH) enabled: $($dohValue -eq 2)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate DNS cache poisoning detection — check for unexpected DNS resolutions"
+    command: |
+      Write-Host "[PAS] DNS cache inspection (checking for unexpected entries):"
+      Get-DnsClientCache -ErrorAction SilentlyContinue |
+          Where-Object {
+              # Flag entries that resolve to private IPs but have public-looking names
+              $_.Entry -match "microsoft|google|windows" -and
+              $_.Data -match "^192\.168\.|^10\.|^172\.(1[6-9]|2[0-9]|3[01])\."
+          } |
+          ForEach-Object {
+              Write-Host "  SUSPICIOUS: $($_.Entry) resolves to private IP $($_.Data)"
+              Write-Host "  This may indicate DNS poisoning — verify via alternate resolver"
+          }
+      Write-Host "  DNS cache scan complete"
+
+  - step: 4
+    type: exec_powershell
+    description: "Validate HTTPS certificate integrity — detect MitM TLS interception"
+    command: |
+      Write-Host "[PAS] Checking for TLS inspection / MitM certificates in trusted root store:"
+      $suspectIssuers = @("BlueCoat","Zscaler","Cisco Umbrella","Forcepoint","Netskope",
+                          "Symantec SSL","iboss","ContentKeeper")
+      $rootCerts = Get-ChildItem Cert:\LocalMachine\Root -ErrorAction SilentlyContinue
+      foreach ($issuer in $suspectIssuers) {
+          $found = $rootCerts | Where-Object { $_.Subject -like "*$issuer*" }
+          if ($found) {
+              Write-Host "  TLS INSPECTION PROXY: $issuer certificate in root store"
+              Write-Host "  HTTPS traffic is being decrypted by: $issuer"
+          }
+      }
+      Write-Host "  CONTROL CHECK: Ensure TLS inspection proxy is corporate-approved and logged"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — unexpected DNS resolutions, new root certificates, HTTP responses with injected content"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1659 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "DNS event: well-known domain resolving to unexpected IP address — possible DNS poisoning"
+  - "Certificate event: new root certificate added to trusted store — possible MitM setup"
+  - "Network event: HTTP response containing unexpected script tags or iframes from non-CDN sources"
+  - "Sentinel: DnsEvents | where Name in (sensitive_domains) and IPAddresses !in (known_good_ips)"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Root\\Certificates' and ActionType == 'RegistryKeyCreated'"
+  - "CONTROL CHECK: Enable DNS-over-HTTPS in Windows: Set-ItemProperty HKLM:\\SYSTEM\\...\\Dnscache\\Parameters -Name EnableAutoDoh -Value 2"
+  - "CONTROL CHECK: Monitor DNSSEC validation failures — indicates attempted DNS tampering"
+  - "CONTROL CHECK: Content Security Policy (CSP) headers prevent injected scripts from executing in browsers"
+  - "CONTROL CHECK: HSTS (HTTP Strict Transport Security) prevents HTTP downgrade attacks used in content injection"

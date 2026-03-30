@@ -1,0 +1,87 @@
+id: T1195.003_compromise_hardware_supply_chain
+name: "Supply Chain Compromise — Compromise Hardware Supply Chain"
+mitre_technique: "T1195.003"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries manipulate hardware components (servers, network appliances, peripherals)
+  before delivery to the customer — inserting firmware backdoors, hardware implants, or
+  modified chips. Notable examples: Bloomberg's alleged SuperMicro server implants,
+  NSA ANT catalog hardware backdoors, and rogue network equipment.
+  No host-side simulation is possible — detection relies on supply chain integrity
+  verification, hardware attestation, and anomalous firmware behavior.
+  This scenario validates hardware and firmware integrity controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1195/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1195.003 — Hardware Supply Chain Compromise: backdoored hardware inserted before delivery"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate firmware and hardware attestation state on this host"
+    command: |
+      Write-Host "[PAS] Hardware integrity checks:"
+
+      # Secure Boot status
+      $sb = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+      Write-Host "  Secure Boot enabled: $sb"
+      if (-not $sb) {
+          Write-Host "  WARNING: Secure Boot disabled — firmware-level implants would not be detected"
+      }
+
+      # TPM presence and version
+      $tpm = Get-Tpm -ErrorAction SilentlyContinue
+      if ($tpm) {
+          Write-Host "  TPM Present: $($tpm.TpmPresent)"
+          Write-Host "  TPM Ready:   $($tpm.TpmReady)"
+          Write-Host "  TPM version: $((Get-WmiObject -Namespace root\cimv2\security\microsofttpm -Class Win32_Tpm -ErrorAction SilentlyContinue).SpecVersion)"
+      }
+
+      # BIOS/UEFI information
+      $bios = Get-WmiObject Win32_BIOS -ErrorAction SilentlyContinue
+      Write-Host "  BIOS Version: $($bios.SMBIOSBIOSVersion)"
+      Write-Host "  BIOS Date:    $($bios.ReleaseDate)"
+      Write-Host "  Manufacturer: $($bios.Manufacturer)"
+
+      Write-Host "[PAS] CONTROL CHECK: Is BIOS/UEFI up to date? Compare against vendor's latest firmware version"
+
+  - step: 3
+    type: marker
+    description: "Supply chain security controls check"
+    message: "CONTROL CHECK: Hardware procurement — purchase directly from manufacturer or authorised distributor only; avoid third-party resellers for sensitive hardware"
+
+  - step: 4
+    type: marker
+    description: "Firmware attestation check"
+    message: "CONTROL CHECK: Microsoft Pluton / Windows Secured Core PC — hardware-rooted attestation prevents firmware-level implants from surviving"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: Secure Boot enabled, TPM 2.0 present and ready, UEFI firmware version is current"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1195.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "CONTROL CHECK: Secure Boot must be enabled — Confirm-SecureBootUEFI returns True"
+  - "CONTROL CHECK: TPM 2.0 must be present and ready — Get-Tpm shows TpmReady=True"
+  - "CONTROL CHECK: UEFI firmware version must be current — compare against vendor security advisories"
+  - "CONTROL CHECK: Windows Defender System Guard — validates platform integrity via TPM attestation at boot"
+  - "CONTROL CHECK: Secured-core PC requirements (Hypervisor-Protected Code Integrity + TPM + Secure Boot) for sensitive roles"
+  - "CONTROL CHECK: Hardware procurement policy — document chain of custody for all server/network equipment"
+  - "MDE: Device Health Attestation — validates Secure Boot, TPM, code integrity remotely via Intune"

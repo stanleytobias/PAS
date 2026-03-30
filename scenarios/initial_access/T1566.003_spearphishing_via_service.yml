@@ -1,0 +1,91 @@
+id: T1566.003_spearphishing_via_service
+name: "Phishing — Spearphishing via Service"
+mitre_technique: "T1566.003"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries send phishing messages via third-party services — Microsoft Teams, Slack,
+  LinkedIn, WhatsApp, SMS, or other messaging platforms — rather than via email.
+  These messages bypass email security controls (Safe Links, Safe Attachments) entirely.
+  A common pattern is Teams messages from compromised external tenants, or LinkedIn
+  messages with malicious links/attachments targeting employees.
+  No host execution simulation is possible — detection depends on controlling and
+  monitoring the messaging platforms themselves.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1566/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1566.003 — Spearphishing via Service: phishing via Teams, Slack, LinkedIn, SMS rather than email"
+
+  - step: 2
+    type: marker
+    description: "Teams external access control check"
+    message: "CONTROL CHECK: Microsoft Teams — are external users (outside tenant) allowed to send DMs to your users? Review: Teams Admin Center > External Access"
+
+  - step: 3
+    type: marker
+    description: "Teams guest access check"
+    message: "CONTROL CHECK: Teams Guest Access — can guests send files and links? Review: Teams Admin Center > Guest Access > Allow guests to send messages"
+
+  - step: 4
+    type: marker
+    description: "Defender for Office 365 Teams protection check"
+    message: "CONTROL CHECK: Defender for Office 365 Plan 2 scans Teams messages for malicious links — verify Safe Links policy covers Teams in addition to email"
+
+  - step: 5
+    type: marker
+    description: "Slack workspace control check"
+    message: "CONTROL CHECK: Slack — are external workspace DMs enabled? Restrict to approved external workspaces only via Slack Enterprise Grid settings"
+
+  - step: 6
+    type: exec_powershell
+    description: "Enumerate Teams-delivered file artifacts — check Downloads for Teams-sourced content"
+    command: |
+      Write-Host "[PAS] Checking for Teams-delivered file artifacts:"
+      $teamsPaths = @(
+          "$env:USERPROFILE\Downloads",
+          "$env:APPDATA\Microsoft\Teams\Downloads",
+          "$env:LOCALAPPDATA\Microsoft\Teams\Downloads"
+      )
+      foreach ($p in $teamsPaths) {
+          if (Test-Path $p) {
+              $recentFiles = Get-ChildItem $p -ErrorAction SilentlyContinue |
+                  Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-7) } |
+                  Select-Object Name, LastWriteTime
+              if ($recentFiles) {
+                  Write-Host "  Recent files in $p :"
+                  $recentFiles | ForEach-Object { Write-Host "    $($_.Name) ($($_.LastWriteTime))" }
+              }
+          }
+      }
+      Write-Host "[PAS] Review any unexpected .exe, .js, .lnk files from Teams/Slack paths"
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel OfficeActivity for Teams message events; review Teams Admin Center external access settings"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1566.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: OfficeActivity | where OfficeWorkload == 'MicrosoftTeams' and Operation == 'MessageSent' and ExternalAccess == true"
+  - "Sentinel: CloudAppEvents | where ActionType == 'TeamsExternalUserMessage' — external user sending to internal user"
+  - "MDE: DeviceFileEvents | where InitiatingProcessFileName == 'Teams.exe' and FileName endswith '.exe'"
+  - "CONTROL CHECK: Block external Teams DMs from unmanaged/personal tenants unless business justified"
+  - "CONTROL CHECK: Safe Links must cover Teams — verify policy includes Microsoft Teams in scope"
+  - "CONTROL CHECK: Train users — Teams messages from unknown external accounts are a primary phishing vector"
+  - "CONTROL CHECK: Defender for Cloud Apps monitors Teams, Slack, and other SaaS for anomalous messaging"

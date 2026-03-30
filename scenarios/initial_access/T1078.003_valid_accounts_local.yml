@@ -1,0 +1,121 @@
+id: T1078.003_valid_accounts_local
+name: "Valid Accounts — Local Accounts"
+mitre_technique: "T1078.003"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use compromised local account credentials to authenticate to systems.
+  Local accounts bypass domain-level controls and are often overlooked in security
+  monitoring. Common vectors: LAPS password theft, credential dump from previously
+  compromised system with password reuse, weak local admin passwords set by imaging
+  process. Local account RDP and net use logons generate Event ID 4624 with
+  LogonType 10 or 3, and the account SID will not match domain SIDs.
+  This scenario generates local account authentication telemetry and validates
+  LAPS deployment and local account monitoring coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1078/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1078.003 — Local Account credential use simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate local accounts and assess password policy risk"
+    command: |
+      Write-Host "[PAS] Local account inventory:"
+      Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object {
+          Write-Host "  $($_.Name): Enabled=$($_.Enabled), PasswordLastSet=$($_.PasswordLastSet), LastLogon=$($_.LastLogon)"
+          if ($_.Enabled -and $_.PasswordLastSet -lt (Get-Date).AddDays(-90)) {
+              Write-Host "    WARNING: Password not changed in 90+ days"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check LAPS deployment status — primary control for local admin credential uniqueness"
+    command: |
+      Write-Host "[PAS] LAPS (Local Administrator Password Solution) status:"
+      $lapsPath = "HKLM:\SOFTWARE\Policies\Microsoft Services\AdmPwd"
+      $lapsAdmPwd = Test-Path $lapsPath -ErrorAction SilentlyContinue
+      $lapsNew  = Get-Command 'Get-LapsADPassword' -ErrorAction SilentlyContinue
+
+      if ($lapsAdmPwd -or $lapsNew) {
+          Write-Host "  LAPS appears configured on this host"
+      } else {
+          Write-Host "  WARNING: LAPS not detected — local Administrator password may be shared across all endpoints"
+          Write-Host "  Risk: Single credential dump = access to all endpoints with same local admin password"
+      }
+
+      # Check Windows LAPS (built-in Windows 11/Server 2022)
+      $winLaps = Get-Service "LAPS" -ErrorAction SilentlyContinue
+      if ($winLaps) {
+          Write-Host "  Windows LAPS service: $($winLaps.Status)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate local account logon from remote context — generates Event ID 4624 LogonType 3"
+    command: |
+      Write-Host "[PAS] Simulating remote local account credential use:"
+      # net use with local account (SAM format: .\username or HOSTNAME\username)
+      net use \\127.0.0.1\IPC$ /user:.\PAS_T1078_003_LocalTest "PAS-WrongPass" 2>&1 | Out-Null
+      Write-Host "[PAS] Local account remote logon attempt — Event ID 4625 with local account SID"
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 5
+    type: exec_powershell
+    description: "Check for password reuse risk — same local admin password across endpoints"
+    command: |
+      Write-Host "[PAS] Local admin password reuse risk assessment:"
+      Write-Host "  Without LAPS: all endpoints share the same local admin password"
+      Write-Host "  With LAPS: each endpoint has a unique, rotated local admin password"
+      Write-Host "  Attack impact without LAPS: compromise one endpoint = compromise all endpoints"
+      Write-Host ""
+      Write-Host "[PAS] Checking local Administrator account last password change:"
+      $admin = Get-LocalUser -Name "Administrator" -ErrorAction SilentlyContinue
+      if ($admin) {
+          Write-Host "  Administrator password last set: $($admin.PasswordLastSet)"
+          $daysSince = ((Get-Date) - $admin.PasswordLastSet).Days
+          Write-Host "  Days since password change: $daysSince"
+          if ($daysSince -gt 30) {
+              Write-Host "  RISK: Local admin password unchanged for $daysSince days — deploy LAPS"
+          }
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4625 with local account SID (S-1-5-21-<machine>), LAPS deployment status"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any network connections"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Network connections cleaned"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1078.003 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4624: Local account logon (SID format S-1-5-21-<machineSID>) with LogonType 3 or 10"
+  - "Event ID 4625: Failed local account logon from remote IP"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and TargetUserName == 'Administrator' and TargetDomainName == '<HOSTNAME>'"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType in (3,10) and TargetDomainName == ComputerName"
+  - "CONTROL CHECK: Deploy Microsoft LAPS (Windows LAPS built-in Windows 11/Server 2022) immediately if not present"
+  - "CONTROL CHECK: Disable local Administrator account on endpoints where LAPS is deployed"
+  - "CONTROL CHECK: Alert on local account RDP logons (LogonType=10) from unexpected source IPs"
+  - "CONTROL CHECK: Block NTLM authentication to reduce pass-the-hash risk for local accounts"

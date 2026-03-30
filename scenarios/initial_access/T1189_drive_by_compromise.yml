@@ -1,0 +1,113 @@
+id: T1189_drive_by_compromise
+name: "Drive-by Compromise"
+mitre_technique: "T1189"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries compromise a website or serve a malicious page that exploits a victim's
+  browser or browser plugin when they visit during normal browsing. The exploit delivers
+  a payload silently — no user interaction beyond visiting the page is required.
+  On Windows, the telltale artifact is a browser process (msedge.exe, chrome.exe,
+  iexplore.exe) spawning an unexpected child process (cmd.exe, powershell.exe,
+  wscript.exe) or writing an executable to disk. This scenario simulates the
+  post-exploitation host artifacts a drive-by produces — the download, the drop,
+  and the browser-child-process execution chain.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1189/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1189 — Drive-by Compromise simulation (simulating POST-exploit host artifacts)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate browser process spawning a child process — core drive-by artifact"
+    command: |
+      # Simulate msedge.exe spawning cmd.exe (the key detection indicator)
+      # We use Start-Process to mimic the parent-child chain with edge as initiating process
+      Write-Host "[PAS] Simulating browser child-process spawn chain:"
+      Write-Host "[PAS] In a real drive-by: msedge.exe -> cmd.exe -> powershell.exe"
+
+      $droppedPayload = "$env:TEMP\PAS_T1189_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $droppedPayload -Force
+      Write-Host "[PAS] Payload dropped by browser to: $droppedPayload"
+
+      # Simulate the browser-spawned execution (uses cmd.exe as stand-in for browser)
+      # In real telemetry the initiating process would be msedge.exe/chrome.exe
+      Start-Process cmd.exe -ArgumentList `
+          "/c `"$droppedPayload /c echo PAS-T1189-DRIVEBY-EXEC > $env:TEMP\PAS_T1189_fired.txt`"" `
+          -Wait -NoNewWindow
+      Write-Host "[PAS] Payload executed — browser-child-process chain telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate drive-by download via Invoke-WebRequest — file written to Downloads/Temp"
+    command: |
+      Write-Host "[PAS] Simulating browser-triggered download to user Downloads directory:"
+      $downloadPath = "$env:USERPROFILE\Downloads\PAS_T1189_invoice.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $downloadPath -Force
+
+      # Mark with Zone.Identifier (MOTW) — browsers apply this to all downloads
+      Set-Content "$downloadPath`:Zone.Identifier" "[ZoneTransfer]`nZoneId=3`nHostUrl=http://malicious.example.com/invoice.exe"
+      Write-Host "[PAS] File dropped with MOTW Zone 3 (Internet): $downloadPath"
+      Write-Host "[PAS] In real drive-by: file is dropped silently without user Save dialog"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate exploit kit JScript/VBScript drop to Temp — common drive-by staging path"
+    command: |
+      $stagingScript = "$env:TEMP\PAS_T1189_stage.js"
+      Set-Content $stagingScript @'
+// Simulated drive-by JScript dropper
+var oShell = WScript.CreateObject("WScript.Shell");
+oShell.Run("cmd.exe /c echo PAS-T1189-JSCRIPT", 0, false);
+WScript.Echo("PAS-T1189-DRIVEBY-JSCRIPT-STAGE");
+'@
+      Write-Host "[PAS] JScript stager dropped to TEMP: $stagingScript"
+      # Execute via wscript to generate the wscript->cmd telemetry
+      Start-Process wscript.exe -ArgumentList $stagingScript -Wait -NoNewWindow `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wscript.exe executed JScript stager — telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — browser or wscript child-process spawns, executable in Downloads with Zone.Identifier"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all drive-by simulation artifacts"
+    command: |
+      @("$env:TEMP\PAS_T1189_payload.exe",
+        "$env:TEMP\PAS_T1189_fired.txt",
+        "$env:TEMP\PAS_T1189_stage.js",
+        "$env:USERPROFILE\Downloads\PAS_T1189_invoice.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Drive-by artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1189 cleanup complete"
+
+analyst_checklist:
+  - "Process event: wscript.exe or cmd.exe spawned with browser (msedge.exe/chrome.exe) as parent — highest priority alert"
+  - "File event: executable written to Downloads or TEMP with Zone.Identifier ZoneId=3 (Internet)"
+  - "Process event: executable executing from Downloads directory shortly after creation"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('msedge.exe','chrome.exe','iexplore.exe','firefox.exe') and FileName in ('cmd.exe','powershell.exe','wscript.exe','mshta.exe')"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Downloads' and FileName endswith '.exe' and ActionType == 'FileCreated'"
+  - "MDE alert: 'Browser spawning suspicious child process' or 'Exploit delivered via web browser'"
+  - "CONTROL CHECK: ASR rule 'Block executable content from email client and webmail' covers some drive-by vectors"
+  - "CONTROL CHECK: Microsoft Defender SmartScreen must be enabled — it blocks known malicious download URLs"
+  - "CONTROL CHECK: Browser isolation (Defender Application Guard) prevents drive-by from accessing host memory"
+  - "CONTROL CHECK: Patch browsers and browser plugins — drive-by exploits target known CVEs in outdated engines"

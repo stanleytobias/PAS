@@ -1,0 +1,98 @@
+id: T1078.001_valid_accounts_default
+name: "Valid Accounts — Default Accounts"
+mitre_technique: "T1078.001"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use default credentials that come pre-configured on operating systems,
+  network devices, applications, or cloud services. Common examples: Windows built-in
+  Administrator account with no password, default sa account on SQL Server, default
+  admin/admin on network printers and routers, and default cloud service accounts.
+  This scenario enumerates default accounts on the Windows host, checks their status,
+  and validates that default credential hardening controls are in place.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1078/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1078.001 — Default Accounts enumeration and control validation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate built-in Windows accounts and their status"
+    command: |
+      Write-Host "[PAS] Built-in Windows account status:"
+      $defaultAccounts = @("Administrator","Guest","DefaultAccount","WDAGUtilityAccount")
+      foreach ($acct in $defaultAccounts) {
+          $user = Get-LocalUser -Name $acct -ErrorAction SilentlyContinue
+          if ($user) {
+              Write-Host "  $($user.Name): Enabled=$($user.Enabled), LastLogon=$($user.LastLogon), PasswordRequired=$($user.PasswordRequired)"
+              if ($user.Enabled -and $user.Name -eq "Administrator") {
+                  Write-Host "  WARNING: Built-in Administrator is ENABLED — should be disabled or renamed"
+              }
+              if ($user.Enabled -and $user.Name -eq "Guest") {
+                  Write-Host "  WARNING: Guest account is ENABLED — disable immediately"
+              }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Attempt default credential logon to local services — simulates attacker enumeration"
+    command: |
+      Write-Host "[PAS] Testing default credentials on local services:"
+      # Test SQL Server default sa account (if present)
+      $sqlTest = Test-NetConnection -ComputerName 127.0.0.1 -Port 1433 `
+          -WarningAction SilentlyContinue -InformationLevel Quiet -ErrorAction SilentlyContinue
+      if ($sqlTest) {
+          Write-Host "  SQL Server port 1433 is OPEN — verify 'sa' account is disabled or has non-default password"
+      }
+      # Test MySQL default
+      $mysqlTest = Test-NetConnection -ComputerName 127.0.0.1 -Port 3306 `
+          -WarningAction SilentlyContinue -InformationLevel Quiet -ErrorAction SilentlyContinue
+      if ($mysqlTest) {
+          Write-Host "  MySQL port 3306 is OPEN — verify 'root' account requires password"
+      }
+      Write-Host "[PAS] Default credential probe telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Check for accounts with empty or default passwords"
+    command: |
+      Write-Host "[PAS] Accounts with password-not-required flag (potential default credential risk):"
+      Get-LocalUser -ErrorAction SilentlyContinue |
+          Where-Object { -not $_.PasswordRequired -and $_.Enabled } |
+          ForEach-Object {
+              Write-Host "  RISK: $($_.Name) — PasswordRequired=False and account is Enabled"
+          }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — logon attempts using Administrator or Guest accounts; Event ID 4625 for default account names"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1078.001 cleanup complete — no accounts were modified"
+
+analyst_checklist:
+  - "Event ID 4625: Failed logon for 'Administrator' or 'Guest' from external IP — brute force indicator"
+  - "Event ID 4624: Successful logon for built-in Administrator (RID 500) — should be rare and alerted"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and TargetSid endswith '-500' — built-in Admin logon"
+  - "Sentinel: SecurityEvent | where EventID == 4625 and TargetUserName == 'Administrator' | summarize count() by IpAddress"
+  - "CONTROL CHECK: Disable built-in Administrator account: Disable-LocalUser -Name Administrator"
+  - "CONTROL CHECK: Disable Guest account: Disable-LocalUser -Name Guest"
+  - "CONTROL CHECK: Rename built-in Administrator to a non-obvious name via GPO"
+  - "CONTROL CHECK: All accounts must have PasswordRequired=True: Get-LocalUser | Where {!$_.PasswordRequired}"
+  - "CONTROL CHECK: Microsoft LAPS — randomize and manage local Administrator passwords on all endpoints"

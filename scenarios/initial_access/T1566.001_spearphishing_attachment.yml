@@ -1,0 +1,118 @@
+id: T1566.001_spearphishing_attachment
+name: "Phishing — Spearphishing Attachment"
+mitre_technique: "T1566.001"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries send targeted emails with malicious attachments — Office documents with
+  macros, PDFs exploiting Acrobat, LNK files, ISO containers, or HTML smuggling payloads.
+  The victim opens the attachment, which executes a payload delivering the first-stage
+  implant. This scenario simulates the host-side artifacts produced when a malicious
+  attachment is opened: the parent process (Outlook/winword), the dropped payload, the
+  suspicious child process chain, and the Mark-of-the-Web from email delivery.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1566/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1566.001 — Spearphishing Attachment simulation (post-open host artifacts)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate malicious Office document — winword.exe spawning cmd.exe"
+    command: |
+      Write-Host "[PAS] Simulating Office macro execution chain:"
+      Write-Host "[PAS] Real artifact: OUTLOOK.EXE -> WINWORD.EXE -> cmd.exe -> powershell.exe"
+
+      # Drop a simulated Office attachment with MOTW (Zone.Identifier from email)
+      $attachPath = "$env:TEMP\PAS_T1566_001_Invoice_Q4.docx"
+      Set-Content $attachPath "PAS-T1566.001-OFFICE-ATTACHMENT-MARKER"
+      Set-Content "$attachPath`:Zone.Identifier" `
+          "[ZoneTransfer]`nZoneId=2`nReferrerUrl=about:internet"
+      Write-Host "[PAS] Simulated .docx attachment created with MOTW ZoneId=2 (Trusted Sites/Email)"
+
+      # Simulate the macro execution chain — cmd spawned from script context
+      $outFile = "$env:TEMP\PAS_T1566_001_macro_exec.txt"
+      $wmi     = [wmiclass]"Win32_Process"
+      $result  = $wmi.Create("cmd.exe /c echo PAS-T1566.001-MACRO-EXEC > $outFile")
+      Write-Host "[PAS] Macro child process spawned (WMI): PID=$($result.ProcessId)"
+      Start-Sleep -Seconds 2
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate LNK attachment execution — common modern phishing vector"
+    command: |
+      $lnkPath = "$env:TEMP\PAS_T1566_001_Invoice.pdf.lnk"
+      $outFile = "$env:TEMP\PAS_T1566_001_lnk_exec.txt"
+      $shell   = New-Object -ComObject WScript.Shell
+      $link    = $shell.CreateShortcut($lnkPath)
+      $link.TargetPath  = "$env:SystemRoot\System32\cmd.exe"
+      $link.Arguments   = "/c echo PAS-T1566.001-LNK-EXEC > $outFile"
+      $link.Description = "Invoice Document"
+      $link.IconLocation = "$env:SystemRoot\System32\shell32.dll,222"
+      $link.WindowStyle  = 7
+      $link.Save()
+      Set-Content "$lnkPath`:Zone.Identifier" "[ZoneTransfer]`nZoneId=2"
+      Write-Host "[PAS] LNK attachment created with MOTW: $lnkPath"
+      Start-Process $lnkPath
+      Start-Sleep -Seconds 2
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate ISO container attachment — bypasses MOTW propagation in older Windows"
+    command: |
+      Write-Host "[PAS] ISO container simulation:"
+      Write-Host "[PAS] Real attack: victim mounts ISO -> runs contained .exe or .lnk"
+      Write-Host "[PAS] ISO files: no MOTW propagation on Windows 10 pre-22H2"
+      Write-Host "[PAS] Detection: explorer.exe (ISO mount) -> child process chain"
+
+      $isoMarker = "$env:TEMP\PAS_T1566_001_invoice.iso"
+      Set-Content $isoMarker "PAS-T1566.001-ISO-MARKER"
+      Write-Host "[PAS] ISO attachment marker created: $isoMarker"
+      Write-Host "[PAS] Check: Does your email gateway block .iso attachments?"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Office/email process spawning cmd.exe, LNK execution from TEMP, MOTW on attachment files"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove attachment simulation artifacts"
+    command: |
+      Get-Process mshta, wscript -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      @("$env:TEMP\PAS_T1566_001_Invoice_Q4.docx",
+        "$env:TEMP\PAS_T1566_001_macro_exec.txt",
+        "$env:TEMP\PAS_T1566_001_Invoice.pdf.lnk",
+        "$env:TEMP\PAS_T1566_001_lnk_exec.txt",
+        "$env:TEMP\PAS_T1566_001_invoice.iso") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Spearphishing attachment artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1566.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: WINWORD.EXE, EXCEL.EXE, or OUTLOOK.EXE spawning cmd.exe/powershell.exe/wscript.exe"
+  - "Process event: cmd.exe or powershell.exe with parent=explorer.exe and grandparent indicating email context"
+  - "File event: .docx, .xlsm, .lnk, .iso file in TEMP or Downloads with Zone.Identifier ZoneId=2 (email)"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('WINWORD.EXE','EXCEL.EXE','POWERPNT.EXE') and FileName in ('cmd.exe','powershell.exe','wscript.exe','mshta.exe')"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.lnk' and FolderPath contains 'Temp' and InitiatingProcessFileName == 'OUTLOOK.EXE'"
+  - "MDE alert: 'Office application spawning suspicious process' or 'Macro-enabled document executing payload'"
+  - "CONTROL CHECK: ASR rule 'Block all Office applications from creating child processes' — verify it is enabled in Block mode"
+  - "CONTROL CHECK: Defender for Office 365 Safe Attachments must detonate .docx, .xlsm, .lnk, .iso attachments"
+  - "CONTROL CHECK: Block .iso, .img, .vhd attachments at email gateway — these are primarily used for MOTW bypass"
+  - "CONTROL CHECK: Macro execution policy — set to Disable All Macros with Notification or enforce via Intune/GPO"

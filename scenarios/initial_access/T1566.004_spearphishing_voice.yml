@@ -1,0 +1,86 @@
+id: T1566.004_spearphishing_voice
+name: "Phishing — Spearphishing Voice"
+mitre_technique: "T1566.004"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use voice calls (vishing) to social-engineer victims into providing
+  credentials, granting remote access, or executing malicious actions. Common patterns:
+  fake IT helpdesk calls requesting credentials or MFA codes, fake Microsoft support
+  calls directing victims to install remote access tools (AnyDesk, TeamViewer), and
+  callback phishing where a fake invoice email includes a phone number to call.
+  No host simulation is possible — detection relies on process monitoring for
+  remote access tools installed after phone calls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1566/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1566.004 — Vishing: attackers call victims pretending to be IT, Microsoft support, or banks to extract credentials or install RATs"
+
+  - step: 2
+    type: marker
+    description: "Callback phishing awareness check"
+    message: "CONTROL CHECK: BazaCall/callback phishing — fake invoice emails with phone number; victim calls and is directed to install remote tool. Train helpdesk to verify caller identity before any remote session."
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for unauthorized remote access tools installed on this host"
+    command: |
+      Write-Host "[PAS] Scanning for unauthorized remote access tools (common vishing outcome):"
+      $suspectTools = @(
+          "AnyDesk","TeamViewer","ScreenConnect","Atera","Splashtop",
+          "Zoho Assist","ISL Online","RemotePC","LogMeIn","GoToAssist",
+          "UltraViewer","RustDesk","Action1"
+      )
+      $installed = Get-ItemProperty `
+          "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+          "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" `
+          -ErrorAction SilentlyContinue |
+          Where-Object { $_.DisplayName } |
+          Select-Object -ExpandProperty DisplayName
+
+      $running = Get-Process -ErrorAction SilentlyContinue |
+          Select-Object -ExpandProperty Name
+
+      foreach ($tool in $suspectTools) {
+          $isInstalled = $installed | Where-Object { $_ -like "*$tool*" }
+          $isRunning   = $running   | Where-Object { $_ -like "*$tool*" }
+          if ($isInstalled) { Write-Host "  INSTALLED: $tool — verify this is business-approved" }
+          if ($isRunning)   { Write-Host "  RUNNING:   $tool — verify active session is authorized" }
+      }
+      Write-Host "[PAS] Remote tool scan complete"
+
+  - step: 4
+    type: marker
+    description: "MFA bypass control check"
+    message: "CONTROL CHECK: Vishing attackers often ask victims to read MFA codes aloud. Enable phishing-resistant MFA (FIDO2/Passkey) — these cannot be extracted by a caller."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — DeviceProcessEvents for remote access tools installed outside normal change windows"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1566.004 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: AnyDesk.exe, TeamViewer.exe, ScreenConnect.exe installed/executed outside business hours"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('AnyDesk.exe','TeamViewer.exe','ScreenConnect.exe') and TimeGenerated between (17h and 8h)"
+  - "Sentinel: DeviceEvents | where ActionType == 'ServiceInstalled' and ServiceName in ('AnyDesk','TeamViewer')"
+  - "MDE alert: 'Remote monitoring and management tool installed' or 'Unsanctioned RMM tool'"
+  - "CONTROL CHECK: Maintain an approved list of remote tools; alert on any unlisted RMM installation"
+  - "CONTROL CHECK: FIDO2/Passkey MFA eliminates MFA-code-over-phone attack vector"
+  - "CONTROL CHECK: Entra ID Conditional Access — require compliant device; attacker's remote session typically uses non-compliant device"

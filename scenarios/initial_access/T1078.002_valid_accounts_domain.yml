@@ -1,0 +1,105 @@
+id: T1078.002_valid_accounts_domain
+name: "Valid Accounts — Domain Accounts"
+mitre_technique: "T1078.002"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use stolen domain credentials to authenticate to systems and services.
+  Sources include credential dumps, phishing, password spraying, and dark web purchase.
+  Using valid domain credentials is highly effective because it blends with normal
+  traffic and bypasses controls that look for malware or exploits. Detection relies
+  on behavioural anomalies: logon from new geography/ASN, unusual logon time,
+  first-seen device, logon type mismatch, and credential use after being reported stolen.
+  This scenario generates the authentication telemetry patterns associated with
+  compromised domain account use.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1078/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1078.002 — Domain Account credential use simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate anomalous domain logon — explicit credential use from unusual context"
+    command: |
+      Write-Host "[PAS] Simulating domain credential use from anomalous context:"
+      Write-Host "[PAS] Real scenario: attacker uses stolen creds via RDP or net use from new IP"
+
+      # net use with domain credentials — generates Event ID 4648 (explicit credentials)
+      $domain = $env:USERDOMAIN
+      net use \\127.0.0.1\IPC$ /user:$domain\PAS_T1078_002_TestUser "PAS-WrongPassword!" 2>&1 | Out-Null
+      Write-Host "[PAS] Domain credential logon attempt — Event ID 4625/4648 generated"
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate password spray pattern — many accounts, one password"
+    command: |
+      Write-Host "[PAS] Password spray simulation (low-and-slow pattern):"
+      Write-Host "[PAS] Real attack: one password attempted across many accounts to avoid lockout"
+      $accounts = @("j.smith","m.jones","s.williams","d.brown","r.davis")
+      foreach ($acct in $accounts) {
+          # Generate failed logon telemetry — one attempt per account
+          net use \\127.0.0.1\IPC$ /user:$env:USERDOMAIN\$acct "Summer2024!" 2>&1 | Out-Null
+          net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+          Write-Host "[PAS]   Spray attempt: $acct (expected failure)"
+          Start-Sleep -Milliseconds 500
+      }
+      Write-Host "[PAS] Password spray pattern complete — check for distributed 4625 events"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate first-seen host/unusual logon time detection scenario"
+    command: |
+      Write-Host "[PAS] Behavioural anomaly indicators for compromised domain accounts:"
+      Write-Host "  1. Logon from new country/ASN not seen in 90-day baseline"
+      Write-Host "  2. Logon at 2AM when account normally logs on 9AM-6PM"
+      Write-Host "  3. Logon from personal device (non-domain-joined, non-compliant)"
+      Write-Host "  4. Logon to new system never previously accessed"
+      Write-Host "  5. Credential used after it appeared in HaveIBeenPwned breach database"
+      Write-Host ""
+      Write-Host "[PAS] Current logon context for comparison baseline:"
+      Write-Host "  Time:       $(Get-Date -Format 'HH:mm')"
+      Write-Host "  Day:        $(Get-Date -Format 'dddd')"
+      Write-Host "  Hostname:   $env:COMPUTERNAME"
+      Write-Host "  Domain:     $env:USERDOMAIN"
+      Write-Host "  Username:   $env:USERNAME"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4625 spray pattern (many accounts, same password, same source), Event ID 4648 explicit credential use"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any network connections from simulation"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Network connections cleaned"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1078.002 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4625: Failed logon — same source IP attempting multiple distinct accounts in short window = password spray"
+  - "Event ID 4648: Logon with explicit credentials — net use with domain account from workstation"
+  - "Defender for Identity alert: 'Password spray' or 'Unusual authentication activity'"
+  - "Sentinel: SecurityEvent | where EventID == 4625 | summarize count() by IpAddress, bin(TimeGenerated, 1h) | where count_ > 20"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType == 3 and TargetUserName has_any (spray_targets)"
+  - "CONTROL CHECK: Account lockout policy — after N failed attempts (recommended: 10) lock for 30 minutes"
+  - "CONTROL CHECK: Entra ID Identity Protection — risky sign-in detection blocks spray attacks in cloud"
+  - "CONTROL CHECK: Defender for Identity — on-premises password spray detection from DC event logs"
+  - "CONTROL CHECK: MFA on all domain accounts — even with correct password, attacker cannot complete logon"

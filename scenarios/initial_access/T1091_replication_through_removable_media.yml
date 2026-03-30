@@ -1,0 +1,134 @@
+id: T1091_replication_through_removable_media
+name: "Replication Through Removable Media"
+mitre_technique: "T1091"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries copy malware to removable media (USB drives) and rely on Autorun
+  features or user interaction to execute it when the media is inserted. Modern
+  Windows disables Autorun by default, so current attacks use LNK files that appear
+  as folder shortcuts, or rely on users double-clicking executables that appear as
+  documents. This technique is used for air-gapped network infiltration (Stuxnet,
+  Agent.BTZ) and targeted USB drops.
+  This scenario simulates USB insertion artifacts, the autorun/LNK execution pattern,
+  and validates detection of executable launch from removable media paths.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1091/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1091 — Removable Media simulation (using TEMP as stand-in for USB drive path)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create simulated USB drive structure with autorun.inf and malicious payload"
+    command: |
+      # Simulate a USB drive root using a temp directory
+      $usbRoot = "$env:TEMP\PAS_T1091_USB"
+      New-Item -ItemType Directory $usbRoot -Force | Out-Null
+
+      # autorun.inf — triggers on insert in older/misconfigured Windows
+      Set-Content "$usbRoot\autorun.inf" @"
+[autorun]
+open=PAS_T1091_payload.exe
+label=USB Drive
+icon=PAS_T1091_payload.exe
+"@
+      Write-Host "[PAS] autorun.inf created: $usbRoot\autorun.inf"
+
+      # Malicious payload named like a document
+      $payloadPath = "$usbRoot\PAS_T1091_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payloadPath -Force
+      Write-Host "[PAS] Payload dropped to simulated USB root: $payloadPath"
+
+      # LNK masquerading as folder (modern USB attack pattern)
+      $lnkPath = "$usbRoot\Documents.lnk"
+      $shell   = New-Object -ComObject WScript.Shell
+      $link    = $shell.CreateShortcut($lnkPath)
+      $link.TargetPath  = "$env:SystemRoot\System32\cmd.exe"
+      $link.Arguments   = "/c echo PAS-T1091-USB-LNK > $env:TEMP\PAS_T1091_lnk_fired.txt"
+      $link.IconLocation = "$env:SystemRoot\System32\shell32.dll,3"  # Folder icon
+      $link.Save()
+      Write-Host "[PAS] Folder-masquerading LNK created: $lnkPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate autorun execution from removable media path"
+    command: |
+      $usbRoot     = "$env:TEMP\PAS_T1091_USB"
+      $payloadPath = "$usbRoot\PAS_T1091_payload.exe"
+
+      Write-Host "[PAS] Simulating autorun execution from removable media path:"
+      Start-Process $payloadPath -ArgumentList "/c echo PAS-T1091-AUTORUN-EXEC > $env:TEMP\PAS_T1091_exec.txt" `
+          -Wait -NoNewWindow
+      Write-Host "[PAS] Executable launched from simulated USB path"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate LNK folder-masquerade execution"
+    command: |
+      $lnkPath = "$env:TEMP\PAS_T1091_USB\Documents.lnk"
+      Write-Host "[PAS] Executing folder-masquerading LNK (victim thinks they opened a folder):"
+      Start-Process $lnkPath
+      Start-Sleep -Seconds 2
+      if (Test-Path "$env:TEMP\PAS_T1091_lnk_fired.txt") {
+          Write-Host "[PAS] LNK executed successfully — cmd.exe spawned from USB LNK"
+      }
+
+  - step: 5
+    type: exec_powershell
+    description: "Check Autorun policy on this system"
+    command: |
+      Write-Host "[PAS] Autorun/Autoplay policy check:"
+      $autorunKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+      $noAutorun  = (Get-ItemProperty $autorunKey -Name NoDriveTypeAutoRun `
+          -ErrorAction SilentlyContinue).NoDriveTypeAutoRun
+      Write-Host "  NoDriveTypeAutoRun value: $noAutorun"
+      Write-Host "  255 (0xFF) = disabled for all drive types (recommended)"
+      if ($noAutorun -eq 255) {
+          Write-Host "  [GOOD] Autorun is fully disabled"
+      } else {
+          Write-Host "  [RISK] Autorun may be enabled for some drive types — set to 255 via GPO"
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — executable launched from removable media path, autorun.inf file creation, LNK with folder icon executed"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove USB simulation directory and artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1091_USB" -Recurse -Force -ErrorAction SilentlyContinue
+      @("$env:TEMP\PAS_T1091_exec.txt",
+        "$env:TEMP\PAS_T1091_lnk_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] USB simulation artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1091 cleanup complete"
+
+analyst_checklist:
+  - "Process event: executable launched from removable media path (D:\\, E:\\, F:\\ or generic non-C:\\ drive)"
+  - "File event: autorun.inf created on a drive — always suspicious on modern Windows"
+  - "Process event: explorer.exe spawning .exe from removable drive path"
+  - "Sentinel: DeviceProcessEvents | where FolderPath matches regex @'^[D-Z]:\\\\' and FileName endswith '.exe'"
+  - "Sentinel: DeviceFileEvents | where FileName == 'autorun.inf' and FolderPath matches regex @'^[D-Z]:\\\\'"
+  - "MDE alert: 'Executable launched from removable media' or 'Autorun file detected'"
+  - "CONTROL CHECK: GPO — set NoDriveTypeAutoRun = 255 to disable Autorun for all drive types"
+  - "CONTROL CHECK: USB port control policy — only allow approved devices via Intune/Defender for Endpoint"
+  - "CONTROL CHECK: AppLocker/WDAC rules should prevent executable launch from non-system drives"
+  - "CONTROL CHECK: Consider deploying USB drop awareness training — physical USB drops are an active technique"

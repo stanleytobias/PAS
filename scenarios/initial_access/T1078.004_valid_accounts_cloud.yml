@@ -1,0 +1,107 @@
+id: T1078.004_valid_accounts_cloud
+name: "Valid Accounts — Cloud Accounts"
+mitre_technique: "T1078.004"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use stolen cloud account credentials (Entra ID / Azure AD, AWS IAM,
+  GCP, M365) to access cloud resources, SaaS applications, and hybrid environments.
+  Cloud accounts are targeted via phishing, credential stuffing, OAuth token theft,
+  and adversary-in-the-middle (AiTM) proxy attacks that bypass MFA by capturing
+  session cookies post-authentication. Detection relies on Entra ID sign-in logs,
+  Conditional Access policy enforcement, and Identity Protection risk signals.
+  This scenario validates cloud identity monitoring and Conditional Access coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1078/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1078.004 — Cloud Account compromise: stolen Entra ID/M365 credentials used for initial access"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current Entra ID / M365 connection state and identity controls"
+    command: |
+      Write-Host "[PAS] Cloud identity posture check:"
+
+      # Check if device is Entra ID joined or registered
+      $dsregOutput = dsregcmd /status 2>&1
+      $aadJoined   = $dsregOutput | Select-String "AzureAdJoined\s*:\s*YES"
+      $aadReg      = $dsregOutput | Select-String "AzureAdRegistered\s*:\s*YES"
+      $mfaState    = $dsregOutput | Select-String "MfaAuthenticated\s*:\s*YES"
+
+      Write-Host "  Entra ID Joined:      $($null -ne $aadJoined)"
+      Write-Host "  Entra ID Registered:  $($null -ne $aadReg)"
+      Write-Host "  MFA Authenticated:    $($null -ne $mfaState)"
+
+      if (-not $aadJoined -and -not $aadReg) {
+          Write-Host "  NOTE: Device is not Entra ID joined/registered — Conditional Access device compliance cannot apply"
+      }
+
+  - step: 3
+    type: marker
+    description: "AiTM phishing awareness check"
+    message: "CONTROL CHECK: Adversary-in-the-Middle (AiTM) attacks bypass MFA by proxying the authentication flow. Phishing-resistant MFA (FIDO2/Passkeys) is immune — SMS/TOTP MFA is NOT. Audit MFA methods in use."
+
+  - step: 4
+    type: exec_powershell
+    description: "Check for stored cloud tokens and credential artifacts on this host"
+    command: |
+      Write-Host "[PAS] Cloud credential storage locations on this host:"
+      $tokenPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\TokenBroker",
+          "$env:LOCALAPPDATA\Microsoft\OneAuth",
+          "$env:APPDATA\Microsoft\Protect",
+          "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Network",
+          "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Network"
+      )
+      foreach ($p in $tokenPaths) {
+          if (Test-Path $p) {
+              $size = (Get-ChildItem $p -Recurse -ErrorAction SilentlyContinue |
+                  Measure-Object -Property Length -Sum).Sum
+              Write-Host "  EXISTS: $p ($([Math]::Round($size/1KB,1)) KB)"
+          }
+      }
+      Write-Host "[PAS] These paths contain OAuth tokens and session cookies"
+      Write-Host "[PAS] Token theft from TokenBroker = access to all M365 services without password"
+
+  - step: 5
+    type: marker
+    description: "Conditional Access policy check"
+    message: "CONTROL CHECK: Verify Conditional Access policies require: (1) MFA for all cloud apps, (2) Compliant device, (3) Named location restrictions, (4) Sign-in risk policy blocks risky sign-ins"
+
+  - step: 6
+    type: marker
+    description: "Identity Protection check"
+    message: "CONTROL CHECK: Entra ID Identity Protection — are risky user and risky sign-in policies configured to block or require MFA on detection?"
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel SigninLogs for anomalous cloud logons; review Entra ID Identity Protection risky users"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1078.004 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: SigninLogs | where RiskLevelDuringSignIn != 'none' and ResultType == 0 — risky successful sign-in"
+  - "Sentinel: SigninLogs | where LocationDetails.countryOrRegion !in (approved_countries) and ResultType == 0"
+  - "Sentinel: SigninLogs | where DeviceDetail.isCompliant == false and ConditionalAccessStatus == 'success'"
+  - "Sentinel: AADUserRiskEvents | where RiskEventType == 'unfamiliarFeatures' or RiskEventType == 'anonymizedIPAddress'"
+  - "MDE: DeviceEvents — TokenBroker cache access from non-Microsoft processes (token theft indicator)"
+  - "CONTROL CHECK: Block legacy authentication protocols (Basic Auth) — they bypass MFA entirely"
+  - "CONTROL CHECK: Continuous Access Evaluation (CAE) — revokes tokens in real-time on risk detection"
+  - "CONTROL CHECK: FIDO2/Passkey MFA is the only phishing-resistant method — deploy for privileged accounts first"
+  - "CONTROL CHECK: Conditional Access — sign-in frequency policy limits how long stolen session cookies are valid"

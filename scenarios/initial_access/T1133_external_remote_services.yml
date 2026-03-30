@@ -1,0 +1,127 @@
+id: T1133_external_remote_services
+name: "External Remote Services"
+mitre_technique: "T1133"
+mitre_tactic: "initial_access"
+description: >
+  Adversaries use external-facing remote services (VPN, RDP, Citrix, SSH, Outlook Web
+  Access, WinRM) to gain initial access using stolen or brute-forced credentials.
+  This is among the most common initial access vectors — particularly RDP and VPN
+  compromise. Detection relies on logon event analysis: unusual source IPs, anomalous
+  logon times, new device fingerprints, and first-seen account/host combinations.
+  This scenario generates RDP and WinRM logon telemetry from unusual contexts and
+  validates that identity-based detections fire on anomalous authentication patterns.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1133/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1133 — External Remote Services simulation (logon telemetry generation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Generate failed and successful RDP logon attempts — simulates VPN/RDP brute force"
+    command: |
+      Write-Host "[PAS] Generating RDP/remote logon telemetry:"
+
+      # Failed logon attempts (Event ID 4625) — simulates brute force
+      Write-Host "[PAS] Simulating failed logon attempts (Event ID 4625):"
+      $failedAttempts = @("admin","administrator","svc_backup","sa","user1")
+      foreach ($user in $failedAttempts) {
+          # Use cmdkey to generate a failed credential attempt — no actual connection
+          cmdkey /add:PAS-T1133-RDPTEST /user:$user /pass:"WrongPass123!" 2>&1 | Out-Null
+          cmdkey /delete:PAS-T1133-RDPTEST 2>&1 | Out-Null
+          Write-Host "[PAS]   Attempted: $user (expected failure)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Generate WinRM connection attempt — tests WinRM external access detection"
+    command: |
+      Write-Host "[PAS] Simulating WinRM (5985) connection attempt to loopback:"
+      # Test-WSMan generates WinRM connection telemetry
+      $wsmanResult = Test-WSMan -ComputerName 127.0.0.1 -ErrorAction SilentlyContinue
+      if ($wsmanResult) {
+          Write-Host "[PAS] WinRM accessible on loopback — Event ID 4624 LogonType 3 generated"
+      } else {
+          Write-Host "[PAS] WinRM not accessible (disabled or firewall blocking)"
+      }
+
+      Write-Host "[PAS] Checking if WinRM is enabled (external exposure check):"
+      $winrmStatus = Get-Service WinRM -ErrorAction SilentlyContinue
+      Write-Host "[PAS] WinRM service status: $($winrmStatus.Status)"
+      Write-Host "[PAS] CONTROL CHECK: Is WinRM exposed externally? Port 5985/5986 should be firewall-blocked"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate credential use from anomalous context — net use with explicit credentials"
+    command: |
+      Write-Host "[PAS] Simulating remote resource access with explicit credentials (LogonType 9):"
+      # net use generates NewCredentials logon (Type 9) — mirrors VPN credential use
+      net use \\127.0.0.1\IPC$ /user:PAS_T1133_TestUser "PAS-WrongPass" 2>&1 | Out-Null
+      Write-Host "[PAS] net use with explicit credentials executed — Event ID 4648 generated"
+      Write-Host "[PAS] Event 4648: A logon was attempted using explicit credentials"
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 5
+    type: exec_powershell
+    description: "Check external remote service exposure on this host"
+    command: |
+      Write-Host "[PAS] External remote service exposure check:"
+      $services = @(
+          @{Port=3389; Name="RDP"},
+          @{Port=5985; Name="WinRM HTTP"},
+          @{Port=5986; Name="WinRM HTTPS"},
+          @{Port=22;   Name="SSH"},
+          @{Port=23;   Name="Telnet"}
+      )
+      foreach ($svc in $services) {
+          $listening = Get-NetTCPConnection -LocalPort $svc.Port -State Listen `
+              -ErrorAction SilentlyContinue
+          if ($listening) {
+              Write-Host "  LISTENING: $($svc.Name) (port $($svc.Port)) — verify firewall blocks external access"
+          } else {
+              Write-Host "  Not listening: $($svc.Name) (port $($svc.Port))"
+          }
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4625 failed logons, 4624 successful logons with LogonType 3/10, 4648 explicit credential use"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any lingering network connections"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      cmdkey /delete:PAS-T1133-RDPTEST 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Network connections cleaned"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1133 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4625: Failed logon — multiple failures for same account from same IP = brute force"
+  - "Event ID 4624: Successful logon — LogonType 10 (RemoteInteractive=RDP), LogonType 3 (Network=WinRM/SMB)"
+  - "Event ID 4648: Logon with explicit credentials — net use, runas, or RDP with saved credentials"
+  - "Sentinel: SecurityEvent | where EventID == 4625 | summarize count() by TargetUserName, IpAddress | where count_ > 10"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType == 10 and IpAddress !startswith '10.' and IpAddress !startswith '192.168.'"
+  - "Defender for Identity: Alert on first-time RDP login from new country/ASN"
+  - "MDE alert: 'Anomalous RDP activity' or 'Brute force attack on RDP'"
+  - "CONTROL CHECK: Is RDP (3389) accessible from the internet? Run: Test-NetConnection <publicIP> -Port 3389"
+  - "CONTROL CHECK: Is MFA enforced for VPN and RDP? A single stolen credential should not grant access"
+  - "CONTROL CHECK: Entra ID Conditional Access should block logons from non-compliant/unknown devices"
+  - "CONTROL CHECK: Enable Azure AD Identity Protection — risky sign-in detection for cloud-facing services"
