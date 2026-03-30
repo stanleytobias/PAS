@@ -1,0 +1,88 @@
+id: T1546.002_event_triggered_execution_screensaver
+name: "Event Triggered Execution — Screensaver"
+mitre_technique: "T1546.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries configure a malicious screensaver executable (.scr) to achieve persistence
+  triggered by user inactivity. Screensaver settings are stored in HKCU\Control Panel\Desktop
+  — the SCRNSAVE.EXE value specifies the screensaver binary. Since .scr files are
+  standard PE executables renamed with a .scr extension, adversaries rename their payload
+  as a .scr and set the path in this registry value. No elevation is required.
+  The screensaver fires after the idle timeout (ScreenSaveTimeOut value).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.002 — Screensaver persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current screensaver configuration — establish baseline"
+    command: |
+      $desktopKey = "HKCU:\Control Panel\Desktop"
+      $scr  = (Get-ItemProperty $desktopKey -Name SCRNSAVE.EXE  -ErrorAction SilentlyContinue)."SCRNSAVE.EXE"
+      $time = (Get-ItemProperty $desktopKey -Name ScreenSaveTimeOut -ErrorAction SilentlyContinue).ScreenSaveTimeOut
+      $active = (Get-ItemProperty $desktopKey -Name ScreenSaveActive -ErrorAction SilentlyContinue).ScreenSaveActive
+      Write-Host "[PAS] Current screensaver:"
+      Write-Host "  SCRNSAVE.EXE:      $scr"
+      Write-Host "  ScreenSaveTimeOut: $time seconds"
+      Write-Host "  ScreenSaveActive:  $active"
+
+  - step: 3
+    type: exec_powershell
+    description: "Plant malicious screensaver — no elevation required"
+    command: |
+      $scrPayload = "$env:TEMP\PAS_T1546_002_update.scr"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $scrPayload -Force
+
+      $desktopKey = "HKCU:\Control Panel\Desktop"
+      Set-ItemProperty $desktopKey -Name "SCRNSAVE.EXE"       -Value $scrPayload
+      Set-ItemProperty $desktopKey -Name "ScreenSaveTimeOut"  -Value "60"
+      Set-ItemProperty $desktopKey -Name "ScreenSaveActive"   -Value "1"
+
+      Write-Host "[PAS] Malicious screensaver planted:"
+      Write-Host "  SCRNSAVE.EXE = $scrPayload"
+      Write-Host "  Fires after 60 seconds of inactivity"
+      Write-Host "  No elevation required — HKCU only"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\Control Panel\\Desktop SCRNSAVE.EXE modified to point to non-system path"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore screensaver settings and remove payload"
+    command: |
+      $desktopKey = "HKCU:\Control Panel\Desktop"
+      Remove-ItemProperty $desktopKey -Name "SCRNSAVE.EXE"     -Force -ErrorAction SilentlyContinue
+      Remove-ItemProperty $desktopKey -Name "ScreenSaveTimeOut"-Force -ErrorAction SilentlyContinue
+      Set-ItemProperty    $desktopKey -Name "ScreenSaveActive" -Value "0" -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_002_update.scr" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Screensaver settings restored"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.002 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\\Control Panel\\Desktop SCRNSAVE.EXE value set to non-system path"
+  - "File event: .scr file created in TEMP or AppData"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Control Panel\\\\Desktop' and RegistryValueName == 'SCRNSAVE.EXE'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueName == 'SCRNSAVE.EXE' and RegistryValueData !contains 'Windows'"
+  - "MDE alert: 'Screensaver modified for persistence'"
+  - "CONTROL CHECK: SCRNSAVE.EXE should only point to %SystemRoot%\\System32\\*.scr — any other path is malicious"
+  - "CONTROL CHECK: GPO can enforce screensaver settings and prevent user modification"

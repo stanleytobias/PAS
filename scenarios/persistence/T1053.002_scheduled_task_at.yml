@@ -1,0 +1,87 @@
+id: T1053.002_scheduled_task_at
+name: "Scheduled Task/Job — At"
+mitre_technique: "T1053.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries use the legacy at.exe utility to schedule recurring execution of
+  malicious code. While deprecated in favour of schtasks.exe on modern Windows,
+  at.exe is still present and functional on many systems. It requires the Task
+  Scheduler service to be running and admin privileges. Jobs created with at.exe
+  run as SYSTEM by default. Event ID 4698 fires when a scheduled task is created.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1053/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1053.002 — at.exe scheduled job persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a recurring job via at.exe — runs every hour"
+    command: |
+      $payload = "$env:TEMP\PAS_T1053_002_payload.bat"
+      Set-Content $payload "@echo PAS-T1053.002-AT-JOB-EXECUTED"
+
+      # Schedule to run in 2 minutes and every hour
+      $nextRun  = (Get-Date).AddMinutes(2).ToString("HH:mm")
+      $atOutput = at $nextRun /every:M,T,W,Th,F,Sa,Su "$payload" 2>&1
+      Write-Host "[PAS] at.exe job created: $atOutput"
+      Write-Host "[PAS] Runs at $nextRun daily"
+
+      # List current at jobs
+      Write-Host "[PAS] Current at jobs:"
+      at 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Cancel the at job immediately for safety"
+    command: |
+      # Get job ID and cancel
+      $atList = at 2>&1
+      $jobLine = $atList | Select-String "^\s+\d+"
+      if ($jobLine) {
+          $jobId = ($jobLine | Select-Object -First 1).Line.Trim() -split '\s+' | Select-Object -First 1
+          at $jobId /delete /yes 2>&1 | Out-Null
+          Write-Host "[PAS] at job $jobId cancelled (lab safety)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — at.exe process event, Event ID 4698 (scheduled task created)"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove payload and ensure no at jobs remain"
+    command: |
+      # Cancel all PAS at jobs
+      at 2>&1 | Select-String "PAS_T1053" | ForEach-Object {
+          $id = $_.Line.Trim() -split '\s+' | Select-Object -First 1
+          at $id /delete /yes 2>&1 | Out-Null
+      }
+      Remove-Item "$env:TEMP\PAS_T1053_002_payload.bat" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] at jobs and payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1053.002 cleanup complete"
+
+analyst_checklist:
+  - "Process event: at.exe execution with time and command arguments"
+  - "Event ID 4698: A scheduled task was created (covers both at.exe and schtasks)"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'at.exe' and ProcessCommandLine !contains '/delete'"
+  - "MDE alert: 'Scheduled job created via legacy at command'"
+  - "CONTROL CHECK: Disable the Task Scheduler service or restrict at.exe access via AppLocker"
+  - "CONTROL CHECK: at.exe has almost no legitimate modern use — any execution should alert"

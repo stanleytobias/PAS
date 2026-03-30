@@ -1,0 +1,117 @@
+id: T1137.001_office_application_startup_template_macros
+name: "Office Application Startup — Office Template Macros"
+mitre_technique: "T1137.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add malicious VBA macros to the Word Normal template (Normal.dotm) or
+  Excel Personal Macro Workbook (PERSONAL.XLSB) so macros execute automatically every
+  time the Office application opens. The Normal.dotm template is loaded by Word on
+  startup — any AutoOpen or Document_Open macro in it runs automatically. This provides
+  persistence triggered by the user simply opening Word, without any user interaction
+  beyond launching the application.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1137.001 — Office Template Macro persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate Normal.dotm and check for existing macros"
+    command: |
+      Write-Host "[PAS] Office template locations:"
+      $templatePaths = @(
+          "$env:APPDATA\Microsoft\Templates\Normal.dotm",
+          "$env:APPDATA\Microsoft\Excel\XLSTART\PERSONAL.XLSB",
+          "$env:APPDATA\Microsoft\Word\STARTUP"
+      )
+      foreach ($p in $templatePaths) {
+          $exists = Test-Path $p
+          Write-Host "  $p — Exists: $exists"
+          if ($exists) {
+              $size = (Get-Item $p).Length
+              Write-Host "    Size: $size bytes"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Drop a marker file simulating Normal.dotm modification"
+    command: |
+      $templateDir  = "$env:APPDATA\Microsoft\Templates"
+      $markerPath   = "$env:TEMP\PAS_T1137_001_template_marker.txt"
+
+      if (-not (Test-Path $templateDir)) {
+          New-Item -ItemType Directory $templateDir -Force | Out-Null
+      }
+
+      Set-Content $markerPath @"
+PAS T1137.001 — Normal.dotm macro persistence simulation
+Real attack adds AutoOpen() VBA macro to Normal.dotm:
+  Sub AutoOpen()
+    Shell "cmd /c payload.exe"
+  End Sub
+Fires every time Word opens — no user interaction needed beyond launching Word.
+"@
+      Write-Host "[PAS] Template macro simulation marker created"
+      Write-Host "[PAS] Real Normal.dotm path: $env:APPDATA\Microsoft\Templates\Normal.dotm"
+      Write-Host "[PAS] Detection: write to Normal.dotm outside of Office Trust Center"
+
+  - step: 4
+    type: exec_powershell
+    description: "Check Office Startup folder for malicious add-ins / templates"
+    command: |
+      Write-Host "[PAS] Office Startup folder contents:"
+      $startupPaths = @(
+          "$env:APPDATA\Microsoft\Word\STARTUP",
+          "$env:APPDATA\Microsoft\Excel\XLSTART",
+          "$env:APPDATA\Microsoft\PowerPoint"
+      )
+      foreach ($p in $startupPaths) {
+          if (Test-Path $p) {
+              $files = Get-ChildItem $p -ErrorAction SilentlyContinue
+              if ($files) {
+                  Write-Host "  $p :"
+                  $files | ForEach-Object { Write-Host "    $($_.Name) ($($_.Length) bytes)" }
+              }
+          }
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — write to Normal.dotm, new files in Office Startup/XLSTART folders"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove simulation marker file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1137_001_template_marker.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Template simulation marker removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1137.001 cleanup complete"
+
+analyst_checklist:
+  - "File event: write to Normal.dotm by non-Office process or outside of Trust Center approval"
+  - "File event: new .dotm, .xlam, .xlsb file in Office Startup or XLSTART folders"
+  - "Sentinel: DeviceFileEvents | where FileName == 'Normal.dotm' and ActionType == 'FileModified'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'XLSTART' or FolderPath contains 'Word\\\\STARTUP'"
+  - "MDE alert: 'Office template modified for persistence'"
+  - "CONTROL CHECK: Disable macros via GPO — Normal.dotm macros cannot run if macros are globally disabled"
+  - "CONTROL CHECK: ASR rule: 'Block Office applications from creating executable content'"
+  - "CONTROL CHECK: FIM on Normal.dotm — alert on any modification to the default template"

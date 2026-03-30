@@ -1,0 +1,74 @@
+id: T1137.003_office_startup_outlook_forms
+name: "Office Application Startup — Outlook Forms"
+mitre_technique: "T1137.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries create malicious custom Outlook forms that execute code when a
+  specially crafted email is received. Custom forms are stored in the user's mailbox
+  (not on disk), making them resilient to endpoint remediation. When an adversary
+  sends an email using the malicious form, the VBScript in the form executes on the
+  victim's machine. This is a server-side persistence mechanism — the form survives
+  OS reinstall as long as the mailbox exists. Used in the RUAG APT campaign.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1137.003 — Outlook Forms: malicious custom form stored in mailbox executes code when triggered email arrives"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for custom Outlook forms in the forms cache"
+    command: |
+      Write-Host "[PAS] Outlook custom forms check:"
+      $formPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\FORMS",
+          "$env:LOCALAPPDATA\Microsoft\Office\16.0\Outlook"
+      )
+      foreach ($p in $formPaths) {
+          if (Test-Path $p) {
+              $forms = Get-ChildItem $p -Filter "*.cfg" -Recurse -ErrorAction SilentlyContinue
+              if ($forms) {
+                  Write-Host "  Custom forms found in: $p"
+                  $forms | ForEach-Object { Write-Host "    $($_.Name)" }
+              } else {
+                  Write-Host "  No custom forms cached in: $p"
+              }
+          }
+      }
+      Write-Host "[PAS] Real detection: enumerate mailbox forms via MAPI/EWS"
+      Write-Host "[PAS] PowerShell: Get-Mailbox | Get-MailboxCalendarFolder (Exchange)"
+
+  - step: 3
+    type: marker
+    description: "Forms audit check"
+    message: "CONTROL CHECK: Run via Exchange: Get-MailboxFolderStatistics -Identity user -FolderScope All | Where-Object {$_.ItemType -eq 'IPM.Microsoft.FolderDesign.FormsDescription'}. Any custom form not deployed by IT is suspicious."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Exchange audit — new custom Outlook form published to mailbox forms library"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1137.003 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Exchange: custom forms in user mailbox (IPM.Microsoft.FolderDesign.FormsDescription)"
+  - "MDE: Script execution from OUTLOOK.EXE in forms context"
+  - "Sentinel: OfficeActivity | where Operation == 'PublishCustomForm'"
+  - "CONTROL CHECK: Disable custom Outlook forms via GPO: DisableCustomForms registry value"
+  - "CONTROL CHECK: Exchange transport rule: block emails with IPM.Microsoft.Custom form type"
+  - "CONTROL CHECK: Defender for Office 365 — Safe Attachments should scan form-triggered scripts"

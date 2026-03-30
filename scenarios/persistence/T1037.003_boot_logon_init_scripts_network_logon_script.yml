@@ -1,0 +1,90 @@
+id: T1037.003_boot_logon_init_scripts_network_logon_script
+name: "Boot or Logon Initialization Scripts — Network Logon Script"
+mitre_technique: "T1037.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries configure a network logon script in Active Directory — set via the
+  scriptPath attribute of a user object or via Group Policy — so that a malicious
+  script executes whenever the target user logs in. Network logon scripts run from
+  the NETLOGON share on domain controllers. With write access to AD user attributes
+  or GPO objects, an adversary can configure any user's logon script. Scripts run
+  with the user's privileges and are fetched from the DC at logon.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1037/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1037.003 — Network Logon Script persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check current user's AD logon script attribute"
+    command: |
+      Write-Host "[PAS] Checking AD logon script configuration:"
+      $domain = $env:USERDOMAIN
+      $user   = $env:USERNAME
+
+      # Check via registry (cached domain profile)
+      $profileKey = "HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+      $logonScript = (Get-ItemProperty $profileKey -Name LogonScript `
+          -ErrorAction SilentlyContinue).LogonScript
+      Write-Host "  Registry LogonScript: $(if ($logonScript) { $logonScript } else { '(not set)' })"
+
+      # Check NETLOGON share existence
+      $netlogon = "\\$domain\NETLOGON"
+      if (Test-Path $netlogon -ErrorAction SilentlyContinue) {
+          Write-Host "  NETLOGON share accessible: $netlogon"
+          Write-Host "[PAS] Real attack: copy malicious.bat to NETLOGON and set user scriptPath to 'malicious.bat'"
+      } else {
+          Write-Host "  NETLOGON share: not accessible (standalone host or domain unreachable)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate network logon script execution via registry — local simulation"
+    command: |
+      Write-Host "[PAS] Simulating network logon script execution pattern:"
+      $scriptPath = "$env:TEMP\PAS_T1037_003_netlogon.bat"
+      Set-Content $scriptPath "@echo PAS-T1037.003-NETLOGON-SCRIPT"
+
+      # Simulate the execution that would happen from a logon script
+      Start-Process cmd.exe -ArgumentList "/c $scriptPath" -Wait -NoNewWindow `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Network logon script execution pattern generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmd.exe spawned from winlogon/userinit context running .bat from NETLOGON path"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove simulation script"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1037_003_netlogon.bat" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Logon script removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1037.003 cleanup complete"
+
+analyst_checklist:
+  - "AD audit: changes to user scriptPath attribute — Event ID 5136 (directory service object modified)"
+  - "File event: new .bat or .ps1 created on NETLOGON share"
+  - "Process event: cmd.exe or wscript.exe spawned from userinit.exe executing a script from \\\\domain\\NETLOGON"
+  - "Sentinel: SecurityEvent | where EventID == 5136 and AttributeLDAPDisplayName == 'scriptPath'"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'NETLOGON' and FileName in ('cmd.exe','wscript.exe')"
+  - "CONTROL CHECK: Audit NETLOGON share write access — only Domain Admins should write to NETLOGON"
+  - "CONTROL CHECK: Alert on AD user scriptPath attribute set outside of IT provisioning workflow"

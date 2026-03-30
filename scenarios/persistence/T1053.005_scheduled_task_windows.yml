@@ -1,0 +1,108 @@
+id: T1053.005_scheduled_task_windows
+name: "Scheduled Task/Job — Scheduled Task"
+mitre_technique: "T1053.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries use the Windows Task Scheduler to execute malicious payloads at
+  specified intervals, on logon, on system start, or triggered by events. Scheduled
+  tasks can run as SYSTEM, as a specific user, or on behalf of any logged-in user.
+  Adversaries commonly disguise tasks with legitimate-looking names (Windows Update,
+  MicrosoftEdgeUpdate) and hide them in subfolders of the Task Scheduler library.
+  Event ID 4698 fires on task creation; 4702 on modification.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1053/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1053.005 — Scheduled Task persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a scheduled task via schtasks.exe — classic adversary method"
+    command: |
+      $payload  = "$env:TEMP\PAS_T1053_005_payload.bat"
+      Set-Content $payload "@echo PAS-T1053.005-SCHTASK-EXECUTED"
+      $taskName = "PAS_T1053_005_WindowsUpdateHelper"
+
+      schtasks /create /tn "$taskName" /tr "$payload" /sc ONLOGON `
+          /ru SYSTEM /f /rl HIGHEST 2>&1 | Out-Null
+      Write-Host "[PAS] Scheduled task created via schtasks.exe: $taskName"
+      Write-Host "[PAS] Trigger: ONLOGON — runs as SYSTEM at every user logon"
+      Write-Host "[PAS] Event ID 4698 should fire"
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a scheduled task via PowerShell — more stealthy method"
+    command: |
+      $payload  = "$env:TEMP\PAS_T1053_005_payload.bat"
+      $taskName = "PAS_T1053_005_\Microsoft\Windows\PAS_UpdateTask"
+
+      $action  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c $payload"
+      $trigger = New-ScheduledTaskTrigger -AtLogOn
+      $settings = New-ScheduledTaskSettingsSet -Hidden $true -ExecutionTimeLimit 0
+
+      Register-ScheduledTask -TaskName $taskName -Action $action `
+          -Trigger $trigger -Settings $settings -RunLevel Highest `
+          -Force -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Scheduled task created via PowerShell: $taskName"
+      Write-Host "[PAS] Hidden=`$true — does not appear in Task Scheduler GUI"
+
+  - step: 4
+    type: exec_powershell
+    description: "Create a one-minute recurring task — simulates C2 beacon retry"
+    command: |
+      $taskName = "PAS_T1053_005_Beacon"
+      $trigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Minutes 1) `
+          -Once -At (Get-Date).AddSeconds(10)
+      $action   = New-ScheduledTaskAction -Execute "cmd.exe" `
+          -Argument "/c echo PAS-T1053.005-BEACON"
+
+      Register-ScheduledTask -TaskName $taskName -Action $action `
+          -Trigger $trigger -Force -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Beacon task created: runs every 1 minute"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4698 (task created), schtasks.exe process event, hidden task in Task Scheduler"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all PAS scheduled tasks and payload"
+    command: |
+      @("PAS_T1053_005_WindowsUpdateHelper",
+        "PAS_T1053_005_\Microsoft\Windows\PAS_UpdateTask",
+        "PAS_T1053_005_Beacon") | ForEach-Object {
+          Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed task: $_"
+      }
+      Remove-Item "$env:TEMP\PAS_T1053_005_payload.bat" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Scheduled tasks and payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1053.005 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4698: A scheduled task was created — review every new task"
+  - "Event ID 4702: A scheduled task was updated"
+  - "Task created with Hidden=true — only visible via Get-ScheduledTask, not GUI"
+  - "Sentinel: DeviceEvents | where ActionType == 'ScheduledTaskCreated'"
+  - "Sentinel: SecurityEvent | where EventID == 4698 | where TaskContent contains 'TEMP' or TaskContent contains 'AppData'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'schtasks.exe' and ProcessCommandLine contains '/create'"
+  - "MDE alert: 'Scheduled task created with suspicious payload path'"
+  - "CONTROL CHECK: Baseline all scheduled tasks — alert on any task pointing to TEMP/AppData/Downloads"
+  - "CONTROL CHECK: Tasks created as SYSTEM with a non-system binary path are almost always malicious"
+  - "CONTROL CHECK: Use Get-ScheduledTask | Where-Object {$_.Settings.Hidden -eq `$true} to enumerate hidden tasks"

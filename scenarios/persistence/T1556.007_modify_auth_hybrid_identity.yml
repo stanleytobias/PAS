@@ -1,0 +1,81 @@
+id: T1556.007_modify_auth_hybrid_identity
+name: "Modify Authentication Process — Hybrid Identity"
+mitre_technique: "T1556.007"
+mitre_tactic: "persistence"
+description: >
+  Adversaries patch or backdoor cloud authentication processes tied to on-premises
+  identity. The primary target is Azure AD Connect (Microsoft Entra Connect) —
+  the service that synchronises on-premises AD to Entra ID. An adversary with access
+  to the AAD Connect server can patch the msol_xxxx service account password,
+  extract the sync credentials, or modify the authentication flow to bypass MFA.
+  The Golden SAML attack modifies ADFS token signing certificates. These attacks
+  provide persistent authentication bypass that survives password resets.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1556/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1556.007 — Hybrid Identity backdoor: adversary compromises AAD Connect or ADFS to bypass cloud authentication"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for AAD Connect / ADFS installation on this host"
+    command: |
+      Write-Host "[PAS] Hybrid identity service check:"
+      $services = @("ADSync","AzureADConnectAgent","ADFS","AdfsSrv")
+      foreach ($svc in $services) {
+          $s = Get-Service $svc -ErrorAction SilentlyContinue
+          if ($s) {
+              Write-Host "  FOUND: $svc (Status: $($s.Status))"
+              Write-Host "  CRITICAL: This host is part of hybrid identity infrastructure"
+              Write-Host "  Any compromise of this host = potential cloud authentication bypass"
+          }
+      }
+
+      # Check for AAD Connect installation
+      $aadConnect = Get-ItemProperty `
+          "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" `
+          -ErrorAction SilentlyContinue |
+          Where-Object { $_.DisplayName -like "*Azure AD Connect*" }
+      if ($aadConnect) {
+          Write-Host "  Azure AD Connect installed: $($aadConnect.DisplayName)"
+      }
+
+  - step: 3
+    type: marker
+    description: "AAD Connect security check"
+    message: "CONTROL CHECK: The AAD Connect server has SYSTEM-level access to both AD and Entra ID. Treat it as a Tier 0 asset — same security level as a Domain Controller."
+
+  - step: 4
+    type: marker
+    description: "ADFS token signing cert check"
+    message: "CONTROL CHECK: Monitor ADFS token-signing certificate changes — Golden SAML forges authentication tokens using the stolen signing cert. Certificate changes should require emergency review."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: ADSync service account password age, ADFS certificate changes, AAD Connect server logon events"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1556.007 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Event ID 4648: Explicit credential use on AAD Connect server — should be rare"
+  - "Sentinel: AuditLogs | where OperationName == 'Update on-premises directory sync' — unexpected AAD Connect changes"
+  - "Sentinel: SecurityEvent | where Computer contains 'AADCONN' and EventID == 4624 and LogonType in (3,10)"
+  - "CONTROL CHECK: AAD Connect server — PAW access only, no internet, no RDP from workstations"
+  - "CONTROL CHECK: Alert on ADSync service account password change — should only change via approved rotation"
+  - "CONTROL CHECK: ADFS token-signing certificate — alert on any change; rotate only via approved change process"

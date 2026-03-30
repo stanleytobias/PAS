@@ -1,0 +1,70 @@
+id: T1556.009_modify_auth_conditional_access_policies
+name: "Modify Authentication Process — Conditional Access Policies"
+mitre_technique: "T1556.009"
+mitre_tactic: "persistence"
+description: >
+  Adversaries with Global Admin or Conditional Access Administrator privileges modify
+  Conditional Access policies to create exclusions that allow persistent access without
+  MFA or from untrusted locations. Common methods: adding a compromised account to a
+  CA exclusion group, creating a new named location for the adversary's IP range,
+  disabling CA policies that block legacy authentication, or creating a new policy
+  with broad allow conditions. CA policy changes are logged in Entra ID audit logs.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1556/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1556.009 — CA Policy modification: adversary adds exclusion or creates permissive policy for persistent access"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check current Conditional Access posture (on-host indicators)"
+    command: |
+      Write-Host "[PAS] Conditional Access posture check:"
+      Write-Host "[PAS] Real attack vectors:"
+      Write-Host "  1. Add account to CA exclusion group: Add-MgGroupMember -GroupId <CA-Exclusion-Group>"
+      Write-Host "  2. Create named location for attacker IP: New-MgIdentityConditionalAccessNamedLocation"
+      Write-Host "  3. Disable MFA-requiring policy: Update-MgIdentityConditionalAccessPolicy -State disabled"
+      Write-Host ""
+      Write-Host "[PAS] CA exclusion group check:"
+      Write-Host "  Look for groups named: CA-Exclusions, MFA-Bypass, Emergency-Access"
+      Write-Host "  Any account added to these groups bypasses ALL Conditional Access policies"
+
+  - step: 3
+    type: marker
+    description: "CA policy audit"
+    message: "CONTROL CHECK: Monthly CA policy review — list all policies in Report-only or Disabled state. Any policy that was Enabled and is now Disabled without a change ticket is a critical finding."
+
+  - step: 4
+    type: marker
+    description: "CA exclusion group audit"
+    message: "CONTROL CHECK: CA exclusion groups should have ZERO members except break-glass accounts. Any other member in an exclusion group should be treated as a compromise indicator."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName contains 'conditionalAccess' or OperationName == 'Update policy'"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1556.009 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName contains 'conditionalAccess' and OperationName contains 'Update'"
+  - "Sentinel: AuditLogs | where OperationName == 'Add member to group' and TargetResources contains 'Exclusion'"
+  - "Sentinel: AuditLogs | where OperationName == 'Update policy' and Category == 'Policy'"
+  - "CONTROL CHECK: CA policy changes require PIM-elevated role and change ticket — audit any change without matching ticket"
+  - "CONTROL CHECK: Alert on ANY CA policy being disabled — this should trigger immediate SOC review"
+  - "CONTROL CHECK: Named location changes — new IP ranges added without change record are suspicious"

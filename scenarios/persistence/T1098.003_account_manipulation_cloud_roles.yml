@@ -1,0 +1,78 @@
+id: T1098.003_account_manipulation_cloud_roles
+name: "Account Manipulation — Additional Cloud Roles"
+mitre_technique: "T1098.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add high-privileged roles to adversary-controlled accounts in cloud
+  environments to maintain persistent access. In Entra ID/M365, this means assigning
+  Global Administrator, Application Administrator, or Privileged Role Administrator
+  roles to a compromised or adversary-created account. With Global Admin, an adversary
+  can reset any password, disable MFA, and exfiltrate all data. Detection relies on
+  Entra ID audit logs — role assignment events should always trigger immediate SOC review.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1098/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1098.003 — Cloud Roles: adversary assigns Global Admin or privileged role to their account in Entra ID"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current privileged role assignments — establish detection baseline"
+    command: |
+      Write-Host "[PAS] High-privilege Entra ID role enumeration:"
+      Write-Host "[PAS] Real attack: Add-MgDirectoryRoleMember -DirectoryRoleId <GlobalAdmin> -DirectoryObjectId <attacker>"
+      Write-Host ""
+      Write-Host "[PAS] High-risk roles to monitor:"
+      $criticalRoles = @(
+          "Global Administrator",
+          "Privileged Role Administrator",
+          "Application Administrator",
+          "Cloud Application Administrator",
+          "Authentication Administrator",
+          "Exchange Administrator",
+          "SharePoint Administrator",
+          "Security Administrator"
+      )
+      $criticalRoles | ForEach-Object { Write-Host "  - $_" }
+      Write-Host ""
+      Write-Host "[PAS] Detection: any new assignment to above roles requires immediate investigation"
+
+  - step: 3
+    type: marker
+    description: "PIM check"
+    message: "CONTROL CHECK: Entra ID Privileged Identity Management (PIM) — all Global Admin and privileged roles must be PIM-eligible only (not permanently assigned). Permanent Global Admin assignments are a critical finding."
+
+  - step: 4
+    type: marker
+    description: "Role assignment alert"
+    message: "CONTROL CHECK: Entra ID — create Alert rule: 'Send alert when any user is added to Global Administrator role'. This should page the SOC immediately, 24/7."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName == 'Add member to role' | where TargetResources contains 'Global Administrator'"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1098.003 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'Add member to role' and TargetResources contains 'Administrator'"
+  - "Sentinel: AuditLogs | where OperationName == 'Add member to role' | where InitiatedBy.user.userPrincipalName !contains 'pim-service'"
+  - "MDE alert / Entra alert: 'New Global Administrator assigned'"
+  - "CONTROL CHECK: No permanent Global Admin assignments — use PIM eligible assignments only"
+  - "CONTROL CHECK: Minimum 2, maximum 4 break-glass Global Admin accounts — all monitored"
+  - "CONTROL CHECK: Access Review for privileged roles quarterly via Entra ID Access Reviews"

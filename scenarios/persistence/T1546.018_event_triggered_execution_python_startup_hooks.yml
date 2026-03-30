@@ -1,0 +1,101 @@
+id: T1546.018_event_triggered_execution_python_startup_hooks
+name: "Event Triggered Execution — Python Startup Hooks"
+mitre_technique: "T1546.018"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse Python's startup mechanisms to execute malicious code whenever
+  the Python interpreter is invoked. Methods include: adding a malicious .pth file
+  to a site-packages directory (automatically imported at interpreter startup),
+  modifying sitecustomize.py or usercustomize.py, and setting the PYTHONSTARTUP
+  environment variable. On developer workstations with Python installed, these
+  mechanisms provide persistence triggered by any Python execution — including
+  automated scripts, CI/CD pipelines, and IDE operations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/018/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.018 — Python Startup Hook persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate Python installation and site-packages directory"
+    command: |
+      Write-Host "[PAS] Python installation check:"
+      $python = Get-Command python -ErrorAction SilentlyContinue
+      $python3 = Get-Command python3 -ErrorAction SilentlyContinue
+      $pyPath  = ($python ?? $python3)?.Source
+
+      if ($pyPath) {
+          Write-Host "  Python found: $pyPath"
+          $sitePackages = & $pyPath -c "import site; print(site.getsitepackages()[0])" 2>&1
+          Write-Host "  Site-packages: $sitePackages"
+          Write-Host "[PAS] Persistence target: $sitePackages\PAS_T1546_018_startup.pth"
+      } else {
+          Write-Host "  Python not installed on this host"
+          Write-Host "[PAS] Simulating the .pth file creation pattern:"
+          $sitePackages = "$env:ProgramFiles\Python311\Lib\site-packages"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Create malicious .pth file in site-packages — executes on every Python start"
+    command: |
+      Write-Host "[PAS] Creating malicious .pth startup hook:"
+      # .pth files with 'import' statements execute on Python startup
+      $pthContent = "import subprocess; subprocess.Popen(['cmd','/c','echo','PAS-T1546.018-PYTHON-HOOK'])"
+      $pthPath    = "$env:TEMP\PAS_T1546_018_startup.pth"
+      Set-Content $pthPath $pthContent -Encoding UTF8
+      Write-Host "[PAS] .pth hook created: $pthPath"
+      Write-Host "[PAS] Real location: site-packages\PAS_malicious.pth"
+      Write-Host "[PAS] Executes every time Python interpreter starts"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate PYTHONSTARTUP environment variable abuse"
+    command: |
+      Write-Host "[PAS] PYTHONSTARTUP environment variable abuse:"
+      $startupScript = "$env:TEMP\PAS_T1546_018_pystartup.py"
+      Set-Content $startupScript "import os; os.system('echo PAS-T1546.018-PYTHONSTARTUP')"
+      [Environment]::SetEnvironmentVariable("PYTHONSTARTUP", $startupScript, "User")
+      Write-Host "[PAS] PYTHONSTARTUP set to: $startupScript"
+      Write-Host "[PAS] Executes for interactive Python sessions for current user"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new .pth file in site-packages, PYTHONSTARTUP environment variable set"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Python startup hook files and env var"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1546_018_startup.pth" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_018_pystartup.py" -Force -ErrorAction SilentlyContinue
+      [Environment]::SetEnvironmentVariable("PYTHONSTARTUP", $null, "User")
+      Write-Host "[PAS][Cleanup] Python startup hooks removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.018 cleanup complete"
+
+analyst_checklist:
+  - "File event: new .pth file created in Python site-packages directory"
+  - "Registry event: PYTHONSTARTUP or PYTHONPATH environment variable set via HKCU\\Environment"
+  - "File event: sitecustomize.py or usercustomize.py modified"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.pth' and FolderPath contains 'site-packages'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Environment' and RegistryValueName == 'PYTHONSTARTUP'"
+  - "CONTROL CHECK: Monitor site-packages directories for unexpected .pth files — any new entry should be reviewed"
+  - "CONTROL CHECK: On developer workstations — baseline Python startup files and alert on changes"

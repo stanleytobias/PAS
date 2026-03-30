@@ -1,0 +1,81 @@
+id: T1547.014_boot_logon_autostart_active_setup
+name: "Boot or Logon Autostart Execution — Active Setup"
+mitre_technique: "T1547.014"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse Windows Active Setup to execute commands at user logon. Active Setup
+  is used by Microsoft to configure per-user settings after system-wide software is
+  installed. Keys are registered under HKLM\SOFTWARE\Microsoft\Active Setup\Installed
+  Components\{GUID}. Each key has a Version value — at logon, Windows compares the HKLM
+  version to the user's HKCU version and if different, executes the StubPath command.
+  By setting a version higher than the user's HKCU entry, an adversary forces execution
+  at the next logon. This runs in the user's context with user permissions.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/014/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.014 — Active Setup persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register a malicious Active Setup key — triggers at next user logon"
+    command: |
+      $payload   = "$env:TEMP\PAS_T1547_014_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      $guid      = "{PAS-T1547-014-GUID-0000-000000000001}"
+      $setupKey  = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$guid"
+
+      New-Item -Path $setupKey -Force | Out-Null
+      Set-ItemProperty $setupKey -Name "(Default)"  -Value "PAS Active Setup Test"
+      Set-ItemProperty $setupKey -Name "StubPath"   -Value "$payload /c echo PAS-ACTIVE-SETUP"
+      Set-ItemProperty $setupKey -Name "Version"    -Value "1,0,0,0"
+      Set-ItemProperty $setupKey -Name "Locale"     -Value "*"
+      Set-ItemProperty $setupKey -Name "IsInstalled"-Value 1 -Type DWord
+
+      Write-Host "[PAS] Active Setup key registered: $guid"
+      Write-Host "[PAS] StubPath: $payload /c echo PAS-ACTIVE-SETUP"
+      Write-Host "[PAS] Executes at next logon for any user whose HKCU version < 1,0,0,0"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new GUID key under HKLM\\...\\Active Setup\\Installed Components with StubPath pointing to non-Microsoft binary"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Active Setup key and payload"
+    command: |
+      $guid     = "{PAS-T1547-014-GUID-0000-000000000001}"
+      $setupKey = "HKLM:\SOFTWARE\Microsoft\Active Setup\Installed Components\$guid"
+      Remove-Item $setupKey -Recurse -Force -ErrorAction SilentlyContinue
+      # Also clean HKCU mirror if logon ran
+      $userKey  = "HKCU:\SOFTWARE\Microsoft\Active Setup\Installed Components\$guid"
+      Remove-Item $userKey -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1547_014_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Active Setup key and payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.014 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new GUID key under HKLM\\...\\Active Setup\\Installed Components with a StubPath value"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Active Setup\\\\Installed Components' and RegistryValueName == 'StubPath'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Active Setup' and RegistryValueData !contains 'Microsoft'"
+  - "MDE alert: 'Active Setup persistence registered'"
+  - "CONTROL CHECK: Baseline Active Setup GUIDs — all legitimate entries are Microsoft components with known GUIDs"
+  - "CONTROL CHECK: Any StubPath pointing to TEMP/AppData/non-system paths is malicious"

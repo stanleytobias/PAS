@@ -1,0 +1,72 @@
+id: T1556.006_modify_auth_mfa
+name: "Modify Authentication Process — Multi-Factor Authentication"
+mitre_technique: "T1556.006"
+mitre_tactic: "persistence"
+description: >
+  Adversaries disable or modify MFA on compromised accounts to remove a barrier
+  to persistent access. Methods include: deleting registered MFA methods, disabling
+  per-user MFA enforcement, modifying Conditional Access policies that enforce MFA,
+  or adding adversary-controlled MFA methods (their own phone number or authenticator).
+  With Global Admin access, an adversary can disable MFA tenant-wide or for specific
+  privileged accounts. This ensures their stolen credentials remain usable even after
+  the victim organisation enables MFA remediation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1556/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1556.006 — MFA modification: adversary disables MFA or adds their own device to victim account"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check MFA registration state for current user context"
+    command: |
+      Write-Host "[PAS] MFA posture check:"
+      Write-Host "[PAS] Real attack vectors:"
+      Write-Host "  1. Remove MFA methods: Update-MgUserAuthenticationMethod -UserId victim"
+      Write-Host "  2. Disable per-user MFA: Set-MsolUser -UserPrincipalName victim -StrongAuthenticationRequirements @()"
+      Write-Host "  3. Add attacker's phone to MFA: New-MgUserAuthenticationPhoneMethod -UserId victim"
+      Write-Host ""
+      # Check dsregcmd for MFA state
+      $dsreg = dsregcmd /status 2>&1
+      $mfa   = $dsreg | Select-String "MfaAuthenticated"
+      Write-Host "  Current device MFA state: $($mfa?.Line?.Trim() ?? 'Not available')"
+
+  - step: 3
+    type: marker
+    description: "MFA method audit"
+    message: "CONTROL CHECK: Review MFA methods for all privileged accounts monthly — unexpected phone numbers or authenticator app registrations indicate compromise."
+
+  - step: 4
+    type: marker
+    description: "Per-user MFA audit"
+    message: "CONTROL CHECK: Disable legacy per-user MFA entirely — use Conditional Access only. Per-user MFA can be silently disabled by admins without audit trail in some configurations."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName contains 'authentication method' and Category == 'UserManagement'"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1556.006 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName in ('Delete user authentication method','Update user authentication method')"
+  - "Sentinel: AuditLogs | where OperationName == 'User registered security info' and InitiatedBy.user.userPrincipalName != TargetResources[0].userPrincipalName"
+  - "MDE/Entra alert: 'MFA method deleted for privileged account'"
+  - "CONTROL CHECK: Authentication method registration requires MFA — prevents adversary from adding their own method with only a password"
+  - "CONTROL CHECK: Entra ID — enable 'Require re-authentication on MFA registration' policy"
+  - "CONTROL CHECK: Number Matching and Additional Context for Microsoft Authenticator — defeats MFA fatigue attacks"

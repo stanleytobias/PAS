@@ -1,0 +1,72 @@
+id: T1136.003_create_account_cloud
+name: "Create Account — Cloud Account"
+mitre_technique: "T1136.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries with sufficient cloud privileges create new accounts in Entra ID / M365
+  to maintain persistent access. Unlike domain accounts (which require on-premises DC
+  access), cloud accounts can be created from anywhere with stolen admin credentials.
+  The new account provides persistent access even after the original compromised
+  account is remediated. Adversaries may create the account with a deceptive name,
+  assign it the Global Administrator role, and configure MFA on their own device —
+  making the account fully persistent and MFA-protected.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1136/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1136.003 — Cloud Account: adversary creates new Entra ID / M365 account with admin role for persistent cloud access"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check Entra ID account creation visibility"
+    command: |
+      Write-Host "[PAS] Cloud account creation detection posture:"
+      Write-Host "[PAS] Real attack: New-MgUser -DisplayName 'Support Account' -UserPrincipalName 'support@tenant.onmicrosoft.com'"
+      Write-Host ""
+      Write-Host "[PAS] Detection requires Entra ID Audit Logs:"
+      Write-Host "  OperationName: 'Add user'"
+      Write-Host "  Category: 'UserManagement'"
+      Write-Host ""
+      Write-Host "[PAS] High-risk follow-on: adversary then assigns Global Admin role to new account"
+      Write-Host "  OperationName: 'Add member to role'"
+      Write-Host "  TargetResources: 'Global Administrator'"
+
+  - step: 3
+    type: marker
+    description: "Cloud account audit check"
+    message: "CONTROL CHECK: Run weekly — list all Entra ID accounts created in last 7 days. Any account not traceable to an approved provisioning request requires immediate investigation."
+
+  - step: 4
+    type: marker
+    description: "Break-glass account check"
+    message: "CONTROL CHECK: Ensure your break-glass (emergency) Global Admin accounts are properly secured, monitored, and that alert fires if they are used. Adversary-created admin accounts are often modeled after break-glass account patterns."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName == 'Add user' | where TimeGenerated > ago(7d)"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1136.003 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'Add user' and Category == 'UserManagement'"
+  - "Sentinel: AuditLogs | where OperationName == 'Add user' | where InitiatedBy.user.userPrincipalName !contains 'provisioning'"
+  - "MDE/Entra alert: 'New user created in Entra ID outside of normal business hours'"
+  - "CONTROL CHECK: Automated account lifecycle — all Entra ID accounts must have an associated HR record or approved exception"
+  - "CONTROL CHECK: Alert on new Global Admin immediately — this should never happen without a ticket"
+  - "CONTROL CHECK: Entra ID access reviews — detect orphaned or adversary-created accounts quarterly"

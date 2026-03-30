@@ -1,0 +1,93 @@
+id: T1547.002_boot_logon_autostart_authentication_package
+name: "Boot or Logon Autostart Execution — Authentication Package"
+mitre_technique: "T1547.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse the LSA (Local Security Authority) authentication package mechanism
+  to load a malicious DLL at system boot. Authentication packages are DLLs loaded by
+  lsass.exe at startup — they provide support for logon processes and security protocols.
+  The registry key HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Authentication Packages
+  lists the DLLs to load. Adding a malicious DLL here gives it: SYSTEM-level execution,
+  access to plaintext credentials passing through LSA, and boot persistence.
+  This is the mechanism used by some credential-harvesting implants.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.002 — Authentication Package LSA persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current LSA authentication packages — establish baseline"
+    command: |
+      Write-Host "[PAS] Current LSA Authentication Packages:"
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Authentication Packages" `
+          -ErrorAction SilentlyContinue)."Authentication Packages"
+      $current | ForEach-Object { Write-Host "  Loaded: $_" }
+      Write-Host "[PAS] Legitimate values: msv1_0 (and possibly kerberos)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate adding malicious authentication package DLL to LSA"
+    command: |
+      # Drop a benign DLL as stand-in for malicious auth package
+      $malAuthPkg = "$env:SystemRoot\System32\PAS_T1547_002_authpkg.dll"
+      Copy-Item "$env:SystemRoot\System32\msv1_0.dll" $malAuthPkg -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious auth package DLL dropped: $malAuthPkg"
+
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Authentication Packages")."Authentication Packages"
+      $updated = $current + @("PAS_T1547_002_authpkg")
+
+      Set-ItemProperty -Path $lsaKey -Name "Authentication Packages" `
+          -Value $updated -Type MultiString
+      Write-Host "[PAS] LSA Authentication Packages updated — PAS_T1547_002_authpkg added"
+      Write-Host "[PAS] Will load on next reboot as lsass.exe child DLL"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\SYSTEM\\...\\Lsa Authentication Packages registry modification"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore Authentication Packages to original value"
+    command: |
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Authentication Packages")."Authentication Packages"
+      $restored = $current | Where-Object { $_ -ne "PAS_T1547_002_authpkg" }
+      Set-ItemProperty -Path $lsaKey -Name "Authentication Packages" `
+          -Value $restored -Type MultiString
+      Write-Host "[PAS][Cleanup] Authentication Packages restored: $($restored -join ', ')"
+
+      Remove-Item "$env:SystemRoot\System32\PAS_T1547_002_authpkg.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Malicious DLL removed from System32"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.002 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa 'Authentication Packages' value modified"
+  - "File event: new DLL dropped in C:\\Windows\\System32\\ outside of Windows Update context"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Lsa' and RegistryValueName == 'Authentication Packages'"
+  - "Sentinel: DeviceFileEvents | where FolderPath == 'C:\\\\Windows\\\\System32' and FileName endswith '.dll' and ActionType == 'FileCreated'"
+  - "MDE alert: 'LSA authentication package modified'"
+  - "CONTROL CHECK: Credential Guard — isolates LSA in a virtualisation-based security enclave; auth packages cannot access protected credentials"
+  - "CONTROL CHECK: Enable LSA Protected Mode (RunAsPPL) — limits which DLLs can be loaded into lsass.exe"
+  - "CONTROL CHECK: Baseline LSA Authentication Packages via Autoruns and alert on any change"

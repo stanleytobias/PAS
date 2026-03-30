@@ -1,0 +1,100 @@
+id: T1546.011_event_triggered_execution_application_shimming
+name: "Event Triggered Execution — Application Shimming"
+mitre_technique: "T1546.011"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse the Windows Application Compatibility Infrastructure (shims) to
+  run malicious code when a targeted application launches. A custom shim database (.sdb)
+  is installed with sdbinst.exe and applies patches to specific executables at load time.
+  The InjectDLL fix injects a DLL into the target process; RedirectEXE redirects
+  execution to a different binary. Shim databases are registered in the registry and
+  persist across reboots. Admin rights are needed to install system-wide shims, but
+  user-level shims can be installed without elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/011/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.011 — Application Shimming persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check existing custom shim databases — baseline"
+    command: |
+      Write-Host "[PAS] Custom shim database registry entries:"
+      $shimKeys = @(
+          "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Custom",
+          "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\InstalledSDB",
+          "HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Custom"
+      )
+      foreach ($k in $shimKeys) {
+          if (Test-Path $k) {
+              Write-Host "  $k :"
+              Get-ChildItem $k -ErrorAction SilentlyContinue |
+                  ForEach-Object { Write-Host "    $($_.PSChildName)" }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate custom shim database installation marker"
+    command: |
+      Write-Host "[PAS] Shimming simulation:"
+      Write-Host "[PAS] Real attack: create SDB with InjectDLL fix targeting notepad.exe"
+      Write-Host "[PAS] Install: sdbinst.exe -q PAS_T1546_011.sdb"
+      Write-Host "[PAS] Effect: every notepad.exe launch injects malicious DLL"
+
+      # Simulate the registry entry that sdbinst creates
+      $sdbGuid  = "{PAS-T1546-011-SDB-0000-000000000001}"
+      $shimPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\InstalledSDB\$sdbGuid"
+      New-Item -Path $shimPath -Force | Out-Null
+      Set-ItemProperty $shimPath -Name "DatabaseDescription" -Value "PAS Shim Test"
+      Set-ItemProperty $shimPath -Name "DatabasePath"        -Value "$env:TEMP\PAS_T1546_011.sdb"
+      Set-ItemProperty $shimPath -Name "DatabaseType"        -Value 2 -Type DWord
+      Set-ItemProperty $shimPath -Name "Time"                -Value (Get-Date).ToFileTime() -Type QWord
+
+      Write-Host "[PAS] Shim DB registry entry created: $sdbGuid"
+      Write-Host "[PAS] Legitimate sdbinst.exe execution would also fire"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sdbinst.exe execution, new entry under InstalledSDB registry key"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove shim database registry entries"
+    command: |
+      $sdbGuid  = "{PAS-T1546-011-SDB-0000-000000000001}"
+      $shimPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\InstalledSDB\$sdbGuid"
+      Remove-Item $shimPath -Recurse -Force -ErrorAction SilentlyContinue
+
+      # Also clean up Custom key if any entries were added
+      $customPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Custom\notepad.exe"
+      Remove-Item $customPath -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Shim database entries removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.011 cleanup complete"
+
+analyst_checklist:
+  - "Process event: sdbinst.exe execution — any shim database installation should be reviewed"
+  - "Registry event: new GUID key under HKLM\\...\\AppCompatFlags\\InstalledSDB"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'sdbinst.exe'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'InstalledSDB' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Application compatibility shim installed'"
+  - "CONTROL CHECK: sdbinst.exe should only run during managed software deployments — any other execution is suspicious"
+  - "CONTROL CHECK: Audit InstalledSDB registry key — list all installed shim databases and validate against approved list"

@@ -1,0 +1,72 @@
+id: T1505.002_server_software_transport_agent
+name: "Server Software Component — Transport Agent"
+mitre_technique: "T1505.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries install malicious Microsoft Exchange transport agents to intercept and
+  manipulate email in transit. Transport agents are .NET assemblies registered with
+  Exchange that process every email passing through the transport pipeline. A malicious
+  agent can harvest credentials from emails, forward copies to an external address,
+  modify email content, or execute code on every inbound/outbound message. Agents run
+  as SYSTEM in the Exchange transport service (MSExchangeTransport).
+  Turla and other APTs have used this technique for persistent email surveillance.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1505/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1505.002 — Exchange Transport Agent persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for Exchange installation and enumerate registered transport agents"
+    command: |
+      Write-Host "[PAS] Exchange transport agent check:"
+      $exchService = Get-Service MSExchangeTransport -ErrorAction SilentlyContinue
+      if ($exchService) {
+          Write-Host "  Exchange Transport service: $($exchService.Status)"
+          Write-Host "[PAS] Enumerating transport agents:"
+          Write-Host "[PAS] Run in Exchange Management Shell: Get-TransportAgent"
+          Write-Host "[PAS] Malicious agent disguised as: 'Microsoft Exchange Antimalware Agent'"
+      } else {
+          Write-Host "[PAS] Exchange not installed on this host"
+      }
+
+      Write-Host "[PAS] Transport agent registration pattern:"
+      Write-Host "  Install-TransportAgent -Name 'PAS_Agent' -TransportAgentFactory 'PAS.AgentFactory' -AssemblyPath 'C:\PAS_agent.dll'"
+      Write-Host "  Enable-TransportAgent -Identity 'PAS_Agent'"
+      Write-Host "  Restart-Service MSExchangeTransport"
+
+  - step: 3
+    type: marker
+    description: "Transport agent audit"
+    message: "CONTROL CHECK: Monthly — run Get-TransportAgent in Exchange Management Shell. Any agent not in the default list (Antimalware Agent, Text Messaging, Journaling etc.) requires investigation."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Exchange audit logs — Install-TransportAgent and Enable-TransportAgent cmdlet executions"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1505.002 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Exchange audit: Install-TransportAgent or Enable-TransportAgent cmdlet execution"
+  - "File event: new .dll dropped in Exchange Bin directory (C:\\Program Files\\Microsoft\\Exchange Server\\...\\Bin)"
+  - "Sentinel: OfficeActivity | where Operation contains 'TransportAgent'"
+  - "MDE: DeviceFileEvents | where FolderPath contains 'Exchange Server' and FileName endswith '.dll' and ActionType == 'FileCreated'"
+  - "CONTROL CHECK: Run Get-TransportAgent quarterly — baseline the list and alert on any new entry"
+  - "CONTROL CHECK: Exchange server DLL integrity monitoring — new DLLs in Exchange Bin directories outside patching are suspicious"

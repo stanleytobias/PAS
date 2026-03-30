@@ -1,0 +1,98 @@
+id: T1547.009_boot_logon_autostart_shortcut_modification
+name: "Boot or Logon Autostart Execution — Shortcut Modification"
+mitre_technique: "T1547.009"
+mitre_tactic: "persistence"
+description: >
+  Adversaries create or modify LNK shortcut files to establish persistence. Shortcuts
+  placed in the Startup folder execute at logon. Adversaries may also modify existing
+  desktop or taskbar shortcuts (e.g. browser, Office apps) so they launch the malware
+  alongside the legitimate program. A common technique is modifying the Target field to
+  run cmd.exe /c malware.exe & original.exe, so the user sees normal behaviour while
+  the implant runs silently.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.009 — Shortcut Modification persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create malicious LNK in Startup folder — silent minimised execution"
+    command: |
+      $payload       = "$env:TEMP\PAS_T1547_009_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+      $lnkPath       = "$startupFolder\PAS_T1547_009_WindowsHelper.lnk"
+
+      $shell = New-Object -ComObject WScript.Shell
+      $link  = $shell.CreateShortcut($lnkPath)
+      $link.TargetPath      = $payload
+      $link.Arguments       = "/c echo PAS-T1547.009-STARTUP-EXEC"
+      $link.Description     = "Windows System Helper"
+      $link.IconLocation    = "$env:SystemRoot\System32\shell32.dll,21"
+      $link.WindowStyle     = 7   # Minimised — hidden from user
+      $link.WorkingDirectory = $env:SystemRoot
+      $link.Save()
+      Write-Host "[PAS] Startup LNK created: $lnkPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Modify existing desktop shortcut — piggyback on legitimate app"
+    command: |
+      $payload = "$env:TEMP\PAS_T1547_009_payload.exe"
+      $existingLnk = (Get-ChildItem "$env:USERPROFILE\Desktop\*.lnk" `
+          -ErrorAction SilentlyContinue | Select-Object -First 1)?.FullName
+
+      if ($existingLnk) {
+          $shell = New-Object -ComObject WScript.Shell
+          $link  = $shell.CreateShortcut($existingLnk)
+          $original = $link.TargetPath
+          Write-Host "[PAS] Existing shortcut found: $existingLnk -> $original"
+          Write-Host "[PAS] Real attack: change Target to: cmd /c $payload & $original"
+          Write-Host "[PAS] Simulation: logging the attack pattern (not modifying existing shortcut)"
+      } else {
+          Write-Host "[PAS] No desktop shortcuts found — Startup LNK is the primary persistence"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — LNK file created/modified in Startup folder or Desktop, cmd.exe with payload argument from LNK"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Startup LNK and payload"
+    command: |
+      $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+      Remove-Item "$startupFolder\PAS_T1547_009_WindowsHelper.lnk" `
+          -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1547_009_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Startup LNK and payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.009 cleanup complete"
+
+analyst_checklist:
+  - "File event: new .lnk created in Startup folder paths"
+  - "File event: existing desktop .lnk modified (TargetPath changed)"
+  - "Process event: cmd.exe spawned from lnk with chained payload"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Startup' and FileName endswith '.lnk'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.lnk' and FolderPath contains 'Desktop' and ActionType == 'FileModified'"
+  - "MDE alert: 'Shortcut file in startup location'"
+  - "CONTROL CHECK: Baseline all .lnk files in Startup folders and alert on any new entries"
+  - "CONTROL CHECK: Monitor desktop shortcut targets — changed TargetPath on existing shortcuts is a strong indicator"

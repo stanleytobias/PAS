@@ -1,0 +1,111 @@
+id: T1554_compromise_host_software_binary
+name: "Compromise Host Software Binary"
+mitre_technique: "T1554"
+mitre_tactic: "persistence"
+description: >
+  Adversaries replace or modify legitimate software binaries on disk with trojanised
+  versions that include malicious code while preserving the original functionality.
+  Common targets: SSH clients (putty.exe), browsers, VPN clients, and update utilities
+  that run regularly. The modified binary passes casual inspection (same name, same icon)
+  but contains a backdoor. Detection relies on file hash monitoring, code signing
+  validation, and detecting binaries whose hash differs from the vendor's published value.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1554/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1554 — Compromise Host Software Binary simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate binary replacement — overwrite a staging copy with modified version"
+    command: |
+      # Work on a COPY in TEMP, not a real system binary
+      $originalBin = "$env:SystemRoot\System32\notepad.exe"
+      $stagingCopy = "$env:TEMP\PAS_T1554_notepad_original.exe"
+      $trojanised  = "$env:TEMP\PAS_T1554_notepad_trojanised.exe"
+
+      Copy-Item $originalBin $stagingCopy -Force
+      Copy-Item $originalBin $trojanised  -Force
+
+      # Get original hash
+      $originalHash = (Get-FileHash $stagingCopy -Algorithm SHA256).Hash
+      Write-Host "[PAS] Original binary hash: $originalHash"
+
+      # Modify the trojanised copy (append a PAS marker — simulates backdoor injection)
+      Add-Content $trojanised "PAS-T1554-TROJAN-MARKER" -Encoding Byte -ErrorAction SilentlyContinue
+      $newHash = (Get-FileHash $trojanised -Algorithm SHA256).Hash
+      Write-Host "[PAS] Trojanised binary hash: $newHash"
+      Write-Host "[PAS] Hash mismatch detected: $($originalHash -ne $newHash)"
+      Write-Host "[PAS] File Integrity Monitoring would catch this — hashes differ"
+
+  - step: 3
+    type: exec_powershell
+    description: "Validate code signing on the modified binary"
+    command: |
+      $trojanised  = "$env:TEMP\PAS_T1554_notepad_trojanised.exe"
+      $sigOriginal = Get-AuthenticodeSignature "$env:SystemRoot\System32\notepad.exe"
+      Write-Host "[PAS] Original binary signature: $($sigOriginal.Status) ($(${sigOriginal}.SignerCertificate?.Subject?.Split(',')[0]))"
+
+      # Trojanised binary has same signature as original (appended bytes don't invalidate Authenticode
+      # unless the PE sections are re-signed — which adversaries typically don't do)
+      Write-Host "[PAS] NOTE: Authenticode signature may still show Valid after appending data"
+      Write-Host "[PAS] Hash-based FIM is more reliable than signature-only checks"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate checking for binary modifications — FIM baseline comparison"
+    command: |
+      Write-Host "[PAS] File Integrity Monitoring baseline check:"
+      $targets = @(
+          "$env:SystemRoot\System32\notepad.exe",
+          "$env:SystemRoot\System32\cmd.exe",
+          "$env:SystemRoot\System32\msiexec.exe"
+      )
+      foreach ($t in $targets) {
+          if (Test-Path $t) {
+              $hash = (Get-FileHash $t -Algorithm SHA256).Hash
+              Write-Host "  $([IO.Path]::GetFileName($t)): $hash"
+          }
+      }
+      Write-Host "[PAS] FIM baseline recorded — compare against known-good vendor hashes"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file write to system binary paths outside Windows Update context, hash change on monitored binaries"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove staging copies"
+    command: |
+      @("$env:TEMP\PAS_T1554_notepad_original.exe",
+        "$env:TEMP\PAS_T1554_notepad_trojanised.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Binary simulation files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1554 cleanup complete"
+
+analyst_checklist:
+  - "File event: write to C:\\Windows\\System32\\ or C:\\Program Files\\ outside Windows Update context"
+  - "FIM alert: SHA256 hash change on monitored system or application binary"
+  - "Code signing: binary hash no longer matches vendor's published hash (even if Authenticode still valid)"
+  - "Sentinel: DeviceFileEvents | where FolderPath startswith 'C:\\\\Windows\\\\System32' and ActionType == 'FileModified' and InitiatingProcessFileName != 'TrustedInstaller.exe'"
+  - "MDE alert: 'System binary modified' or 'File integrity violation detected'"
+  - "CONTROL CHECK: Deploy File Integrity Monitoring (FIM) on all system binary paths — alert on any hash change"
+  - "CONTROL CHECK: MDE Advanced Hunting — DeviceFileEvents for writes to protected paths from non-TrustedInstaller processes"
+  - "CONTROL CHECK: WDAC code integrity policies — only signed Microsoft binaries execute from System32"

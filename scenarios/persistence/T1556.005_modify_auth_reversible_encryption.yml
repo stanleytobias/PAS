@@ -1,0 +1,88 @@
+id: T1556.005_modify_auth_reversible_encryption
+name: "Modify Authentication Process — Reversible Encryption"
+mitre_technique: "T1556.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries enable the AllowReversiblePasswordEncryption Active Directory account
+  attribute on user objects. When enabled, AD stores the user's password in a
+  reversibly encrypted form (RC4) rather than as a one-way hash. Any domain admin
+  can then decrypt these stored passwords using the system key. This provides a
+  persistent credential harvest mechanism — the adversary enables the attribute,
+  waits for the user to change their password, then decrypts the stored password
+  at any time. Detection requires monitoring AD attribute changes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1556/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1556.005 — Reversible Password Encryption persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check if reversible encryption is enabled on any accounts"
+    command: |
+      Write-Host "[PAS] Reversible password encryption audit:"
+      Write-Host "[PAS] Real attack: Set-ADUser -Identity victim -AllowReversiblePasswordEncryption `$true"
+
+      # Check local accounts (domain requires AD module)
+      $accounts = Get-LocalUser -ErrorAction SilentlyContinue |
+          Where-Object { $_.Enabled }
+      Write-Host "  Local accounts checked: $($accounts.Count)"
+
+      # Check domain policy via secpol
+      $secpolOutput = secedit /export /areas SECURITYPOLICY /cfg "$env:TEMP\PAS_T1556_005_secpol.cfg" 2>&1
+      if (Test-Path "$env:TEMP\PAS_T1556_005_secpol.cfg") {
+          $clearText = Select-String "ClearTextPassword" "$env:TEMP\PAS_T1556_005_secpol.cfg" `
+              -ErrorAction SilentlyContinue
+          Write-Host "  Domain password policy ClearText setting: $($clearText?.Line)"
+      }
+      Write-Host "[PAS] CONTROL CHECK: AllowReversiblePasswordEncryption should be disabled for all accounts"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check domain-level reversible encryption policy"
+    command: |
+      Write-Host "[PAS] Fine-Grained Password Policy check:"
+      $domainMode = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($domainMode) {
+          Write-Host "  Domain member — run on DC: Get-ADUser -Filter * -Properties AllowReversiblePasswordEncryption | Where-Object {`$_.AllowReversiblePasswordEncryption -eq `$true}"
+          Write-Host "  Any result means credential exposure risk"
+      } else {
+          Write-Host "  Not domain-joined — checking local policy only"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs/Event ID 5136: AllowReversiblePasswordEncryption attribute changed on any user object"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove secpol export file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1556_005_secpol.cfg" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Temp files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1556.005 cleanup complete"
+
+analyst_checklist:
+  - "AD audit Event ID 5136: AllowReversiblePasswordEncryption attribute modified on user object"
+  - "Sentinel: SecurityEvent | where EventID == 5136 and AttributeLDAPDisplayName == 'userAccountControl'"
+  - "Defender for Identity: Alert on 'Reversible password encryption enabled for account'"
+  - "CONTROL CHECK: Run quarterly — Get-ADUser -Filter {AllowReversiblePasswordEncryption -eq `$true}"
+  - "CONTROL CHECK: Default Domain Policy — ensure 'Store passwords using reversible encryption' is Disabled"
+  - "CONTROL CHECK: Any account with this enabled should immediately have the attribute disabled and password reset"

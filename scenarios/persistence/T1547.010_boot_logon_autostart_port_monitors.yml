@@ -1,0 +1,83 @@
+id: T1547.010_boot_logon_autostart_port_monitors
+name: "Boot or Logon Autostart Execution — Port Monitors"
+mitre_technique: "T1547.010"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL as a print port monitor, which is loaded by
+  the print spooler service (spoolsv.exe) at system boot with SYSTEM privileges.
+  Port monitors are registered under HKLM\SYSTEM\CurrentControlSet\Control\Print\Monitors.
+  The DLL is placed in %SystemRoot%\System32 and its name is added to the registry.
+  When spoolsv.exe starts it loads all registered monitor DLLs. This provides
+  SYSTEM-level persistence without requiring the DLL to export any specific function
+  beyond InitializePrintMonitor2.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.010 — Port Monitor DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate existing port monitors — establish baseline"
+    command: |
+      $monitorKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors"
+      Write-Host "[PAS] Registered print port monitors:"
+      Get-ChildItem $monitorKey -ErrorAction SilentlyContinue | ForEach-Object {
+          $dll = (Get-ItemProperty $_.PSPath -Name Driver -ErrorAction SilentlyContinue).Driver
+          Write-Host "  $($_.PSChildName): $dll"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious port monitor DLL — loaded by spoolsv.exe at boot"
+    command: |
+      $malDll   = "$env:SystemRoot\System32\PAS_T1547_010_monitor.dll"
+      Copy-Item "$env:SystemRoot\System32\localspl.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Port monitor DLL placed: $malDll"
+
+      $monPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\PAS_T1547_010"
+      New-Item -Path $monPath -Force | Out-Null
+      Set-ItemProperty $monPath -Name Driver -Value "PAS_T1547_010_monitor.dll" -Type String
+      Write-Host "[PAS] Port monitor registered: $monPath"
+      Write-Host "[PAS] spoolsv.exe will load this DLL at next boot as SYSTEM"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new key under HKLM\\...\\Print\\Monitors, new DLL in System32"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove port monitor registry key and DLL"
+    command: |
+      Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Monitors\PAS_T1547_010" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:SystemRoot\System32\PAS_T1547_010_monitor.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Port monitor removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.010 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new key created under HKLM\\SYSTEM\\...\\Print\\Monitors"
+  - "File event: new DLL in System32 coinciding with Print Monitors registry change"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Print\\\\Monitors' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Print port monitor DLL registered'"
+  - "CONTROL CHECK: Baseline Print Monitors — only Standard TCP/IP Port, WSD Port, and default monitors are legitimate"
+  - "CONTROL CHECK: PrintNightmare mitigations — restrict who can add print drivers/monitors via GPO"

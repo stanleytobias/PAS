@@ -1,0 +1,122 @@
+id: T1505.004_server_software_iis_components
+name: "Server Software Component — IIS Components"
+mitre_technique: "T1505.004"
+mitre_tactic: "persistence"
+description: >
+  Adversaries install malicious IIS extensions (ISAPI extensions/filters, IIS modules)
+  to establish persistent access to web servers. ISAPI extensions and filters are
+  unmanaged DLLs that examine and process HTTP requests/responses. A malicious ISAPI
+  filter intercepts every HTTP request — enabling credential harvesting, web shell
+  functionality without a file, and stealthy C2 over legitimate web traffic.
+  IIS modules (managed .NET) provide similar capabilities. Both persist across IIS
+  restarts and are registered in the IIS applicationHost.config or registry.
+  China Chopper and other web shells have used this technique.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1505/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1505.004 — IIS Component persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check IIS installation and enumerate existing components"
+    command: |
+      Write-Host "[PAS] IIS component check:"
+      $iisService = Get-Service W3SVC -ErrorAction SilentlyContinue
+      Write-Host "  IIS (W3SVC) installed: $($null -ne $iisService)"
+      if ($iisService) {
+          Write-Host "  IIS Status: $($iisService.Status)"
+
+          # Check for ISAPI filters in registry
+          $isapiKey = "HKLM:\SOFTWARE\Microsoft\InetStp\Components"
+          if (Test-Path $isapiKey) {
+              Write-Host "[PAS] IIS components registry:"
+              Get-ItemProperty $isapiKey -ErrorAction SilentlyContinue |
+                  Get-Member -MemberType NoteProperty |
+                  Where-Object { $_.Name -notmatch '^PS' } |
+                  Select-Object -First 5 |
+                  ForEach-Object { Write-Host "  $($_.Name)" }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate dropping malicious ISAPI filter DLL to IIS directory"
+    command: |
+      $iisDir    = "C:\inetpub\wwwroot"
+      $isapiDir  = "$env:SystemRoot\System32\inetsrv"
+      $malFilter = "$isapiDir\PAS_T1505_004_filter.dll"
+
+      if (-not (Test-Path $isapiDir)) {
+          Write-Host "[PAS] IIS inetsrv directory not found — creating marker in wwwroot"
+          $malFilter = "$iisDir\PAS_T1505_004_filter.dll"
+          if (-not (Test-Path $iisDir)) { New-Item -ItemType Directory $iisDir -Force | Out-Null }
+      }
+
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malFilter `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious ISAPI filter DLL dropped: $malFilter"
+
+      # Register in IIS filter registry key
+      $filterKey = "HKLM:\SYSTEM\CurrentControlSet\Services\W3SVC\Parameters\Filter DLLs"
+      if (Test-Path (Split-Path $filterKey)) {
+          $current = (Get-ItemProperty (Split-Path $filterKey) -Name "Filter DLLs" `
+              -ErrorAction SilentlyContinue)."Filter DLLs"
+          Set-ItemProperty (Split-Path $filterKey) -Name "Filter DLLs" `
+              -Value "$current,$malFilter" -ErrorAction SilentlyContinue
+          Write-Host "[PAS] ISAPI filter registered in W3SVC Filter DLLs"
+      }
+      Write-Host "[PAS] Filter loads into w3wp.exe and intercepts every HTTP request"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new DLL in inetsrv directory, ISAPI filter registry change, w3wp loading unsigned DLL"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove ISAPI filter DLL and registry entry"
+    command: |
+      @("$env:SystemRoot\System32\inetsrv\PAS_T1505_004_filter.dll",
+        "C:\inetpub\wwwroot\PAS_T1505_004_filter.dll") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+
+      # Restore Filter DLLs registry value
+      $filterKeyPath = "HKLM:\SYSTEM\CurrentControlSet\Services\W3SVC\Parameters"
+      if (Test-Path $filterKeyPath) {
+          $current = (Get-ItemProperty $filterKeyPath -Name "Filter DLLs" `
+              -ErrorAction SilentlyContinue)."Filter DLLs"
+          if ($current -like "*PAS_T1505_004*") {
+              $restored = ($current -replace ",?[^,]*PAS_T1505_004[^,]*", "").TrimStart(',')
+              Set-ItemProperty $filterKeyPath -Name "Filter DLLs" -Value $restored `
+                  -ErrorAction SilentlyContinue
+          }
+      }
+      Write-Host "[PAS][Cleanup] IIS filter DLL and registry entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1505.004 cleanup complete"
+
+analyst_checklist:
+  - "File event: new DLL dropped in C:\\Windows\\System32\\inetsrv\\ or IIS application directories"
+  - "Registry event: HKLM\\...\\W3SVC\\Parameters 'Filter DLLs' value modified"
+  - "Process event: w3wp.exe loading a non-Microsoft, unsigned DLL"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'inetsrv' and FileName endswith '.dll' and ActionType == 'FileCreated'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'W3SVC' and RegistryValueName == 'Filter DLLs'"
+  - "MDE alert: 'IIS ISAPI filter or module installed'"
+  - "CONTROL CHECK: IIS module list should be baselined — appcmd list modules on each IIS server"
+  - "CONTROL CHECK: New DLLs in inetsrv outside Windows Update should trigger immediate investigation"

@@ -1,0 +1,93 @@
+id: T1546.007_event_triggered_execution_netsh_helper_dll
+name: "Event Triggered Execution — Netsh Helper DLL"
+mitre_technique: "T1546.007"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL as a netsh helper so it loads whenever
+  netsh.exe is executed. Helper DLLs are registered under
+  HKLM\SOFTWARE\Microsoft\Netsh. When netsh.exe runs (legitimate network configuration
+  commands, startup scripts, or system tasks), all registered helper DLLs are loaded
+  into the netsh.exe process. This provides persistent code execution in the context
+  of netsh.exe — a signed Microsoft binary — whenever netsh is invoked.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.007 — Netsh Helper DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current netsh helpers — establish baseline"
+    command: |
+      $netshKey = "HKLM:\SOFTWARE\Microsoft\Netsh"
+      Write-Host "[PAS] Current netsh helper DLLs:"
+      Get-ItemProperty $netshKey -ErrorAction SilentlyContinue |
+          Get-Member -MemberType NoteProperty |
+          Where-Object { $_.Name -notmatch '^PS' } |
+          ForEach-Object {
+              $val = (Get-ItemProperty $netshKey -Name $_.Name -ErrorAction SilentlyContinue).($_.Name)
+              Write-Host "  $($_.Name) = $val"
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious netsh helper DLL"
+    command: |
+      $malDll  = "$env:SystemRoot\System32\PAS_T1546_007_netshhelper.dll"
+      Copy-Item "$env:SystemRoot\System32\dhcpcsvc.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+
+      $netshKey = "HKLM:\SOFTWARE\Microsoft\Netsh"
+      Set-ItemProperty $netshKey -Name "PAS_T1546_007_helper" -Value $malDll -Type String
+      Write-Host "[PAS] Netsh helper DLL registered: PAS_T1546_007_helper -> $malDll"
+      Write-Host "[PAS] Loaded into netsh.exe on every invocation"
+      Write-Host "[PAS] Trigger: any netsh command (startup scripts, admins, helpdesk)"
+
+  - step: 4
+    type: exec_powershell
+    description: "Trigger netsh to demonstrate helper loading"
+    command: |
+      Write-Host "[PAS] Invoking netsh to trigger helper load:"
+      Start-Process netsh.exe -ArgumentList "show helper" -Wait -NoNewWindow `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] netsh.exe executed — helper DLL would load into process"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\SOFTWARE\\Microsoft\\Netsh registry value added, DLL loaded into netsh.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove netsh helper registry entry and DLL"
+    command: |
+      Remove-ItemProperty "HKLM:\SOFTWARE\Microsoft\Netsh" `
+          -Name "PAS_T1546_007_helper" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:SystemRoot\System32\PAS_T1546_007_netshhelper.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Netsh helper removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.007 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new value added to HKLM\\SOFTWARE\\Microsoft\\Netsh"
+  - "File event: new DLL placed in System32 coinciding with Netsh registry change"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Microsoft\\\\Netsh' and ActionType == 'RegistryValueSet'"
+  - "MDE alert: 'Netsh helper DLL registered for persistence'"
+  - "CONTROL CHECK: Baseline HKLM\\SOFTWARE\\Microsoft\\Netsh — any entry beyond the default Microsoft helpers is suspicious"
+  - "CONTROL CHECK: netsh.exe loading a non-Microsoft DLL will generate an unsigned DLL load event in MDE"

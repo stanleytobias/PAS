@@ -1,0 +1,83 @@
+id: T1547.012_boot_logon_autostart_print_processors
+name: "Boot or Logon Autostart Execution — Print Processors"
+mitre_technique: "T1547.012"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL as a print processor to achieve persistence
+  via the Windows print spooler. Print processors are DLLs loaded by spoolsv.exe
+  and registered under HKLM\SYSTEM\CurrentControlSet\Control\Print\Environments\
+  Windows x64\Print Processors. The DLL must export OpenPrintProcessor. Like port
+  monitors, print processor DLLs run as SYSTEM inside the spooler process at boot.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.012 — Print Processor DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate existing print processors — establish baseline"
+    command: |
+      $ppKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments\Windows x64\Print Processors"
+      Write-Host "[PAS] Registered print processors (Windows x64):"
+      Get-ChildItem $ppKey -ErrorAction SilentlyContinue | ForEach-Object {
+          $dll = (Get-ItemProperty $_.PSPath -Name Driver -ErrorAction SilentlyContinue).Driver
+          Write-Host "  $($_.PSChildName): $dll"
+      }
+      Write-Host "[PAS] Legitimate: winprint -> winprint.dll"
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious print processor"
+    command: |
+      $spoolDir = "$env:SystemRoot\System32\spool\prtprocs\x64"
+      $malDll   = "$spoolDir\PAS_T1547_012_pp.dll"
+      if (-not (Test-Path $spoolDir)) { New-Item -ItemType Directory $spoolDir -Force | Out-Null }
+      Copy-Item "$env:SystemRoot\System32\spool\prtprocs\x64\winprint.dll" `
+          $malDll -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Print processor DLL placed: $malDll"
+
+      $ppPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments\Windows x64\Print Processors\PAS_T1547_012"
+      New-Item -Path $ppPath -Force | Out-Null
+      Set-ItemProperty $ppPath -Name Driver -Value "PAS_T1547_012_pp.dll" -Type String
+      Write-Host "[PAS] Print processor registered: PAS_T1547_012"
+      Write-Host "[PAS] Loaded by spoolsv.exe at next boot as SYSTEM"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new key under Print\\Environments\\...\\Print Processors, new DLL in spool\\prtprocs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove print processor registry key and DLL"
+    command: |
+      Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Control\Print\Environments\Windows x64\Print Processors\PAS_T1547_012" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:SystemRoot\System32\spool\prtprocs\x64\PAS_T1547_012_pp.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Print processor removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.012 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new key under HKLM\\...\\Print\\Environments\\Windows x64\\Print Processors"
+  - "File event: new DLL in C:\\Windows\\System32\\spool\\prtprocs\\x64\\"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Print Processors' and ActionType == 'RegistryKeyCreated'"
+  - "CONTROL CHECK: Only winprint should be registered — any additional print processor is suspicious"
+  - "CONTROL CHECK: Restrict print spooler service on non-print servers — disable or apply Point and Print restrictions"

@@ -1,0 +1,91 @@
+id: T1653_power_settings
+name: "Power Settings"
+mitre_technique: "T1653"
+mitre_tactic: "persistence"
+description: >
+  Adversaries modify power settings to prevent the system from entering sleep,
+  hibernate, or shutdown states — ensuring their implant continues running and
+  maintaining persistent C2 connectivity. Methods include: powercfg /change
+  standby-timeout-ac 0, disabling hibernate, and preventing screen lock.
+  This is often combined with other persistence mechanisms — the power changes
+  ensure the system is always reachable even during off-hours.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1653/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1653 — Power Settings persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current power settings — establish baseline"
+    command: |
+      Write-Host "[PAS] Current power settings:"
+      powercfg /query SCHEME_CURRENT SUB_SLEEP 2>&1 |
+          Select-String "Current AC|Current DC|Sleep" |
+          ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Disable sleep and hibernate to keep system always-on"
+    command: |
+      Write-Host "[PAS] Disabling sleep and hibernate (keeps C2 connection alive):"
+      powercfg /change standby-timeout-ac 0  2>&1 | Out-Null
+      powercfg /change standby-timeout-dc 0  2>&1 | Out-Null
+      powercfg /change hibernate-timeout-ac 0 2>&1 | Out-Null
+      powercfg /change hibernate-timeout-dc 0 2>&1 | Out-Null
+      powercfg /hibernate off 2>&1 | Out-Null
+      Write-Host "[PAS] Sleep timeout set to 0 (never)"
+      Write-Host "[PAS] Hibernate disabled"
+      Write-Host "[PAS] System will never sleep — C2 beacon continues indefinitely"
+
+  - step: 4
+    type: exec_powershell
+    description: "Use WakeLock via PowerRequest — prevents OS from sleeping"
+    command: |
+      Write-Host "[PAS] PowerSetRequest wake lock simulation:"
+      Write-Host "[PAS] Real attack: SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)"
+      Write-Host "[PAS] This prevents Windows from sleeping while the process runs"
+      Write-Host "[PAS] Detection: unexpected application holding a system sleep prevention lock"
+      powercfg /requests 2>&1 | Select-String "SYSTEM|DISPLAY|EXECUTION|PAS" |
+          ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — powercfg.exe execution modifying sleep/hibernate settings"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore default power settings"
+    command: |
+      # Restore balanced plan defaults (typically 30 min AC, 15 min DC)
+      powercfg /change standby-timeout-ac 30  2>&1 | Out-Null
+      powercfg /change standby-timeout-dc 15  2>&1 | Out-Null
+      powercfg /change hibernate-timeout-ac 0 2>&1 | Out-Null
+      powercfg /hibernate on 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Power settings restored to defaults"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1653 cleanup complete"
+
+analyst_checklist:
+  - "Process event: powercfg.exe with /change standby-timeout 0 or /hibernate off arguments"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powercfg.exe' and ProcessCommandLine contains 'standby-timeout' and ProcessCommandLine contains '0'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powercfg.exe' and ProcessCommandLine contains 'hibernate off'"
+  - "MDE alert: 'Power settings modified to prevent sleep'"
+  - "CONTROL CHECK: GPO can enforce power settings — if power timeouts are reset despite policy, that is an active attack indicator"
+  - "CONTROL CHECK: Server-class machines with sleep disabled is expected; workstations with sleep permanently disabled is suspicious"

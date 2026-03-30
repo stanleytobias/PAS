@@ -1,0 +1,111 @@
+id: T1505.005_server_software_terminal_services_dll
+name: "Server Software Component — Terminal Services DLL"
+mitre_technique: "T1505.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse Terminal Services (Remote Desktop Services) DLL components to
+  establish persistent access. The primary target is the termsrv.dll replacement —
+  the main RDS DLL loaded by svchost.exe hosting TermService. Adversaries may also
+  abuse the TSMSISrv.dll (Terminal Services Session Manager) or modify
+  HKLM\SYSTEM\CurrentControlSet\Services\TermService\Parameters to load a malicious
+  DLL. A compromised Terminal Services DLL runs as SYSTEM and can intercept RDP
+  credentials, establish backdoors, or provide persistent remote access that survives
+  even after legitimate RDP sessions are closed.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1505/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1505.005 — Terminal Services DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check Terminal Services configuration and DLL path"
+    command: |
+      Write-Host "[PAS] Terminal Services DLL check:"
+      $termSvc = Get-Service TermService -ErrorAction SilentlyContinue
+      Write-Host "  TermService status: $($termSvc?.Status)"
+
+      # Check the ServiceDll parameter
+      $paramKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService\Parameters"
+      if (Test-Path $paramKey) {
+          $dll = (Get-ItemProperty $paramKey -Name ServiceDll -ErrorAction SilentlyContinue).ServiceDll
+          Write-Host "  ServiceDll: $dll"
+          Write-Host "  Legitimate: %SystemRoot%\System32\termsrv.dll"
+          if ($dll -and $dll -notmatch 'termsrv.dll') {
+              Write-Host "  WARNING: Non-standard Terminal Services DLL registered!"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Terminal Services DLL hijack via ServiceDll registry modification"
+    command: |
+      $malDll   = "$env:SystemRoot\System32\PAS_T1505_005_termsrv.dll"
+      Copy-Item "$env:SystemRoot\System32\termsrv.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Trojanised Terminal Services DLL: $malDll"
+
+      $paramKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService\Parameters"
+      if (-not (Test-Path $paramKey)) { New-Item -Path $paramKey -Force | Out-Null }
+
+      # Save original before modifying
+      $originalDll = (Get-ItemProperty $paramKey -Name ServiceDll `
+          -ErrorAction SilentlyContinue).ServiceDll
+      Set-Content "$env:TEMP\PAS_T1505_005_original_dll.txt" "$originalDll"
+
+      Set-ItemProperty $paramKey -Name ServiceDll -Value $malDll -Type ExpandString
+      Write-Host "[PAS] TermService ServiceDll redirected to: $malDll"
+      Write-Host "[PAS] Will load on next TermService restart as SYSTEM"
+      Write-Host "[PAS] Intercepts all RDP session activity"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\...\\TermService\\Parameters ServiceDll value modified"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore TermService ServiceDll to original value"
+    command: |
+      $paramKey    = "HKLM:\SYSTEM\CurrentControlSet\Services\TermService\Parameters"
+      $backupFile  = "$env:TEMP\PAS_T1505_005_original_dll.txt"
+      $originalDll = if (Test-Path $backupFile) {
+          Get-Content $backupFile -Raw
+      } else {
+          "%SystemRoot%\System32\termsrv.dll"
+      }
+
+      Set-ItemProperty $paramKey -Name ServiceDll -Value $originalDll.Trim() -Type ExpandString
+      Write-Host "[PAS][Cleanup] TermService ServiceDll restored: $($originalDll.Trim())"
+
+      Remove-Item "$env:SystemRoot\System32\PAS_T1505_005_termsrv.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1505_005_original_dll.txt" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Malicious DLL and backup file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1505.005 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\\...\\TermService\\Parameters ServiceDll value modified"
+  - "File event: termsrv.dll or TSMSISrv.dll replaced or new DLL in System32 matching TS pattern"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'TermService\\\\Parameters' and RegistryValueName == 'ServiceDll'"
+  - "MDE alert: 'Terminal Services DLL modified'"
+  - "CONTROL CHECK: ServiceDll for TermService must only be %SystemRoot%\\System32\\termsrv.dll — any change is malicious"
+  - "CONTROL CHECK: FIM on termsrv.dll — hash change indicates binary replacement"
+  - "CONTROL CHECK: Credential Guard protects RDP credentials in memory from a compromised termsrv.dll"

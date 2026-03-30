@@ -1,0 +1,96 @@
+id: T1546.016_event_triggered_execution_installer_packages
+name: "Event Triggered Execution — Installer Packages"
+mitre_technique: "T1546.016"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse MSI installer packages with custom actions to establish persistence
+  or execute malicious code during installation. MSI custom actions can run arbitrary
+  executables, scripts, or DLLs with elevated permissions (if the installer runs with
+  elevation). Adversaries may also trojanise legitimate installer packages by adding
+  custom actions that drop and register a backdoor alongside the legitimate software.
+  The malicious action runs as part of the normal installation process — making it
+  appear legitimate to users and security tools.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/016/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.016 — Installer Package persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a minimal MSI with a malicious custom action using WiX/msiexec patterns"
+    command: |
+      Write-Host "[PAS] MSI custom action persistence simulation:"
+      Write-Host "[PAS] Real attack: trojanised MSI with CustomAction Type=34 (run EXE)"
+      Write-Host "[PAS] The custom action drops a payload and registers persistence"
+      Write-Host ""
+
+      # Simulate what a malicious custom action would do — drop payload + Run key
+      $payload = "$env:TEMP\PAS_T1546_016_installer_drop.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      # The custom action would execute this sequence:
+      Write-Host "[PAS] Simulating custom action execution:"
+      Write-Host "  Step 1: Drop payload to ProgramData"
+      $persistPath = "$env:ProgramData\PAS_T1546_016_Service\PAS_svc.exe"
+      New-Item -ItemType Directory (Split-Path $persistPath) -Force | Out-Null
+      Copy-Item $payload $persistPath -Force
+      Write-Host "  Payload dropped: $persistPath"
+
+      Write-Host "  Step 2: Register Run key persistence"
+      Set-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1546_016_UpdateSvc" -Value $persistPath -Type String
+      Write-Host "  Run key set: PAS_T1546_016_UpdateSvc -> $persistPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate msiexec process event — what the installer execution looks like"
+    command: |
+      Write-Host "[PAS] msiexec.exe execution pattern (simulated):"
+      Write-Host "[PAS] Real: msiexec.exe /i PAS_trojan.msi /quiet"
+      Write-Host "[PAS] Child process chain: msiexec.exe -> cmd.exe (custom action)"
+      Start-Process cmd.exe -ArgumentList "/c echo PAS-T1546.016-MSI-CUSTOM-ACTION" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Custom action child process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — msiexec spawning unexpected child process, Run key set from installer context"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove installer persistence artifacts"
+    command: |
+      Remove-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1546_016_UpdateSvc" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:ProgramData\PAS_T1546_016_Service" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_016_installer_drop.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Installer persistence artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.016 cleanup complete"
+
+analyst_checklist:
+  - "Process event: msiexec.exe spawning cmd.exe, powershell.exe, or unknown binary (custom action)"
+  - "File event: executable dropped to ProgramData or System32 from msiexec context"
+  - "Registry event: Run key set by msiexec.exe child process"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'msiexec.exe' and FileName in ('cmd.exe','powershell.exe')"
+  - "Sentinel: DeviceFileEvents | where InitiatingProcessFileName == 'msiexec.exe' and FileName endswith '.exe' and FolderPath contains 'ProgramData'"
+  - "MDE alert: 'Suspicious MSI custom action executed'"
+  - "CONTROL CHECK: MSI installations should be vetted before deployment — scan with static analysis tools"
+  - "CONTROL CHECK: AppLocker/WDAC can restrict what msiexec custom actions can execute"

@@ -1,0 +1,93 @@
+id: T1543.003_create_modify_system_process_windows_service
+name: "Create or Modify System Process — Windows Service"
+mitre_technique: "T1543.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries create new Windows services or modify existing ones to run malicious
+  payloads persistently. Services configured with START_TYPE=AUTO_START execute at
+  boot under SYSTEM or a specified service account. Creating a new service requires
+  admin privileges and generates Event ID 7045 (new service installed). Modifying
+  an existing service binary path is subtler — the legitimate service name provides
+  cover and the change may be harder to detect. Services can also be configured with
+  failure actions (recovery programs) that run malicious binaries on service crash.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1543/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1543.003 — Windows Service persistence simulation (requires elevation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a new auto-start service — Event ID 7045"
+    command: |
+      $svcName   = "PAS_T1543_003_WinUpdateSvc"
+      $svcDisp   = "Windows Update Compatibility"
+      $payload   = "$env:TEMP\PAS_T1543_003_svc.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      sc.exe create $svcName binPath= "$payload /c echo PAS-SVC-RUNNING" `
+          start= auto DisplayName= "$svcDisp" type= own 2>&1 | Out-Null
+      Write-Host "[PAS] Service created: $svcName"
+      Write-Host "[PAS] Event ID 7045 (New Service Installed) should fire"
+
+  - step: 3
+    type: exec_powershell
+    description: "Configure service failure recovery — run malicious binary on crash"
+    command: |
+      $svcName = "PAS_T1543_003_WinUpdateSvc"
+      $payload = "$env:TEMP\PAS_T1543_003_svc.exe"
+      sc.exe failure $svcName reset= 86400 actions= run/5000 command= $payload 2>&1 | Out-Null
+      Write-Host "[PAS] Service failure recovery set: run $payload on first failure"
+      Write-Host "[PAS] Real attack: configure failure recovery on a LEGITIMATE service to run malware"
+
+  - step: 4
+    type: exec_powershell
+    description: "Verify service creation and start attempt"
+    command: |
+      $svc = Get-Service -Name "PAS_T1543_003_WinUpdateSvc" -ErrorAction SilentlyContinue
+      if ($svc) {
+          Write-Host "[PAS] Service confirmed: $($svc.Name) Status=$($svc.Status) StartType=$($svc.StartType)"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 7045 (new service), service binary pointing to TEMP/AppData"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Stop and delete the test service"
+    command: |
+      $svcName = "PAS_T1543_003_WinUpdateSvc"
+      Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+      sc.exe delete $svcName 2>&1 | Out-Null
+      Remove-Item "$env:TEMP\PAS_T1543_003_svc.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Service deleted and payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1543.003 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 7045: New service installed — always review immediately"
+  - "Event ID 4697: A service was installed in the system (Security log)"
+  - "Service binary path pointing to TEMP, AppData, ProgramData, or a user writable location"
+  - "Sentinel: DeviceEvents | where ActionType == 'ServiceInstalled' and AdditionalFields contains 'Temp'"
+  - "Sentinel: SecurityEvent | where EventID == 4697 | where ServiceFileName !contains 'Windows' and ServiceFileName !contains 'Program Files'"
+  - "MDE alert: 'New service installed with suspicious binary path'"
+  - "CONTROL CHECK: Baseline all installed services — alert on any service created outside of approved deployment pipelines"
+  - "CONTROL CHECK: Service binary paths must be in protected directories (Program Files, Windows); block paths in user-writable locations"
+  - "CONTROL CHECK: Review service failure recovery programs — failure actions pointing to non-system binaries are an indicator"

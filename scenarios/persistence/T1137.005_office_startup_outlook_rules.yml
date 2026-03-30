@@ -1,0 +1,86 @@
+id: T1137.005_office_startup_outlook_rules
+name: "Office Application Startup — Outlook Rules"
+mitre_technique: "T1137.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries create malicious Outlook rules that execute applications or scripts
+  when a specially crafted email is received. The "run a script" Outlook rule action
+  triggers a VBA macro when matching email arrives. Rules are stored server-side in
+  the mailbox (survive endpoint remediation) and can be created via the Outlook client,
+  MAPI/EWS/Graph API, or PowerShell. The adversary sends a trigger email to activate
+  the rule and run their payload. The "run a script" action requires the registry key
+  EnableUnsafeClientMailRules to be set.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1137.005 — Outlook Rules persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check if unsafe client mail rules are enabled"
+    command: |
+      Write-Host "[PAS] Outlook unsafe client mail rules check:"
+      $versions = @("16.0","15.0","14.0")
+      foreach ($v in $versions) {
+          $rulesKey = "HKCU:\Software\Microsoft\Office\$v\Outlook\Security"
+          $unsafe   = (Get-ItemProperty $rulesKey -Name EnableUnsafeClientMailRules `
+              -ErrorAction SilentlyContinue).EnableUnsafeClientMailRules
+          if ($null -ne $unsafe) {
+              Write-Host "  Office $v EnableUnsafeClientMailRules: $unsafe"
+              if ($unsafe -eq 1) {
+                  Write-Host "  WARNING: 'Run a script' rule action is ENABLED"
+              }
+          }
+      }
+      Write-Host "[PAS] Real attack: enable this key, create rule to run payload on trigger email"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate enabling unsafe mail rules (detection trigger)"
+    command: |
+      $rulesKey = "HKCU:\Software\Microsoft\Office\16.0\Outlook\Security"
+      if (-not (Test-Path $rulesKey)) { New-Item -Path $rulesKey -Force | Out-Null }
+      Set-ItemProperty $rulesKey -Name "EnableUnsafeClientMailRules" -Value 1 -Type DWord
+      Write-Host "[PAS] EnableUnsafeClientMailRules set to 1"
+      Write-Host "[PAS] 'Run a script' Outlook rule action is now available"
+      Write-Host "[PAS] Detection: this registry value should always be 0 (default)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — EnableUnsafeClientMailRules registry value set to 1"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Disable unsafe client mail rules"
+    command: |
+      Set-ItemProperty "HKCU:\Software\Microsoft\Office\16.0\Outlook\Security" `
+          -Name "EnableUnsafeClientMailRules" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] EnableUnsafeClientMailRules set back to 0"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1137.005 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: EnableUnsafeClientMailRules set to 1 under any Office version"
+  - "Exchange audit: new Outlook rule with 'run a script' action created"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueName == 'EnableUnsafeClientMailRules' and RegistryValueData == '1'"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'RunScript'"
+  - "MDE alert: 'Outlook run-a-script rule enabled'"
+  - "CONTROL CHECK: EnableUnsafeClientMailRules must be 0 via GPO — enforce and alert on change"
+  - "CONTROL CHECK: Exchange: disable run-a-script rules at the server level via Set-OwaMailboxPolicy"

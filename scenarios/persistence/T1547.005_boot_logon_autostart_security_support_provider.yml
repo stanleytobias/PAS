@@ -1,0 +1,91 @@
+id: T1547.005_boot_logon_autostart_security_support_provider
+name: "Boot or Logon Autostart Execution — Security Support Provider"
+mitre_technique: "T1547.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL as a Security Support Provider (SSP) so it
+  is loaded into lsass.exe at system boot. SSP DLLs are registered under
+  HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Security Packages. Once loaded into
+  lsass.exe, an SSP has access to the msv1_0 authentication data including plaintext
+  passwords of all users who authenticate — this is the mechanism used by mimikatz's
+  mimilib.dll SSP. The DLL must export SpLsaModeInitialize.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.005 — Security Support Provider (SSP) persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current SSP packages — establish baseline"
+    command: |
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Security Packages" `
+          -ErrorAction SilentlyContinue)."Security Packages"
+      Write-Host "[PAS] Current LSA Security Packages:"
+      $current | ForEach-Object { Write-Host "  $_" }
+      Write-Host "[PAS] Legitimate: kerberos, msv1_0, schannel, wdigest, tspkg, pku2u"
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious SSP DLL — loads into lsass.exe at boot"
+    command: |
+      $malSSP  = "$env:SystemRoot\System32\PAS_T1547_005_ssp.dll"
+      Copy-Item "$env:SystemRoot\System32\kerberos.dll" $malSSP `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Malicious SSP DLL placed: $malSSP"
+
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Security Packages")."Security Packages"
+      $updated = $current + @("PAS_T1547_005_ssp")
+
+      Set-ItemProperty $lsaKey -Name "Security Packages" -Value $updated -Type MultiString
+      Write-Host "[PAS] LSA Security Packages updated — PAS_T1547_005_ssp added"
+      Write-Host "[PAS] Will load into lsass.exe at next reboot"
+      Write-Host "[PAS] Loaded SSP DLL has access to ALL plaintext credentials"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\...\\Lsa Security Packages value modified, new DLL in System32"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore Security Packages and remove malicious DLL"
+    command: |
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Security Packages")."Security Packages"
+      $restored = $current | Where-Object { $_ -ne "PAS_T1547_005_ssp" }
+      Set-ItemProperty $lsaKey -Name "Security Packages" -Value $restored -Type MultiString
+      Write-Host "[PAS][Cleanup] Security Packages restored: $($restored -join ', ')"
+
+      Remove-Item "$env:SystemRoot\System32\PAS_T1547_005_ssp.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] SSP DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.005 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\\SYSTEM\\...\\Lsa 'Security Packages' value modified"
+  - "File event: new DLL dropped in System32 (potential SSP payload)"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Lsa' and RegistryValueName == 'Security Packages'"
+  - "MDE alert: 'LSA Security Support Provider modified'"
+  - "CONTROL CHECK: Credential Guard prevents SSP DLLs from accessing protected credentials — deploy on all endpoints"
+  - "CONTROL CHECK: LSA RunAsPPL (Protected Process Light) limits DLL injection into lsass.exe"
+  - "CONTROL CHECK: Baseline Security Packages — any entry beyond the default set is suspicious"
+  - "CONTROL CHECK: Disable WDigest (HKLM\\...\\Lsa\\WDigest UseLogonCredential=0) — prevents plaintext creds in memory even if SSP loads"

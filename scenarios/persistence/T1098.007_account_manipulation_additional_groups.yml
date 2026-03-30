@@ -1,0 +1,98 @@
+id: T1098.007_account_manipulation_additional_groups
+name: "Account Manipulation — Additional Local or Domain Groups"
+mitre_technique: "T1098.007"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add compromised accounts to privileged local or domain groups to
+  maintain persistent elevated access. Common targets: local Administrators group
+  (grants admin on the host), Remote Desktop Users (enables RDP), Remote Management
+  Users (enables WinRM), and domain groups such as Domain Admins or Enterprise Admins.
+  Adding to these groups is stealthy — the account continues to use its existing
+  credentials but gains new permissions that survive password resets on the original
+  account. Detection relies on group membership change events (Event ID 4732/4728).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1098/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1098.007 — Additional Local/Domain Group persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a test account and add to privileged local groups"
+    command: |
+      Write-Host "[PAS] Creating test account and adding to privileged groups:"
+      # Create test user
+      $testUser = "PAS_T1098_007_svc"
+      New-LocalUser -Name $testUser -Password (
+          ConvertTo-SecureString "PAS-TempPass-123!" -AsPlainText -Force) `
+          -PasswordNeverExpires $true -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Test user created: $testUser"
+
+      # Add to local Administrators — Event ID 4732
+      Add-LocalGroupMember -Group "Administrators" -Member $testUser `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Added $testUser to local Administrators (Event ID 4732)"
+
+      # Add to Remote Desktop Users — Event ID 4732
+      Add-LocalGroupMember -Group "Remote Desktop Users" -Member $testUser `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Added $testUser to Remote Desktop Users (Event ID 4732)"
+
+      # Add to Remote Management Users — enables WinRM
+      Add-LocalGroupMember -Group "Remote Management Users" -Member $testUser `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Added $testUser to Remote Management Users"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate current local Administrators — verify persistence and show detection point"
+    command: |
+      Write-Host "[PAS] Current local Administrators membership:"
+      Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue |
+          ForEach-Object { Write-Host "  $($_.Name) [$($_.PrincipalSource)]" }
+      Write-Host "[PAS] PAS_T1098_007_svc should appear above — verify Event ID 4732 fired"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4732 (member added to security-enabled local group), Event ID 4728 (domain group)"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test user from groups and delete account"
+    command: |
+      $testUser = "PAS_T1098_007_svc"
+      @("Administrators","Remote Desktop Users","Remote Management Users") | ForEach-Object {
+          Remove-LocalGroupMember -Group $_ -Member $testUser -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed $testUser from $_"
+      }
+      Remove-LocalUser -Name $testUser -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test user deleted"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1098.007 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4732: A member was added to a security-enabled local group (Administrators, RDP Users)"
+  - "Event ID 4728: A member was added to a security-enabled global group (Domain Admins)"
+  - "Event ID 4756: A member was added to a security-enabled universal group"
+  - "Sentinel: SecurityEvent | where EventID == 4732 and TargetUserName == 'Administrators'"
+  - "Sentinel: SecurityEvent | where EventID in (4728,4732,4756) | where TargetUserName in ('Administrators','Domain Admins','Enterprise Admins')"
+  - "Defender for Identity: Alert on new member added to sensitive group"
+  - "CONTROL CHECK: Alert on any non-standard account added to local Administrators on endpoints"
+  - "CONTROL CHECK: Privileged Identity Management (PIM) — require approval + justification for Domain Admin group membership"
+  - "CONTROL CHECK: Periodic access review — report all accounts in Administrators, Domain Admins, Enterprise Admins monthly"

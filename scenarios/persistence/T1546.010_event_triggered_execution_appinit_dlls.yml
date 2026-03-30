@@ -1,0 +1,95 @@
+id: T1546.010_event_triggered_execution_appinit_dlls
+name: "Event Triggered Execution — AppInit DLLs"
+mitre_technique: "T1546.010"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL in the AppInit_DLLs registry value so it is
+  loaded by user32.dll into every process that loads user32.dll — which is virtually
+  every GUI application and many background processes. The key is at:
+  HKLM\Software\Microsoft\Windows NT\CurrentVersion\Windows\AppInit_DLLs
+  The LoadAppInit_DLLs value must be set to 1 to enable loading. On systems with
+  Secure Boot enabled, AppInit_DLLs are disabled. This was heavily used by malware
+  (Zeus, SpyEye, DLL side-loading) for persistent code injection.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.010 — AppInit DLLs persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current AppInit_DLLs state — baseline"
+    command: |
+      $key = "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Windows"
+      $appInit  = (Get-ItemProperty $key -Name AppInit_DLLs       -ErrorAction SilentlyContinue).AppInit_DLLs
+      $loadFlag = (Get-ItemProperty $key -Name LoadAppInit_DLLs   -ErrorAction SilentlyContinue).LoadAppInit_DLLs
+      Write-Host "[PAS] Current AppInit_DLLs: '$appInit'"
+      Write-Host "[PAS] LoadAppInit_DLLs: $loadFlag"
+      if ($loadFlag -eq 0 -or $null -eq $loadFlag) {
+          Write-Host "[PAS] AppInit_DLLs loading is DISABLED (Secure Boot or policy)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious AppInit DLL and enable loading"
+    command: |
+      $malDll = "$env:SystemRoot\System32\PAS_T1546_010_appinit.dll"
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+
+      $key = "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Windows"
+      $current = (Get-ItemProperty $key -Name AppInit_DLLs -ErrorAction SilentlyContinue).AppInit_DLLs
+      $updated = if ($current) { "$current $malDll" } else { $malDll }
+
+      Set-ItemProperty $key -Name "AppInit_DLLs"     -Value $updated -Type String
+      Set-ItemProperty $key -Name "LoadAppInit_DLLs" -Value 1        -Type DWord
+
+      Write-Host "[PAS] AppInit_DLLs set: $updated"
+      Write-Host "[PAS] LoadAppInit_DLLs = 1 (enabled)"
+      Write-Host "[PAS] Injected into every process loading user32.dll"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — AppInit_DLLs value modified, LoadAppInit_DLLs set to 1"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove AppInit DLL entry and disable loading"
+    command: |
+      $key     = "HKLM:\Software\Microsoft\Windows NT\CurrentVersion\Windows"
+      $malDll  = "$env:SystemRoot\System32\PAS_T1546_010_appinit.dll"
+      $current = (Get-ItemProperty $key -Name AppInit_DLLs -ErrorAction SilentlyContinue).AppInit_DLLs
+      if ($current) {
+          $restored = ($current -replace [regex]::Escape($malDll), "").Trim()
+          Set-ItemProperty $key -Name "AppInit_DLLs" -Value $restored -Type String
+      }
+      Set-ItemProperty $key -Name "LoadAppInit_DLLs" -Value 0 -Type DWord
+      Remove-Item $malDll -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] AppInit_DLLs cleared and loading disabled"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.010 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: AppInit_DLLs value modified under HKLM\\...\\Windows NT\\...\\Windows"
+  - "Registry event: LoadAppInit_DLLs set to 1"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Windows NT\\\\CurrentVersion\\\\Windows' and RegistryValueName == 'AppInit_DLLs'"
+  - "MDE alert: 'AppInit DLL registered for persistence'"
+  - "CONTROL CHECK: AppInit_DLLs should be empty and LoadAppInit_DLLs = 0 on all endpoints"
+  - "CONTROL CHECK: Enable Secure Boot — disables AppInit_DLLs loading entirely"
+  - "CONTROL CHECK: Also check Wow6432Node path: HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows"

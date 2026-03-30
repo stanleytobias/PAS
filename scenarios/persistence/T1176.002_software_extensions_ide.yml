@@ -1,0 +1,117 @@
+id: T1176.002_software_extensions_ide
+name: "Software Extensions — IDE Extensions"
+mitre_technique: "T1176.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries install malicious IDE extensions (VS Code, IntelliJ, Eclipse) to
+  establish persistent access on developer workstations. IDE extensions have deep
+  system access — they can read all files the developer opens, intercept keystrokes,
+  exfiltrate source code and credentials, and execute arbitrary commands. Malicious
+  extensions may be delivered via supply chain compromise of a legitimate extension,
+  typosquatting a popular extension name, or direct sideload onto a compromised
+  developer machine. VS Code extensions can be sideloaded as .vsix packages without
+  going through the marketplace.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1176/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1176.002 — IDE Extension persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate installed VS Code extensions — detect unexpected entries"
+    command: |
+      Write-Host "[PAS] VS Code extension inventory:"
+      $vscodeExtPath = "$env:USERPROFILE\.vscode\extensions"
+      if (Test-Path $vscodeExtPath) {
+          $exts = Get-ChildItem $vscodeExtPath -Directory -ErrorAction SilentlyContinue
+          Write-Host "  Installed extensions ($($exts.Count)):"
+          $exts | ForEach-Object {
+              $pkg = Get-Content "$($_.FullName)\package.json" `
+                  -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+              if ($pkg) {
+                  Write-Host "  $($pkg.publisher).$($pkg.name) v$($pkg.version)"
+              } else {
+                  Write-Host "  $($_.Name) (no package.json)"
+              }
+          }
+      } else {
+          Write-Host "  VS Code extensions directory not found"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate malicious VS Code extension sideload"
+    command: |
+      Write-Host "[PAS] Simulating malicious VS Code extension installation:"
+      $malExtDir = "$env:USERPROFILE\.vscode\extensions\pas-publisher.pas-malext-1.0.0"
+      New-Item -ItemType Directory $malExtDir -Force | Out-Null
+
+      Set-Content "$malExtDir\package.json" @'
+{
+  "name": "pas-malext",
+  "displayName": "GitHub Copilot Helper",
+  "description": "AI coding assistant enhancement",
+  "version": "1.0.0",
+  "publisher": "pas-publisher",
+  "engines": { "vscode": "^1.60.0" },
+  "activationEvents": ["*"],
+  "main": "./extension.js",
+  "contributes": {}
+}
+'@
+      Set-Content "$malExtDir\extension.js" @'
+// PAS T1176.002 malicious VS Code extension simulation
+const vscode = require('vscode');
+const cp = require('child_process');
+
+function activate(context) {
+    // Real attack: exfiltrate workspace files, capture keystrokes
+    console.log('PAS-T1176.002-VSCODE-EXTENSION-ACTIVATED');
+    // Real: cp.exec('powershell -c payload.exe');
+}
+exports.activate = activate;
+'@
+      Write-Host "[PAS] Malicious VS Code extension installed: $malExtDir"
+      Write-Host "[PAS] Activates on any workspace open — executes in VS Code's Node.js context"
+      Write-Host "[PAS] Has access to: all open files, terminal, git credentials, env variables"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new directory in .vscode/extensions, Code.exe spawning unexpected child processes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove malicious VS Code extension"
+    command: |
+      Remove-Item "$env:USERPROFILE\.vscode\extensions\pas-publisher.pas-malext-1.0.0" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Malicious VS Code extension removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1176.002 cleanup complete"
+
+analyst_checklist:
+  - "File event: new directory created under .vscode\\extensions\\ by non-Code process"
+  - "Process event: Code.exe spawning unexpected child processes (cmd.exe, powershell.exe)"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains '.vscode\\\\extensions' and ActionType == 'DirectoryCreated'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'Code.exe' and FileName in ('cmd.exe','powershell.exe')"
+  - "MDE alert: 'IDE extension sideloaded outside marketplace'"
+  - "CONTROL CHECK: Enforce VS Code extension allowlist via settings.json or GPO — extensions.allowed"
+  - "CONTROL CHECK: Developer workstations are high-value targets — apply same monitoring as servers"
+  - "CONTROL CHECK: Code.exe spawning cmd.exe or powershell.exe is always suspicious outside of Terminal pane use"

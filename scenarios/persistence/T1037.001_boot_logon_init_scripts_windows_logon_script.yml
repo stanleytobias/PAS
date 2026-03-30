@@ -1,0 +1,75 @@
+id: T1037.001_boot_logon_init_scripts_windows_logon_script
+name: "Boot or Logon Initialization Scripts — Logon Script (Windows)"
+mitre_technique: "T1037.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add a script path to HKCU\Environment\UserInitMprLogonScript so it
+  executes at each logon. Windows runs any script referenced by this registry value
+  during the logon initialization phase — after Userinit but before the shell loads.
+  The script runs in the user's context with their permissions. Unlike Run keys,
+  this value specifically targets the MPR (Multiple Provider Router) logon process
+  and is less commonly monitored.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1037/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1037.001 — Windows Logon Script persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register malicious logon script via UserInitMprLogonScript"
+    command: |
+      $scriptPath = "$env:TEMP\PAS_T1037_001_logon.bat"
+      Set-Content $scriptPath "@echo PAS-T1037.001-LOGON-SCRIPT-EXECUTED"
+
+      $envKey = "HKCU:\Environment"
+      Set-ItemProperty $envKey -Name "UserInitMprLogonScript" -Value $scriptPath -Type String
+      Write-Host "[PAS] Logon script registered: HKCU\Environment\UserInitMprLogonScript"
+      Write-Host "[PAS] Script: $scriptPath"
+      Write-Host "[PAS] Executes at next logon in user context"
+
+  - step: 3
+    type: exec_powershell
+    description: "Verify the registry value was set"
+    command: |
+      $val = (Get-ItemProperty "HKCU:\Environment" -Name UserInitMprLogonScript `
+          -ErrorAction SilentlyContinue).UserInitMprLogonScript
+      Write-Host "[PAS] UserInitMprLogonScript current value: $val"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\Environment UserInitMprLogonScript value set"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove logon script registry value and script file"
+    command: |
+      Remove-ItemProperty "HKCU:\Environment" -Name "UserInitMprLogonScript" `
+          -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1037_001_logon.bat" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Logon script removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1037.001 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\\Environment UserInitMprLogonScript value created or modified"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Environment' and RegistryValueName == 'UserInitMprLogonScript'"
+  - "MDE alert: 'Logon script persistence registered'"
+  - "CONTROL CHECK: UserInitMprLogonScript should never be set on non-domain workstations — any value is suspicious"
+  - "CONTROL CHECK: GPO logon scripts (T1037.003) are managed — alert on UserInitMprLogonScript set by non-GPO process"

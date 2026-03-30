@@ -1,0 +1,119 @@
+id: T1547.004_boot_logon_autostart_winlogon_helper
+name: "Boot or Logon Autostart Execution — Winlogon Helper DLL"
+mitre_technique: "T1547.004"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse Winlogon registry entries to load malicious DLLs or executables
+  at user logon. Winlogon handles the secure attention sequence (Ctrl+Alt+Del),
+  user logon/logoff, and screen locking. Two key registry values are commonly abused:
+  Userinit (runs after logon — malware appends its path after the legitimate userinit.exe)
+  and Shell (launches Explorer.exe — adversaries replace or append their binary here).
+  Both run in the user's context at logon. Modifications to Notify, MPNotify, and
+  System values are also used.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.004 — Winlogon Helper DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current Winlogon values — establish baseline"
+    command: |
+      $winlogonKey = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+      Write-Host "[PAS] Current Winlogon values:"
+      @("Userinit","Shell","System","MPNotify") | ForEach-Object {
+          $val = (Get-ItemProperty $winlogonKey -Name $_ -ErrorAction SilentlyContinue).$_
+          if ($val) { Write-Host "  $_ = $val" }
+      }
+      Write-Host "[PAS] Legitimate: Userinit=C:\Windows\system32\userinit.exe,"
+      Write-Host "[PAS] Legitimate: Shell=explorer.exe"
+
+  - step: 3
+    type: exec_powershell
+    description: "Abuse Userinit — append malicious binary (comma-separated, both execute)"
+    command: |
+      $payload     = "$env:TEMP\PAS_T1547_004_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      $winlogonKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+      $originalUI   = (Get-ItemProperty $winlogonKey -Name Userinit).Userinit
+      $maliciousUI  = "$originalUI$payload,"
+
+      Set-ItemProperty $winlogonKey -Name Userinit -Value $maliciousUI -Type String
+      Write-Host "[PAS] Userinit modified:"
+      Write-Host "[PAS]   Was: $originalUI"
+      Write-Host "[PAS]   Now: $maliciousUI"
+      Write-Host "[PAS] Both userinit.exe AND PAS payload execute at logon"
+
+  - step: 4
+    type: exec_powershell
+    description: "Abuse Winlogon Shell — replace explorer.exe with malicious binary"
+    command: |
+      $payload     = "$env:TEMP\PAS_T1547_004_payload.exe"
+      $winlogonHKCU = "HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+
+      # HKCU Shell overrides HKLM — no admin needed
+      if (-not (Test-Path $winlogonHKCU)) {
+          New-Item -Path $winlogonHKCU -Force | Out-Null
+      }
+      Set-ItemProperty $winlogonHKCU -Name Shell -Value "explorer.exe, $payload" -Type String
+      Write-Host "[PAS] HKCU Winlogon Shell set: explorer.exe, $payload"
+      Write-Host "[PAS] Both Explorer AND PAS payload run as shell at logon"
+      Write-Host "[PAS] HKCU modification — no elevation required"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM/HKCU Winlogon Userinit or Shell value modified"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore Winlogon Userinit and remove HKCU Shell override"
+    command: |
+      $winlogonHKLM = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+      $winlogonHKCU = "HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+      $payload      = "$env:TEMP\PAS_T1547_004_payload.exe"
+
+      # Restore Userinit to canonical value
+      $current = (Get-ItemProperty $winlogonHKLM -Name Userinit).Userinit
+      $restored = $current -replace [regex]::Escape("$payload,"), "" `
+                           -replace [regex]::Escape(",$payload"), "" `
+                           -replace [regex]::Escape($payload), ""
+      # Ensure it ends with a comma (canonical form)
+      if ($restored -notmatch ',$') { $restored = $restored.TrimEnd(',') + "," }
+      Set-ItemProperty $winlogonHKLM -Name Userinit -Value $restored -Type String
+      Write-Host "[PAS][Cleanup] Userinit restored: $restored"
+
+      # Remove HKCU Shell override
+      Remove-ItemProperty $winlogonHKCU -Name Shell -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] HKCU Winlogon Shell removed"
+
+      Remove-Item $payload -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Payload file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.004 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM/HKCU ...\\Winlogon Userinit or Shell value modified"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Winlogon' and RegistryValueName in ('Userinit','Shell') and ActionType == 'RegistryValueSet'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Winlogon' and RegistryValueData !in ('C:\\\\Windows\\\\system32\\\\userinit.exe,','explorer.exe')"
+  - "MDE alert: 'Winlogon helper DLL/executable registered'"
+  - "CONTROL CHECK: Userinit value should ONLY be 'C:\\Windows\\system32\\userinit.exe,' — any addition is malicious"
+  - "CONTROL CHECK: Shell value should ONLY be 'explorer.exe' — any modification should alert immediately"
+  - "CONTROL CHECK: HKCU Winlogon Shell is particularly dangerous — any non-privileged user can set it"

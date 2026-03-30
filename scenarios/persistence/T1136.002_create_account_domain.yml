@@ -1,0 +1,96 @@
+id: T1136.002_create_account_domain
+name: "Create Account — Domain Account"
+mitre_technique: "T1136.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries with domain admin privileges create domain accounts to maintain
+  persistent access to the entire domain. Domain accounts can be used across
+  all systems in the domain, making them much more valuable than local accounts.
+  Adversaries typically disguise the account as a service account, helpdesk account,
+  or IT admin account. They may also create the account in a disabled state and
+  enable it only when needed (reducing detection surface). Event ID 4720 on the
+  domain controller fires when a domain account is created.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1136/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1136.002 — Create Domain Account persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate domain account creation — uses net user command (generates telemetry)"
+    command: |
+      Write-Host "[PAS] Domain account creation simulation:"
+      Write-Host "[PAS] Real attack: net user PAS_svc_domain PAS-Pass-123! /add /domain"
+
+      # Test if we are on a domain
+      $isDomain = (Get-WmiObject Win32_ComputerSystem).PartOfDomain
+      if ($isDomain) {
+          Write-Host "[PAS] Domain detected: $env:USERDOMAIN"
+          Write-Host "[PAS] Attempting domain account creation (requires DA privileges):"
+          # Use net user — generates process event even if it fails due to insufficient privileges
+          $result = net user "PAS_T1136_002_svc" "PAS-Pass-123!" /add /domain 2>&1
+          if ($LASTEXITCODE -eq 0) {
+              Write-Host "[PAS] Domain account created — Event ID 4720 on DC"
+              # Clean up immediately
+              net user "PAS_T1136_002_svc" /delete /domain 2>&1 | Out-Null
+              Write-Host "[PAS] Account immediately deleted for lab safety"
+          } else {
+              Write-Host "[PAS] Creation failed (insufficient privileges) — process event still generated"
+          }
+      } else {
+          Write-Host "[PAS] Not domain-joined — simulating process telemetry only:"
+          $proc = Start-Process net.exe -ArgumentList "user PAS_T1136_002_svc /add /domain" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] net user /add /domain process event generated"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Show common adversary disguise names for domain accounts"
+    command: |
+      Write-Host "[PAS] Common adversary domain account naming patterns:"
+      @(
+          "svc_backup         — looks like a backup service account",
+          "svc_monitoring     — looks like a monitoring agent",
+          "IT_admin           — looks like a legitimate IT admin",
+          "helpdesk_svc       — looks like a helpdesk automation account",
+          "svc_[vendorname]   — mimics a known vendor's service account"
+      ) | ForEach-Object { Write-Host "  $_" }
+      Write-Host "[PAS] These names pass casual review — automated baselining is required"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4720 on DC, net.exe with /add /domain argument"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1136.002 cleanup complete — account deleted inline or not created"
+
+analyst_checklist:
+  - "Event ID 4720 on Domain Controller: A user account was created"
+  - "Process event: net.exe with 'user ... /add /domain' arguments"
+  - "Sentinel: SecurityEvent | where EventID == 4720 and Computer contains 'DC'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains '/add' and ProcessCommandLine contains '/domain'"
+  - "Defender for Identity: Alert on new domain user account created outside business hours or by non-provisioning account"
+  - "CONTROL CHECK: Only the IT provisioning system (ServiceNow, Joiner workflow) should create domain accounts — alert on any other creator"
+  - "CONTROL CHECK: New domain accounts should trigger an automatic access review within 24 hours"
+  - "CONTROL CHECK: Privileged Identity Management — new accounts in privileged groups require approval"

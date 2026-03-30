@@ -1,0 +1,117 @@
+id: T1547.001_boot_logon_autostart_registry_run_keys
+name: "Boot or Logon Autostart Execution — Registry Run Keys / Startup Folder"
+mitre_technique: "T1547.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add entries to Registry Run keys or place files in Startup folders so
+  their payload executes every time a user logs in. The most commonly abused keys are
+  HKCU\Software\Microsoft\Windows\CurrentVersion\Run (user-context, no elevation needed)
+  and HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run (system-wide, needs admin).
+  Startup folder paths: %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup (user)
+  and %ProgramData%\Microsoft\Windows\Start Menu\Programs\StartUp (all users).
+  This is one of the most common and heavily monitored persistence mechanisms.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.001 — Registry Run Keys / Startup Folder persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Add HKCU Run key — user-context autostart (no elevation required)"
+    command: |
+      $payload   = "$env:TEMP\PAS_T1547_001_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $payload -Force
+
+      $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+      Set-ItemProperty -Path $runKey -Name "PAS_T1547_001_UserRun" `
+          -Value $payload -Type String
+      Write-Host "[PAS] HKCU Run key set: PAS_T1547_001_UserRun -> $payload"
+      Write-Host "[PAS] Executes at next user logon — Event ID 13 (registry value set)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Add HKLM Run key — system-wide autostart (admin required)"
+    command: |
+      $payload = "$env:TEMP\PAS_T1547_001_payload.exe"
+      $runKey  = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+      Set-ItemProperty -Path $runKey -Name "PAS_T1547_001_SysRun" `
+          -Value $payload -Type String -ErrorAction SilentlyContinue
+      Write-Host "[PAS] HKLM Run key set: PAS_T1547_001_SysRun -> $payload"
+      Write-Host "[PAS] Executes for ALL users at logon"
+
+  - step: 4
+    type: exec_powershell
+    description: "Add RunOnce key — executes once then auto-deletes"
+    command: |
+      $payload    = "$env:TEMP\PAS_T1547_001_payload.exe"
+      $runOnceKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+      Set-ItemProperty -Path $runOnceKey -Name "PAS_T1547_001_RunOnce" `
+          -Value $payload -Type String
+      Write-Host "[PAS] HKCU RunOnce key set — executes once then self-removes"
+      Write-Host "[PAS] Used by adversaries to execute a second-stage dropper"
+
+  - step: 5
+    type: exec_powershell
+    description: "Drop LNK in user Startup folder — filesystem-based autostart"
+    command: |
+      $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+      $lnkPath       = "$startupFolder\PAS_T1547_001_startup.lnk"
+      $payload       = "$env:TEMP\PAS_T1547_001_payload.exe"
+
+      $shell = New-Object -ComObject WScript.Shell
+      $link  = $shell.CreateShortcut($lnkPath)
+      $link.TargetPath  = $payload
+      $link.Description = "Windows Update Helper"
+      $link.WindowStyle  = 7  # Minimised
+      $link.Save()
+      Write-Host "[PAS] Startup LNK created: $lnkPath"
+      Write-Host "[PAS] Executes silently (WindowStyle=7) at logon"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry Run key modifications (Event ID 13), new files in Startup folder"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all Run key entries and Startup artifacts"
+    command: |
+      Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1547_001_UserRun" -Force -ErrorAction SilentlyContinue
+      Remove-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1547_001_SysRun" -Force -ErrorAction SilentlyContinue
+      Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce" `
+          -Name "PAS_T1547_001_RunOnce" -Force -ErrorAction SilentlyContinue
+
+      $startupFolder = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+      Remove-Item "$startupFolder\PAS_T1547_001_startup.lnk" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1547_001_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Run keys and Startup artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.001 cleanup complete"
+
+analyst_checklist:
+  - "Registry event (Event ID 13): value set under HKCU/HKLM ...\\CurrentVersion\\Run"
+  - "File event: new .exe or .lnk created in Startup folder paths"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'CurrentVersion\\\\Run' and ActionType == 'RegistryValueSet'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Start Menu\\\\Programs\\\\Startup'"
+  - "MDE alert: 'Persistence via Run key' or 'Executable added to Startup folder'"
+  - "CONTROL CHECK: Autoruns (Sysinternals) — baseline Run key contents and alert on any new entries"
+  - "CONTROL CHECK: ASR rule: 'Block persistence through WMI event subscription' covers some Run key vectors"
+  - "CONTROL CHECK: AppLocker/WDAC — restrict which executables can run from TEMP/AppData (common Run key payload locations)"

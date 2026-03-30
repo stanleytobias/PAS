@@ -1,0 +1,80 @@
+id: T1671_cloud_application_integration
+name: "Cloud Application Integration"
+mitre_technique: "T1671"
+mitre_tactic: "persistence"
+description: >
+  Adversaries achieve persistence by creating or co-opting OAuth application integrations
+  in SaaS environments (M365, Google Workspace, Salesforce). A malicious OAuth app granted
+  consent by an admin or user receives persistent API access tokens that survive password
+  changes, MFA resets, and account lockouts. The app continues to operate autonomously
+  using its own credentials. APT29 used this technique to maintain persistent M365
+  access via applications with Mail.Read and Contacts.Read permissions.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1671/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1671 — Cloud App Integration: malicious OAuth app granted consent maintains persistent API access independent of user credentials"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for suspicious OAuth application consents on this host"
+    command: |
+      Write-Host "[PAS] OAuth application persistence check:"
+      Write-Host "[PAS] Real attack:"
+      Write-Host "  1. Adversary registers app in Entra ID (or attacker-controlled tenant)"
+      Write-Host "  2. Sends consent phishing link to admin"
+      Write-Host "  3. Admin consents — app receives permanent API access token"
+      Write-Host "  4. Even after remediation, app retains access until revoked"
+      Write-Host ""
+      Write-Host "[PAS] Token storage locations on Windows host:"
+      $tokenPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\TokenBroker",
+          "$env:LOCALAPPDATA\Microsoft\OneAuth",
+          "$env:APPDATA\Microsoft\Office\16.0\Common\OAuth2"
+      )
+      foreach ($p in $tokenPaths) {
+          if (Test-Path $p) {
+              $count = (Get-ChildItem $p -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count
+              Write-Host "  $p : $count files"
+          }
+      }
+
+  - step: 3
+    type: marker
+    description: "OAuth app audit check"
+    message: "CONTROL CHECK: Entra ID Enterprise Applications — audit all apps with admin consent. Any app with Mail.Read, Files.ReadWrite, or Directory.Read.All granted to an unknown publisher requires immediate review."
+
+  - step: 4
+    type: marker
+    description: "Consent policy check"
+    message: "CONTROL CHECK: Disable user consent for OAuth apps entirely — require admin approval for ALL app consent requests. This single control eliminates the consent phishing attack vector."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName == 'Consent to application' | where TimeGenerated > ago(30d)"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1671 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'Consent to application'"
+  - "Sentinel: AuditLogs | where OperationName == 'Add app role assignment to service principal' | where TargetResources contains 'Mail'"
+  - "MDE: Defender for Cloud Apps — alert on new app granted high-privilege API permissions"
+  - "CONTROL CHECK: Restrict user consent — set to 'Do not allow user consent' in Entra ID"
+  - "CONTROL CHECK: App governance policies in Defender for Cloud Apps — auto-disable apps accessing unusual data volumes"
+  - "CONTROL CHECK: Revoke all tokens for compromised app: Remove-MgServicePrincipalAppRoleAssignment"

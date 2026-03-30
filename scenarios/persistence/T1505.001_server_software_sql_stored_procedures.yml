@@ -1,0 +1,90 @@
+id: T1505.001_server_software_component_sql_stored_procedures
+name: "Server Software Component — SQL Stored Procedures"
+mitre_technique: "T1505.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse SQL Server stored procedures to establish persistence and achieve
+  code execution. The most powerful mechanism is xp_cmdshell — a SQL Server extended
+  stored procedure that executes arbitrary OS commands. Adversaries enable xp_cmdshell
+  (disabled by default since SQL Server 2005) and use it to run payloads. A subtler
+  approach uses sp_procoption to mark a stored procedure for auto-execution at SQL
+  Server startup. Detection relies on SQL audit logs and monitoring for xp_cmdshell
+  enablement.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1505/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1505.001 — SQL Stored Procedure persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for SQL Server installation and xp_cmdshell status"
+    command: |
+      Write-Host "[PAS] SQL Server check:"
+      $sqlServices = Get-Service -Name "MSSQL*" -ErrorAction SilentlyContinue
+      if ($sqlServices) {
+          $sqlServices | ForEach-Object {
+              Write-Host "  SQL Service: $($_.Name) Status=$($_.Status)"
+          }
+          Write-Host "[PAS] SQL Server present — xp_cmdshell persistence applicable"
+          Write-Host "[PAS] Real attack:"
+          Write-Host "  EXEC sp_configure 'show advanced options', 1; RECONFIGURE;"
+          Write-Host "  EXEC sp_configure 'xp_cmdshell', 1; RECONFIGURE;"
+          Write-Host "  EXEC xp_cmdshell 'net user PAS_backdoor P@ss! /add';"
+      } else {
+          Write-Host "[PAS] SQL Server not installed on this host"
+      }
+
+      # Test SQL connectivity on port 1433
+      try {
+          $tcp  = New-Object System.Net.Sockets.TcpClient
+          $conn = $tcp.BeginConnect("127.0.0.1", 1433, $null, $null)
+          $conn.AsyncWaitHandle.WaitOne(300, $false) | Out-Null
+          if ($tcp.Connected) {
+              Write-Host "[PAS] SQL Server port 1433 OPEN — validate xp_cmdshell is disabled"
+          }
+          $tcp.Close()
+      } catch {}
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate SQL startup procedure registration pattern"
+    command: |
+      Write-Host "[PAS] SQL startup procedure persistence pattern:"
+      Write-Host "[PAS] sp_procoption registers a procedure to auto-execute at SQL Server start:"
+      Write-Host "  CREATE PROCEDURE PAS_StartupPayload AS EXEC xp_cmdshell 'payload.exe'"
+      Write-Host "  EXEC sp_procoption 'PAS_StartupPayload', 'startup', 'true'"
+      Write-Host "[PAS] Procedure executes as SA (SYSTEM equivalent) at every SQL restart"
+      Write-Host "[PAS] Detection: SQL audit log — sp_procoption calls and CREATE PROCEDURE in master db"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SQL audit log — sp_configure xp_cmdshell, sp_procoption startup procedure registration"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1505.001 cleanup complete — no SQL changes made"
+
+analyst_checklist:
+  - "SQL audit: sp_configure xp_cmdshell set to 1 — immediate alert"
+  - "SQL audit: sp_procoption called with startup=true parameter"
+  - "SQL audit: CREATE PROCEDURE in master database from non-DBA account"
+  - "Sentinel: AzureDiagnostics | where Category == 'SQLSecurityAuditEvents' and Statement_s contains 'xp_cmdshell'"
+  - "MDE: DeviceProcessEvents | where InitiatingProcessFileName == 'sqlservr.exe' and FileName == 'cmd.exe'"
+  - "CONTROL CHECK: xp_cmdshell must be disabled on all SQL instances — verify: SELECT value FROM sys.configurations WHERE name='xp_cmdshell'"
+  - "CONTROL CHECK: SQL Server audit must log DDL and security events — without auditing, stored procedure persistence is invisible"
+  - "CONTROL CHECK: SQL Server service account should not be SYSTEM or a domain admin — limits blast radius"

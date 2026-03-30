@@ -1,0 +1,87 @@
+id: T1546.009_event_triggered_execution_appcert_dlls
+name: "Event Triggered Execution — AppCert DLLs"
+mitre_technique: "T1546.009"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register a malicious DLL under the AppCertDLLs registry key so it is
+  loaded into every process that calls CreateProcess, CreateProcessAsUser,
+  CreateProcessWithLoginW, CreateProcessWithTokenW, or WinExec. These API calls are
+  used by nearly every application to launch child processes, so the malicious DLL
+  is injected into a very broad set of processes. The key is at:
+  HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs
+  This provides persistence and broad code injection in a single registry entry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.009 — AppCert DLLs persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check existing AppCertDLLs entries — baseline"
+    command: |
+      $key = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs"
+      if (Test-Path $key) {
+          Write-Host "[PAS] Existing AppCertDLLs entries:"
+          Get-ItemProperty $key -ErrorAction SilentlyContinue |
+              Get-Member -MemberType NoteProperty |
+              Where-Object { $_.Name -notmatch '^PS' } |
+              ForEach-Object { Write-Host "  $($_.Name)" }
+      } else {
+          Write-Host "[PAS] AppCertDLLs key does not exist (clean system)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Register malicious AppCert DLL — injected into every CreateProcess call"
+    command: |
+      $malDll = "$env:SystemRoot\System32\PAS_T1546_009_appcert.dll"
+      Copy-Item "$env:SystemRoot\System32\version.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+
+      $key = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs"
+      if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+      Set-ItemProperty $key -Name "PAS_T1546_009" -Value $malDll -Type String
+
+      Write-Host "[PAS] AppCert DLL registered: PAS_T1546_009 -> $malDll"
+      Write-Host "[PAS] Injected into EVERY process calling CreateProcess APIs"
+      Write-Host "[PAS] Extremely broad code injection — affects almost all applications"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\...\\Session Manager\\AppCertDLLs key modified"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove AppCert DLL registry entry and file"
+    command: |
+      $key = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCertDLLs"
+      Remove-ItemProperty $key -Name "PAS_T1546_009" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:SystemRoot\System32\PAS_T1546_009_appcert.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] AppCert DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.009 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: new value under HKLM\\SYSTEM\\...\\Session Manager\\AppCertDLLs"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'AppCertDLLs' and ActionType == 'RegistryValueSet'"
+  - "MDE alert: 'AppCert DLL registered for process injection'"
+  - "CONTROL CHECK: AppCertDLLs key should be empty on all endpoints — any entry is malicious"
+  - "CONTROL CHECK: Baseline Session Manager keys — AppCertDLLs, AppInitDLLs are both high-value persistence targets"

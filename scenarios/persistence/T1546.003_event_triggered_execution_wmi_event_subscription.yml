@@ -1,0 +1,136 @@
+id: T1546.003_event_triggered_execution_wmi_event_subscription
+name: "Event Triggered Execution — Windows Management Instrumentation Event Subscription"
+mitre_technique: "T1546.003"
+mitre_tactic: "persistence"
+description: >
+  Adversaries use WMI event subscriptions to execute malicious payloads when specific
+  system events occur (user logon, timed intervals, process creation). A WMI subscription
+  has three components: EventFilter (defines the event), EventConsumer (defines the action),
+  and FilterToConsumerBinding (links them). CommandLineEventConsumer runs an arbitrary
+  command. WMI subscriptions survive reboots, are stored in the CIM repository, and
+  are invisible to Run key / Startup folder monitors. Used by APT29, FIN7, and many
+  commodity RATs. Detection requires WMI-specific monitoring.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1546.003 — WMI Event Subscription persistence simulation (requires elevation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create WMI EventFilter — triggers every 60 seconds"
+    command: |
+      $filterName = "PAS_T1546_003_TimerFilter"
+      $wmiNS      = "root\subscription"
+
+      # Remove any existing PAS filter first
+      Get-WmiObject -Namespace $wmiNS -Class __EventFilter `
+          -Filter "Name='$filterName'" -ErrorAction SilentlyContinue | Remove-WmiObject
+
+      $filter = Set-WmiInstance -Namespace $wmiNS -Class __EventFilter -Arguments @{
+          Name           = $filterName
+          EventNamespace = "root\cimv2"
+          QueryLanguage  = "WQL"
+          Query          = "SELECT * FROM __TimerEvent WHERE TimerID='PAS_T1546_003_Timer'"
+      }
+      Write-Host "[PAS] WMI EventFilter created: $filterName"
+
+  - step: 3
+    type: exec_powershell
+    description: "Create WMI CommandLineEventConsumer — executes cmd.exe when filter fires"
+    command: |
+      $consumerName = "PAS_T1546_003_CmdConsumer"
+      $payload      = "$env:TEMP\PAS_T1546_003_fired.txt"
+      $wmiNS        = "root\subscription"
+
+      Get-WmiObject -Namespace $wmiNS -Class CommandLineEventConsumer `
+          -Filter "Name='$consumerName'" -ErrorAction SilentlyContinue | Remove-WmiObject
+
+      $consumer = Set-WmiInstance -Namespace $wmiNS -Class CommandLineEventConsumer -Arguments @{
+          Name                = $consumerName
+          CommandLineTemplate = "cmd.exe /c echo PAS-T1546.003-WMI-FIRED > `"$payload`""
+      }
+      Write-Host "[PAS] WMI CommandLineEventConsumer created: $consumerName"
+
+  - step: 4
+    type: exec_powershell
+    description: "Create WMI FilterToConsumerBinding — links filter to consumer"
+    command: |
+      $filterName   = "PAS_T1546_003_TimerFilter"
+      $consumerName = "PAS_T1546_003_CmdConsumer"
+      $wmiNS        = "root\subscription"
+
+      $filter   = Get-WmiObject -Namespace $wmiNS -Class __EventFilter `
+          -Filter "Name='$filterName'"
+      $consumer = Get-WmiObject -Namespace $wmiNS -Class CommandLineEventConsumer `
+          -Filter "Name='$consumerName'"
+
+      Get-WmiObject -Namespace $wmiNS -Class __FilterToConsumerBinding `
+          -Filter "Filter=""__EventFilter.Name='$filterName'""" -ErrorAction SilentlyContinue |
+          Remove-WmiObject
+
+      Set-WmiInstance -Namespace $wmiNS -Class __FilterToConsumerBinding -Arguments @{
+          Filter   = $filter
+          Consumer = $consumer
+      } | Out-Null
+      Write-Host "[PAS] WMI FilterToConsumerBinding created"
+      Write-Host "[PAS] Full WMI subscription active — fires on timer events"
+      Write-Host "[PAS] Survives reboot — stored in CIM repository"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — WMI subscription creation events, WMI CommandLineEventConsumer in root\\subscription namespace"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all three WMI subscription components"
+    command: |
+      $wmiNS = "root\subscription"
+
+      # Remove binding first, then consumer, then filter
+      Get-WmiObject -Namespace $wmiNS -Class __FilterToConsumerBinding -ErrorAction SilentlyContinue |
+          Where-Object { $_.Filter -like "*PAS_T1546_003*" } |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] WMI FilterToConsumerBinding removed"
+
+      Get-WmiObject -Namespace $wmiNS -Class CommandLineEventConsumer `
+          -Filter "Name='PAS_T1546_003_CmdConsumer'" -ErrorAction SilentlyContinue |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] WMI CommandLineEventConsumer removed"
+
+      Get-WmiObject -Namespace $wmiNS -Class __EventFilter `
+          -Filter "Name='PAS_T1546_003_TimerFilter'" -ErrorAction SilentlyContinue |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] WMI EventFilter removed"
+
+      Remove-Item "$env:TEMP\PAS_T1546_003_fired.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] WMI subscription fully removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1546.003 cleanup complete"
+
+analyst_checklist:
+  - "WMI event: CommandLineEventConsumer created in root\\subscription namespace"
+  - "WMI event: __FilterToConsumerBinding created — links event trigger to command execution"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiBindingCreated'"
+  - "Sentinel: DeviceEvents | where ActionType contains 'WmiConsumer' and AdditionalFields contains 'CommandLine'"
+  - "MDE alert: 'WMI persistence via event subscription' — built-in detection"
+  - "CONTROL CHECK: Query WMI subscriptions regularly: Get-WmiObject -Namespace root\\subscription -Class __EventFilter"
+  - "CONTROL CHECK: ASR rule 'Block persistence through WMI event subscription' — enable in Block mode"
+  - "CONTROL CHECK: WMI subscriptions in root\\subscription that aren't from known security products are always suspicious"
+  - "CONTROL CHECK: Scrub CIM repository on compromised hosts — WMI subscriptions persist through reimaging if CIM repo isn't wiped"

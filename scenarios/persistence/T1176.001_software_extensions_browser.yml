@@ -1,0 +1,112 @@
+id: T1176.001_software_extensions_browser
+name: "Software Extensions — Browser Extensions"
+mitre_technique: "T1176.001"
+mitre_tactic: "persistence"
+description: >
+  Adversaries install malicious browser extensions to establish persistent access
+  within the browser context — intercepting credentials, stealing session cookies,
+  exfiltrating browsing data, and injecting scripts into web pages. Extensions can
+  be sideloaded (installed from a local directory without the browser store) or
+  pushed via enterprise Group Policy. A malicious extension has access to all
+  browser tabs, stored passwords, and can perform actions as the authenticated user
+  on any website. Chrome extensions deployed via GPO or sideloaded persist across
+  browser restarts and are not visible in the standard extensions list in some cases.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1176/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1176.001 — Browser Extension persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate installed Chrome/Edge extensions — detect unexpected entries"
+    command: |
+      Write-Host "[PAS] Browser extension inventory:"
+
+      # Chrome extensions
+      $chromeExtPath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Extensions"
+      if (Test-Path $chromeExtPath) {
+          $exts = Get-ChildItem $chromeExtPath -Directory -ErrorAction SilentlyContinue
+          Write-Host "  Chrome extensions ($($exts.Count) installed):"
+          $exts | Select-Object -First 5 | ForEach-Object {
+              $manifest = Get-Content "$($_.FullName)\*\manifest.json" `
+                  -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+              Write-Host "    $($_.Name): $($manifest.name) v$($manifest.version)"
+          }
+      }
+
+      # Edge extensions
+      $edgeExtPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Extensions"
+      if (Test-Path $edgeExtPath) {
+          $exts = Get-ChildItem $edgeExtPath -Directory -ErrorAction SilentlyContinue
+          Write-Host "  Edge extensions ($($exts.Count) installed)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate malicious extension sideload via ExtensionInstallForcelist GPO key"
+    command: |
+      Write-Host "[PAS] Simulating forced extension installation via registry:"
+      Write-Host "[PAS] Real attack: set ExtensionInstallForcelist to sideload malicious extension"
+
+      $extId      = "PAS_T1176_001_malext_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      $extPath    = "$env:TEMP\PAS_T1176_001_extension"
+      New-Item -ItemType Directory $extPath -Force | Out-Null
+
+      # Create a minimal extension manifest
+      Set-Content "$extPath\manifest.json" @'
+{
+  "manifest_version": 3,
+  "name": "Windows Security Helper",
+  "version": "1.0",
+  "description": "System security monitoring",
+  "permissions": ["tabs","cookies","storage","<all_urls>"]
+}
+'@
+      # Register via Chrome policy registry key (no elevation for HKCU)
+      $policyKey = "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist"
+      New-Item -Path $policyKey -Force | Out-Null
+      Set-ItemProperty $policyKey -Name "1" -Value "$extId;file:///$extPath"
+      Write-Host "[PAS] Forced extension registered: $extId"
+      Write-Host "[PAS] Chrome will install this extension on next launch"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ExtensionInstallForcelist registry key modified, new extension directory in Chrome/Edge profile"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove forced extension registry entry and extension directory"
+    command: |
+      Remove-Item "HKCU:\Software\Policies\Google\Chrome\ExtensionInstallForcelist" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1176_001_extension" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Forced extension registration removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1176.001 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: ExtensionInstallForcelist key modified under Chrome/Edge policy paths"
+  - "File event: new directory created in browser Extensions profile folder"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'ExtensionInstallForcelist'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Extensions' and FolderPath contains 'Chrome' and ActionType == 'DirectoryCreated'"
+  - "MDE alert: 'Browser extension force-installed via registry policy'"
+  - "CONTROL CHECK: Audit chrome://extensions (or edge://extensions) on endpoints regularly"
+  - "CONTROL CHECK: Enterprise browser management — only approved extension IDs in ExtensionInstallAllowlist"
+  - "CONTROL CHECK: Disable sideloading via ExtensionInstallBlocklist = * with exceptions for approved IDs only"

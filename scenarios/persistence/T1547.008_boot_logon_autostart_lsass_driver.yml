@@ -1,0 +1,90 @@
+id: T1547.008_boot_logon_autostart_lsass_driver
+name: "Boot or Logon Autostart Execution — LSASS Driver"
+mitre_technique: "T1547.008"
+mitre_tactic: "persistence"
+description: >
+  Adversaries add a malicious driver DLL to the HKLM\SYSTEM\CurrentControlSet\Control\Lsa
+  OSConfig\Security Packages or directly modify LSA driver registry values so a malicious
+  DLL is loaded by lsass.exe at startup. Specifically, modifying the
+  HKLM\SYSTEM\CurrentControlSet\Services\NTDS\DirectoryServiceExtPt registry key
+  (on DCs) or the more generic lsass driver loading mechanism registers a DLL
+  to load with full SYSTEM access inside lsass.exe on boot.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1547/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1547.008 — LSASS Driver persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current LSA driver configuration"
+    command: |
+      Write-Host "[PAS] Current LSA driver configuration:"
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      @("LsaDbExtPt","Authentication Packages","Security Packages","Notification Packages") |
+          ForEach-Object {
+              $val = (Get-ItemProperty $lsaKey -Name $_ -ErrorAction SilentlyContinue).$_
+              if ($val) { Write-Host "  ${_}: $val" }
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate LSASS driver registration — Notification Packages key"
+    command: |
+      $malDll  = "$env:SystemRoot\System32\PAS_T1547_008_lsadrv.dll"
+      Copy-Item "$env:SystemRoot\System32\scecli.dll" $malDll `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] LSA driver DLL placed: $malDll"
+
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Notification Packages" `
+          -ErrorAction SilentlyContinue)."Notification Packages"
+      $updated = ($current ?? @()) + @("PAS_T1547_008_lsadrv")
+      Set-ItemProperty $lsaKey -Name "Notification Packages" -Value $updated -Type MultiString
+      Write-Host "[PAS] LSA Notification Packages updated — PAS_T1547_008_lsadrv added"
+      Write-Host "[PAS] Called by lsass.exe when passwords change — receives plaintext password"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM\\...\\Lsa Notification Packages or LsaDbExtPt modified"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore Notification Packages and remove DLL"
+    command: |
+      $lsaKey  = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $current = (Get-ItemProperty $lsaKey -Name "Notification Packages" `
+          -ErrorAction SilentlyContinue)."Notification Packages"
+      if ($current) {
+          $restored = $current | Where-Object { $_ -ne "PAS_T1547_008_lsadrv" }
+          Set-ItemProperty $lsaKey -Name "Notification Packages" -Value $restored -Type MultiString
+          Write-Host "[PAS][Cleanup] Notification Packages restored"
+      }
+      Remove-Item "$env:SystemRoot\System32\PAS_T1547_008_lsadrv.dll" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] LSA driver DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1547.008 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\\...\\Lsa Notification Packages or LsaDbExtPt value modified"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Lsa' and RegistryValueName in ('Notification Packages','LsaDbExtPt')"
+  - "MDE alert: 'LSA notification package or driver modified'"
+  - "CONTROL CHECK: Notification Packages should only contain scecli — any other value is suspicious"
+  - "CONTROL CHECK: Password Filter DLLs registered via Notification Packages receive plaintext passwords on change — Credential Guard blocks this"

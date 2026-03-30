@@ -1,0 +1,74 @@
+id: T1098.005_account_manipulation_device_registration
+name: "Account Manipulation — Device Registration"
+mitre_technique: "T1098.005"
+mitre_tactic: "persistence"
+description: >
+  Adversaries register an adversary-controlled device to a compromised account in
+  Entra ID / MFA systems to maintain persistent access. Once registered, the device
+  can be used for MFA authentication (satisfying device-based Conditional Access) or
+  to receive MFA push notifications. The adversary's device appears as a trusted,
+  registered device. Common method: register via the dsregcmd /join or Microsoft
+  Authenticator app on the adversary's device using the victim's credentials captured
+  during an AiTM phishing attack.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1098/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1098.005 — Device Registration: adversary registers their device to victim account to satisfy MFA/Conditional Access"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check current device registration state on this host"
+    command: |
+      Write-Host "[PAS] Device registration state check:"
+      $dsreg = dsregcmd /status 2>&1
+      $joined    = $dsreg | Select-String "AzureAdJoined\s*:\s*(\w+)"
+      $registered = $dsreg | Select-String "AzureAdRegistered\s*:\s*(\w+)"
+      $deviceId  = $dsreg | Select-String "DeviceId\s*:\s*(\S+)"
+      $tenantId  = $dsreg | Select-String "TenantId\s*:\s*(\S+)"
+
+      Write-Host "  Entra ID Joined:      $(if ($joined) { $joined.Matches.Groups[1].Value } else { 'NO' })"
+      Write-Host "  Entra ID Registered:  $(if ($registered) { $registered.Matches.Groups[1].Value } else { 'NO' })"
+      Write-Host "  Device ID:            $(if ($deviceId) { $deviceId.Matches.Groups[1].Value } else { 'N/A' })"
+      Write-Host "  Tenant ID:            $(if ($tenantId) { $tenantId.Matches.Groups[1].Value } else { 'N/A' })"
+      Write-Host ""
+      Write-Host "[PAS] CONTROL CHECK: Are there any unrecognised device IDs registered to privileged accounts?"
+
+  - step: 3
+    type: marker
+    description: "New device registration alert"
+    message: "CONTROL CHECK: Entra ID — alert on 'Register device' for any privileged account (admin, service account). Normal users registering new devices should still be reviewed if device count suddenly increases."
+
+  - step: 4
+    type: marker
+    description: "MFA method audit"
+    message: "CONTROL CHECK: Review registered MFA methods for all privileged accounts monthly. Unexpected authenticator app registrations or new phone numbers indicate account compromise."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs | where OperationName == 'Register device' | join with SigninLogs on UserId"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1098.005 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'Register device' and InitiatedBy.user.userPrincipalName in (privileged_accounts)"
+  - "Sentinel: AuditLogs | where OperationName == 'Register device' | where TimeGenerated > ago(7d) — new device registrations"
+  - "CONTROL CHECK: Restrict device registration — only IT-managed devices should join Entra ID (Intune enrollment required)"
+  - "CONTROL CHECK: Block device registration from untrusted networks via Conditional Access"
+  - "CONTROL CHECK: AiTM-specific: Entra ID detects token replay from new device fingerprint — enable Identity Protection risk policies"
