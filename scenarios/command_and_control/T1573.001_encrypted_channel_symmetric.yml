@@ -1,0 +1,111 @@
+id: T1573.001_encrypted_channel_symmetric
+name: "Encrypted Channel — Symmetric Cryptography"
+mitre_technique: "T1573.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries encrypt C2 traffic with a symmetric algorithm (AES, RC4, ChaCha20)
+  so network content inspection cannot read commands or responses. The key is
+  typically hardcoded in the implant or derived during an initial key exchange.
+  Unlike HTTPS which uses standard TLS (inspectable via SSL bump), custom symmetric
+  encryption in non-standard protocols cannot be intercepted by a proxy.
+  Detection relies on identifying the encrypted channel by traffic characteristics:
+  high entropy payload, non-standard ports, and unusual connection patterns from
+  scripting processes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1573/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1573.001 — Symmetric Encryption C2 channel simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate AES-encrypted C2 beacon — encrypt command and transmit to loopback"
+    command: |
+      Write-Host "[PAS] AES-128-CBC encrypted C2 beacon:"
+      # Hardcoded key (as real implants have)
+      $keyBytes = [byte[]](0x50,0x41,0x53,0x5F,0x54,0x31,0x35,0x37,
+                           0x33,0x5F,0x41,0x45,0x53,0x4B,0x45,0x59)  # PAS_T1573_AESKEY
+      $ivBytes  = [byte[]](0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+                           0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F)
+
+      $beacon  = "PAS-T1573.001-AES-BEACON|$env:COMPUTERNAME|$(Get-Date -Format 'o')"
+      $aes     = [Security.Cryptography.Aes]::Create()
+      $aes.Key = $keyBytes; $aes.IV = $ivBytes
+      $encryptor = $aes.CreateEncryptor()
+      $plainBytes = [Text.Encoding]::UTF8.GetBytes($beacon)
+      $cipherBytes = $encryptor.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
+      $aes.Dispose()
+
+      Write-Host "[PAS] Plaintext: $beacon"
+      Write-Host "[PAS] Encrypted: $([Convert]::ToBase64String($cipherBytes))"
+      Write-Host "[PAS] Key (hardcoded in implant): $([Convert]::ToBase64String($keyBytes))"
+
+      # Transmit encrypted payload to loopback
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/data")
+          $req.Method = "POST"; $req.Timeout = 500
+          $req.ContentType = "application/octet-stream"
+          $stream = $req.GetRequestStream()
+          $stream.Write($cipherBytes, 0, $cipherBytes.Length)
+          $stream.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] AES-encrypted beacon transmitted — high entropy POST body generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate RC4-encrypted C2 — lightweight stream cipher used by older implants"
+    command: |
+      Write-Host "[PAS] RC4-encrypted C2 beacon:"
+      function Invoke-RC4 {
+          param([byte[]]$key, [byte[]]$data)
+          $s = 0..255
+          $j = 0
+          0..255 | ForEach-Object {
+              $j = ($j + $s[$_] + $key[$_ % $key.Length]) % 256
+              $s[$_], $s[$j] = $s[$j], $s[$_]
+          }
+          $i = 0; $j = 0
+          $data | ForEach-Object {
+              $i = ($i + 1) % 256
+              $j = ($j + $s[$i]) % 256
+              $s[$i], $s[$j] = $s[$j], $s[$i]
+              $_ -bxor $s[($s[$i] + $s[$j]) % 256]
+          }
+      }
+      $key     = [Text.Encoding]::UTF8.GetBytes("PAS_RC4_KEY")
+      $payload = [Text.Encoding]::UTF8.GetBytes("PAS-T1573.001-RC4|$env:COMPUTERNAME")
+      $enc     = Invoke-RC4 -key $key -data $payload
+      Write-Host "[PAS] RC4 encrypted: $([Convert]::ToBase64String([byte[]]$enc))"
+      Write-Host "[PAS] RC4 — high entropy, no padding overhead, undetectable without key"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — high-entropy HTTP POST bodies from powershell.exe, script block logging of AES/RC4 operations"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1573.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): AES/RC4/ChaCha20 encryption operations with hardcoded key material"
+  - "Network event: HTTP POST with application/octet-stream content from powershell.exe — high entropy body"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'CreateEncryptor'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' and RemotePort !in (80,443)"
+  - "CONTROL CHECK: AMSI scans script blocks containing crypto operations — hardcoded keys may appear in memory"
+  - "CONTROL CHECK: NDR entropy scoring — consistently high entropy HTTP bodies with no TLS indicate custom encryption"
+  - "CONTROL CHECK: For custom-protocol C2: block all non-standard ports outbound; force HTTP/HTTPS through inspecting proxy"

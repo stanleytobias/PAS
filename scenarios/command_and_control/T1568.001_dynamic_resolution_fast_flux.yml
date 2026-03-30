@@ -1,0 +1,81 @@
+id: T1568.001_dynamic_resolution_fast_flux
+name: "Dynamic Resolution — Fast Flux DNS"
+mitre_technique: "T1568.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use Fast Flux DNS to hide C2 infrastructure behind a constantly rotating
+  pool of IP addresses all mapped to a single domain. The domain's DNS TTL is set very
+  low (60-300 seconds) so the IPs change rapidly, making IP-based blocking ineffective.
+  A compromised host's DNS cache shows many short-lived A records for the same domain.
+  Detection relies on TTL analysis, rate of IP change per domain, and the ratio of
+  unique IPs to query count for a given FQDN.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1568/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1568.001 — Fast Flux DNS simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate rapid DNS resolution of same domain — fast flux pattern"
+    command: |
+      Write-Host "[PAS] Fast Flux DNS simulation — repeated resolution of C2 domain:"
+      Write-Host "[PAS] Real fast flux: TTL=60s, 8-16 IPs rotating every minute"
+      $c2Domain = "pas-fastflux-test.local"
+      $resolved = @{}
+
+      1..10 | ForEach-Object {
+          try {
+              $ips = [System.Net.Dns]::GetHostAddresses($c2Domain) |
+                  Select-Object -ExpandProperty IPAddressToString
+              foreach ($ip in $ips) { $resolved[$ip] = $true }
+          } catch {}
+          Write-Host "[PAS] Resolution $_: $c2Domain"
+          Start-Sleep -Milliseconds 200
+      }
+      Write-Host "[PAS] Unique IPs observed: $($resolved.Count)"
+      Write-Host "[PAS] Fast flux indicator: many unique IPs for same domain in short window"
+
+  - step: 3
+    type: exec_powershell
+    description: "Inspect DNS cache for short-TTL entries — fast flux leaves low-TTL records"
+    command: |
+      Write-Host "[PAS] Checking DNS cache for short-TTL entries (fast flux indicator):"
+      Get-DnsClientCache -ErrorAction SilentlyContinue |
+          Where-Object { $_.TimeToLive -lt 120 -and $_.TimeToLive -gt 0 } |
+          Select-Object -First 10 |
+          ForEach-Object {
+              Write-Host "  TTL=$($_.TimeToLive)s  $($_.Entry) -> $($_.Data)"
+          }
+      Write-Host "[PAS] TTL < 120s entries shown — these are fast-flux candidates"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — same domain resolving to many different IPs in short time window, DNS TTL < 60 seconds"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1568.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "DNS event: single FQDN resolving to >5 unique IPs within a 5-minute window"
+  - "DNS event: A record TTL < 60 seconds for non-CDN domains"
+  - "Sentinel: DnsEvents | summarize UniqueIPs=dcount(IPAddresses) by Name, bin(TimeGenerated,5m) | where UniqueIPs > 5"
+  - "Sentinel: DnsEvents | where TTL < 60 and Name !contains 'akamai' and Name !contains 'cloudflare'"
+  - "MDE alert: 'Fast flux DNS activity detected'"
+  - "CONTROL CHECK: DNS security should flag domains with historically rotating IPs — threat intel feeds include known fast-flux domains"
+  - "CONTROL CHECK: Block outbound DNS to non-approved resolvers — forces all queries through monitored corporate DNS"

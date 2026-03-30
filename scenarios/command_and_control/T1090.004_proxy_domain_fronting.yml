@@ -1,0 +1,85 @@
+id: T1090.004_proxy_domain_fronting
+name: "Proxy — Domain Fronting"
+mitre_technique: "T1090.004"
+mitre_tactic: "command_and_control"
+description: >
+  Domain fronting routes HTTPS C2 traffic through a legitimate CDN by specifying
+  a trusted domain in the TLS SNI field (visible to firewalls) but a different,
+  adversary-controlled domain in the HTTP Host header (only visible after TLS
+  termination at the CDN). The CDN then routes to the actual C2 backend based on
+  the Host header. To network monitoring, the traffic appears to go to the trusted
+  CDN domain. Cobalt Strike's malleable profiles support domain fronting.
+  Many CDNs now block mismatched SNI/Host, but some configurations still allow it.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1090/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1090.004 — Domain Fronting C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate domain fronting — SNI/Host header mismatch pattern"
+    command: |
+      Write-Host "[PAS] Domain fronting pattern simulation:"
+      Write-Host "[PAS] SNI (visible to firewall): legitimate-cdn.example.com"
+      Write-Host "[PAS] HTTP Host (hidden in TLS): c2.attacker.example.com"
+      Write-Host "[PAS] CDN routes based on Host header -> reaches attacker C2"
+
+      # Simulate the SNI/Host mismatch request pattern
+      try {
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $req = [System.Net.HttpWebRequest]::Create("https://127.0.0.1/beacon")
+          # Host header differs from the connection target (the fronting pattern)
+          $req.Host    = "c2.attacker-fronted.example.com"
+          $req.Timeout = 500
+          $req.ServerCertificateValidationCallback = { $true }
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Domain-fronted HTTPS request sent — SNI/Host mismatch telemetry"
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate fronting detection — compare SNI vs HTTP Host"
+    command: |
+      Write-Host "[PAS] Domain fronting detection methodology:"
+      Write-Host "[PAS] At TLS layer:  SNI = allowed-domain.azureedge.net"
+      Write-Host "[PAS] At HTTP layer: Host = c2.evil.example"
+      Write-Host ""
+      Write-Host "[PAS] Detection requires TLS inspection proxy that compares:"
+      Write-Host "[PAS]   SNI field in ClientHello vs Host header in decrypted HTTP"
+      Write-Host "[PAS]   Mismatch between the two = domain fronting indicator"
+      Write-Host ""
+      Write-Host "[PAS] Also detectable via:"
+      Write-Host "[PAS]   JA3 fingerprint of powershell.exe differs from browsers"
+      Write-Host "[PAS]   Non-browser process connecting to CDN IPs (Akamai, CloudFront)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTPS connections from non-browser processes to CDN IP ranges, TLS inspection proxy SNI/Host comparison"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1090.004 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: non-browser process (powershell.exe) making HTTPS connections to CDN IP ranges"
+  - "TLS inspection: SNI field in ClientHello does not match HTTP Host header after decryption"
+  - "Sentinel: DeviceNetworkEvents | where RemoteIP startswith '13.32.' or RemoteIP startswith '52.84.' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Domain fronting attempt detected'"
+  - "CONTROL CHECK: TLS inspection proxy must compare SNI vs Host header and alert on mismatches"
+  - "CONTROL CHECK: Allowlist-only proxy policy — only approved domain destinations allowed regardless of CDN routing"
+  - "CONTROL CHECK: JA3/JA3S fingerprinting identifies non-browser TLS clients even when fronting legitimate CDN domains"

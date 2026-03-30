@@ -1,0 +1,104 @@
+id: T1095_non_application_layer_protocol
+name: "Non-Application Layer Protocol"
+mitre_technique: "T1095"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use OSI non-application layer protocols (ICMP, UDP, SOCKS) as C2
+  channels, bypassing proxies and firewalls that only inspect application-layer
+  (HTTP/HTTPS) traffic. ICMP tunneling encodes C2 commands in the data payload
+  of ICMP echo requests/replies (ping packets). Custom UDP channels send commands
+  as datagrams to arbitrary ports. These channels may evade proxies entirely since
+  ICMP and raw UDP typically bypass HTTP proxies.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1095/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1095 — Non-Application Layer Protocol C2 simulation (ICMP/UDP, loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate ICMP tunnel — encode C2 data in ping payload"
+    command: |
+      Write-Host "[PAS] ICMP tunnel simulation — data encoded in ping payload:"
+
+      Add-Type @"
+      using System;
+      using System.Net;
+      using System.Net.NetworkInformation;
+      public class PASICMPTunnel {
+          public static void SendWithPayload(string host, byte[] payload) {
+              var ping    = new Ping();
+              var options = new PingOptions { DontFragment = true };
+              try { ping.Send(host, 1000, payload, options); } catch {}
+          }
+      }
+"@
+      # Encode C2 command in ICMP data field
+      $command = "whoami"
+      $payload = [Text.Encoding]::UTF8.GetBytes("PAS-T1095-ICMP-CMD:$command")
+      Write-Host "[PAS] Sending ICMP with payload: 'PAS-T1095-ICMP-CMD:$command'"
+      [PASICMPTunnel]::SendWithPayload("127.0.0.1", $payload)
+      Write-Host "[PAS] ICMP echo request with $($payload.Length)-byte payload sent"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate repeated ICMP beaconing — regular ping with encoded data"
+    command: |
+      Write-Host "[PAS] ICMP beaconing pattern (5 pings with encoded payload):"
+      1..5 | ForEach-Object {
+          $seq     = $_
+          $payload = [Text.Encoding]::UTF8.GetBytes("SEQ=$seq|HOST=$env:COMPUTERNAME|PAS-T1095")
+          try { [PASICMPTunnel]::SendWithPayload("127.0.0.1", $payload) } catch {}
+          Write-Host "[PAS] ICMP beacon $seq/5 — payload: SEQ=$seq|HOST=$env:COMPUTERNAME"
+          Start-Sleep -Milliseconds 300
+      }
+      Write-Host "[PAS] ICMP beaconing complete — check for non-standard ICMP payload size in NDR"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate UDP C2 channel — send command data as UDP datagram"
+    command: |
+      Write-Host "[PAS] UDP C2 channel simulation (port 53/123/500 commonly allowed):"
+      foreach ($port in @(53, 123, 500)) {
+          try {
+              $udp    = New-Object System.Net.Sockets.UdpClient
+              $bytes  = [Text.Encoding]::UTF8.GetBytes("PAS-T1095-UDP-C2|port=$port|$env:COMPUTERNAME")
+              $udp.Send($bytes, $bytes.Length, "127.0.0.1", $port) | Out-Null
+              $udp.Close()
+              Write-Host "[PAS] UDP datagram sent to 127.0.0.1:$port ($($bytes.Length) bytes)"
+          } catch {
+              Write-Host "[PAS] UDP port $port : $($_.Exception.Message)"
+          }
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ICMP packets with non-standard payload size (>32 bytes), UDP datagrams to allowed ports from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1095 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: ICMP echo requests with payload size >32 bytes (Windows default is 32) from scripting process"
+  - "Network event: UDP datagrams to port 53/123/500 from non-DNS/NTP/VPN processes"
+  - "Sentinel: DeviceNetworkEvents | where Protocol == 'Icmp' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceNetworkEvents | where Protocol == 'Udp' and RemotePort == 53 and InitiatingProcessFileName != 'svchost.exe'"
+  - "MDE alert: 'ICMP tunneling activity' or 'Suspicious UDP traffic from scripting engine'"
+  - "CONTROL CHECK: NGFW should inspect ICMP payload content — flag ICMP with data >32 bytes from endpoints"
+  - "CONTROL CHECK: Block outbound ICMP from endpoints at perimeter — most environments have no legitimate need for endpoint ICMP egress"
+  - "CONTROL CHECK: NDR packet capture should show ICMP payload content — readable text in ICMP data is a strong IOC"

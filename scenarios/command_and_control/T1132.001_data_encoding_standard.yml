@@ -1,0 +1,106 @@
+id: T1132.001_data_encoding_standard
+name: "Data Encoding — Standard Encoding"
+mitre_technique: "T1132.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries encode C2 traffic using standard encoding schemes (Base64, hex, gzip,
+  URL encoding) to obfuscate content from simple signature-based network inspection.
+  Standard encoding does not encrypt data but makes plaintext signatures ineffective.
+  The encoded data is typically embedded in HTTP parameters, cookies, or response bodies.
+  Detection relies on content inspection for encoded payloads in unexpected locations,
+  and decoding/deobfuscation of network traffic at the proxy or NDR layer.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1132/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1132.001 — Standard Encoding C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Base64-encoded C2 beacon in HTTP parameter"
+    command: |
+      Write-Host "[PAS] Base64-encoded C2 beacon pattern:"
+      $beacon = @{
+          id  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($env:COMPUTERNAME))
+          cmd = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("whoami"))
+          ts  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Date -Format 'o')))
+      }
+      $uri = "http://127.0.0.1/update?d=$($beacon.id)&c=$($beacon.cmd)&t=$($beacon.ts)"
+      Write-Host "[PAS] Beacon URI: $uri"
+      try {
+          Invoke-WebRequest -Uri $uri -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Base64 beacon sent — content appears as random chars to simple inspectors"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate gzip-compressed C2 POST body"
+    command: |
+      Write-Host "[PAS] Gzip-compressed C2 POST:"
+      $data    = "PAS-T1132.001-COMPRESSED-BEACON|$env:COMPUTERNAME|$(Get-Date -Format 'o')"
+      $bytes   = [Text.Encoding]::UTF8.GetBytes($data)
+      $ms      = New-Object IO.MemoryStream
+      $gz      = New-Object IO.Compression.GZipStream($ms, [IO.Compression.CompressionMode]::Compress)
+      $gz.Write($bytes, 0, $bytes.Length)
+      $gz.Close()
+      $compressed = $ms.ToArray()
+      Write-Host "[PAS] Original: $($bytes.Length) bytes → Compressed: $($compressed.Length) bytes"
+      try {
+          $req  = [System.Net.WebRequest]::Create("http://127.0.0.1/submit")
+          $req.Method  = "POST"
+          $req.Headers.Add("Content-Encoding", "gzip")
+          $req.Timeout = 500
+          $stream = $req.GetRequestStream()
+          $stream.Write($compressed, 0, $compressed.Length)
+          $stream.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Gzip-compressed POST executed — Content-Encoding: gzip header generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate hex-encoded C2 data in cookie header"
+    command: |
+      Write-Host "[PAS] Hex-encoded C2 data in Cookie header:"
+      $data   = "PAS-T1132.001-HEX-SESSION-DATA"
+      $hex    = ([Text.Encoding]::UTF8.GetBytes($data) | ForEach-Object { $_.ToString('x2') }) -join ''
+      $uri    = "http://127.0.0.1/"
+      try {
+          $req  = [System.Net.WebRequest]::Create($uri)
+          $req.Headers.Add("Cookie", "session=$hex")
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Cookie: session=$hex"
+      Write-Host "[PAS] Hex-encoded cookie C2 pattern complete"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM/proxy — HTTP requests with long Base64 strings in params, Content-Encoding: gzip from non-browser"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1132.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: HTTP GET/POST with long Base64 strings (regex: [A-Za-z0-9+/]{40,}={0,2}) in URL parameters"
+  - "Network event: HTTP POST with Content-Encoding: gzip from non-browser process"
+  - "Network event: Cookie header containing long hex string from scripting process"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' and RemotePort == 80"
+  - "CONTROL CHECK: SSL inspection proxy must decode Content-Encoding to inspect gzip-compressed payloads"
+  - "CONTROL CHECK: NDR (Network Detection and Response) should decode Base64 in HTTP parameters and score entropy"
+  - "CONTROL CHECK: Alert on HTTP requests with URL parameters longer than 200 characters — often encoded beacon data"

@@ -1,0 +1,100 @@
+id: T1071.002_application_layer_file_transfer_protocols
+name: "Application Layer Protocol — File Transfer Protocols"
+mitre_technique: "T1071.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use file transfer protocols (FTP, FTPS, SFTP) as C2 channels,
+  uploading command results and downloading new tasking from an FTP server.
+  FTP may blend in with environments that legitimately use it for file transfers,
+  and FTP connections may receive less scrutiny than HTTP in some network monitoring
+  configurations. Detection relies on identifying FTP sessions from unexpected
+  processes, unusual connection times, and FTP to non-business destinations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1071/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1071.002 — FTP C2 channel simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate FTP connection attempt — generates network telemetry on port 21"
+    command: |
+      Write-Host "[PAS] Simulating FTP C2 channel:"
+      # FTP connection attempt to loopback — generates port 21 network event
+      try {
+          $tcp  = New-Object System.Net.Sockets.TcpClient
+          $conn = $tcp.BeginConnect("127.0.0.1", 21, $null, $null)
+          $conn.AsyncWaitHandle.WaitOne(500, $false) | Out-Null
+          $tcp.Close()
+      } catch {}
+      Write-Host "[PAS] FTP connection attempt to 127.0.0.1:21 — port 21 telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate FTP command execution using built-in ftp.exe — generates process telemetry"
+    command: |
+      $ftpScript = "$env:TEMP\PAS_T1071_002_ftp.txt"
+      Set-Content $ftpScript @"
+open 127.0.0.1
+PAS_user
+PAS_pass
+get tasking.txt
+put results.txt
+bye
+"@
+      Write-Host "[PAS] FTP script created: $ftpScript"
+      Write-Host "[PAS] Executing ftp.exe with script (expected connection failure — loopback):"
+      Start-Process ftp.exe -ArgumentList "-s:$ftpScript" -Wait -NoNewWindow `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] ftp.exe process event generated with script file argument"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate SFTP/SCP C2 — SSH-based file transfer on port 22"
+    command: |
+      Write-Host "[PAS] Simulating SFTP C2 (port 22):"
+      try {
+          $tcp  = New-Object System.Net.Sockets.TcpClient
+          $conn = $tcp.BeginConnect("127.0.0.1", 22, $null, $null)
+          $conn.AsyncWaitHandle.WaitOne(500, $false) | Out-Null
+          $tcp.Close()
+      } catch {}
+      Write-Host "[PAS] SFTP connection attempt to 127.0.0.1:22 — port 22 telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ftp.exe process event with script argument, port 21/22 connections from scripting processes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove FTP script file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1071_002_ftp.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] FTP script removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1071.002 cleanup complete"
+
+analyst_checklist:
+  - "Process event: ftp.exe with -s: script argument spawned from powershell.exe or non-admin context"
+  - "Network event: port 21 (FTP) or 22 (SFTP) connections from scripting engines or non-admin tools"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort in (21, 22, 989, 990) and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ftp.exe' and ProcessCommandLine contains '-s:'"
+  - "MDE alert: 'Suspicious FTP usage' or 'File transfer to unknown external host'"
+  - "CONTROL CHECK: Outbound FTP (port 21) should be blocked at perimeter for all but approved file transfer servers"
+  - "CONTROL CHECK: ftp.exe is rarely used in modern environments — any execution should be investigated"

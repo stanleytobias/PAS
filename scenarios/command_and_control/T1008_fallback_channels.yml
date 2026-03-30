@@ -1,0 +1,90 @@
+id: T1008_fallback_channels
+name: "Fallback Channels"
+mitre_technique: "T1008"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries configure implants with multiple C2 channels — a primary channel and
+  one or more fallback channels used when the primary is blocked or unreachable.
+  Common patterns: primary HTTPS beacon, fallback to DNS tunneling if HTTPS fails,
+  further fallback to ICMP if DNS is blocked. This increases C2 resilience and
+  makes full takedown harder for defenders. The implant tries each channel in order
+  until one succeeds. Detection should identify the fallback attempt itself as an
+  indicator of the primary channel having been blocked.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1008 — Fallback C2 Channels simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate primary C2 channel failure followed by fallback sequence"
+    command: |
+      Write-Host "[PAS] Fallback channel simulation — primary HTTPS -> DNS -> ICMP:"
+
+      $channels = @(
+          @{ Name="Primary HTTPS";    Test={ try { Invoke-WebRequest "https://127.0.0.1/beacon" -TimeoutSec 1 -SkipCertificateCheck -EA Stop | Out-Null; $true } catch { $false } } }
+          @{ Name="Fallback HTTP";    Test={ try { Invoke-WebRequest "http://127.0.0.1:8080/beacon" -TimeoutSec 1 -EA Stop | Out-Null; $true } catch { $false } } }
+          @{ Name="Fallback DNS TXT"; Test={ try { [System.Net.Dns]::GetHostAddresses("beacon.pas-fallback-test.local") | Out-Null; $true } catch { $false } } }
+          @{ Name="Fallback ICMP";    Test={ (Test-Connection 127.0.0.1 -Count 1 -Quiet -ErrorAction SilentlyContinue) } }
+      )
+
+      $connected = $false
+      foreach ($ch in $channels) {
+          Write-Host "[PAS] Trying $($ch.Name)..."
+          $result = & $ch.Test
+          if ($result) {
+              Write-Host "[PAS] SUCCESS: Connected via $($ch.Name)"
+              $connected = $true
+              break
+          } else {
+              Write-Host "[PAS] FAILED: $($ch.Name) unreachable — trying fallback"
+          }
+      }
+      if (-not $connected) {
+          Write-Host "[PAS] All channels exhausted — implant enters sleep/retry mode"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate jitter and retry logic — implant backs off before fallback attempt"
+    command: |
+      Write-Host "[PAS] Retry with jitter (anti-detection sleep before fallback):"
+      $rng       = New-Object System.Random
+      $baseDelay = 500  # ms (real: 60000ms = 1 min)
+      $jitter    = $rng.Next(0, [int]($baseDelay * 0.3))
+      $sleep     = $baseDelay + $jitter
+      Write-Host "[PAS] Base delay: ${baseDelay}ms + jitter: ${jitter}ms = ${sleep}ms total"
+      Start-Sleep -Milliseconds $sleep
+      Write-Host "[PAS] Post-jitter fallback attempt initiated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sequential failed connection attempts across multiple protocols from same process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1008 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: same process sequentially attempting HTTPS, then HTTP, then DNS queries in rapid succession"
+  - "Network event: failed TCP connection to port 443 immediately followed by DNS TXT query from same process"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' | order by Timestamp | ... — sequence analysis"
+  - "MDE alert: 'C2 fallback channel detected' or 'Multi-protocol C2 activity'"
+  - "CONTROL CHECK: Block all non-approved outbound protocols — if HTTPS is blocked and fallback to DNS fires, that is itself a detection signal"
+  - "CONTROL CHECK: DNS security blocks DNS-layer fallback — combined with HTTPS blocking, eliminates two of three common channels"
+  - "CONTROL CHECK: Log failed outbound connections — a burst of failed connections followed by success on different protocol = fallback IOC"

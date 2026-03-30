@@ -1,0 +1,85 @@
+id: T1219.003_remote_access_hardware
+name: "Remote Access Tools — Remote Access Hardware"
+mitre_technique: "T1219.003"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use hardware-based remote access devices (IP KVM such as TinyPilot,
+  PiKVM, or commercial IPMI/iDRAC) to establish a persistent, OS-independent C2
+  channel. Unlike software RATs, hardware KVMs operate at the BIOS/hardware level —
+  they survive OS reinstalls, work before the OS boots, and are invisible to host-based
+  security tools. Physical access to insert the device is required, making this a
+  targeted technique used by nation-state actors or insiders.
+  No host-side simulation is possible — detection relies on hardware inventory and
+  network monitoring.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1219/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1219.003 — Remote Access Hardware: IP KVM devices (TinyPilot, PiKVM) inserted physically; OS-independent C2"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for IPMI/iDRAC/iLO management interfaces on this host"
+    command: |
+      Write-Host "[PAS] Hardware management interface check:"
+
+      # Check for IPMI driver (OOB management interface)
+      $ipmiDriver = Get-WmiObject Win32_SystemDriver -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -like "*ipmi*" -or $_.Name -like "*bmc*" }
+      if ($ipmiDriver) {
+          Write-Host "  IPMI driver present: $($ipmiDriver.Name) — OOB management interface available"
+          Write-Host "  RISK: Unsecured IPMI = OS-independent remote access"
+      }
+
+      # Check for Dell iDRAC, HP iLO, Supermicro IPMI listening ports
+      $mgmtPorts = @(623, 443, 80, 8443)  # IPMI/iDRAC typical ports
+      foreach ($port in $mgmtPorts) {
+          $listener = Get-NetTCPConnection -LocalPort $port -State Listen `
+              -ErrorAction SilentlyContinue |
+              Where-Object { $_.OwningProcess -eq 4 }  # System process
+          if ($listener) {
+              Write-Host "  OOB management port $port listening (System process)"
+          }
+      }
+
+      Write-Host "[PAS] IPMI/OOB management interface scan complete"
+
+  - step: 3
+    type: marker
+    description: "Hardware inventory control check"
+    message: "CONTROL CHECK: Conduct physical hardware audit — check USB ports and PCIe slots for unauthorised devices. IP KVMs are small (Raspberry Pi-sized) and can be hidden inside chassis."
+
+  - step: 4
+    type: marker
+    description: "IPMI security check"
+    message: "CONTROL CHECK: Change default IPMI/iDRAC/iLO credentials immediately. Restrict IPMI network access to dedicated OOB management VLAN. Disable IPMI if not actively used."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: hardware inventory, IPMI credential audit, OOB management VLAN isolation"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1219.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "CONTROL CHECK: IPMI/iDRAC default credentials changed on all servers"
+  - "CONTROL CHECK: OOB management (IPMI/iDRAC/iLO) on isolated VLAN — not reachable from corporate network"
+  - "CONTROL CHECK: Physical access controls on server room — hardware KVM insertion requires physical access"
+  - "CONTROL CHECK: Regular hardware inventory — unexpected USB or PCIe devices should trigger investigation"
+  - "Network event: unexpected HTTP/HTTPS connections from management IP ranges during off-hours"
+  - "Sentinel: NetworkConnections | where RemoteIP in (ipmi_mgmt_range) and TimeGenerated !between (business_hours)"

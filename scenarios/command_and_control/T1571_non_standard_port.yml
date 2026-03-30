@@ -1,0 +1,103 @@
+id: T1571_non_standard_port
+name: "Non-Standard Port"
+mitre_technique: "T1571"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries communicate using a protocol on a non-standard port to bypass
+  firewall rules and monitoring tools that filter by expected port/protocol pairings.
+  Examples: HTTPS on port 8443 or 4433; HTTP on port 8080; DNS over port 5353 or 5355;
+  SMB on port 4445; or RDP on port 3390. Since many network monitoring tools and
+  firewalls filter by expected port/protocol combinations, using a different port
+  for the same protocol can evade those controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1571/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1571 — Non-Standard Port C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate HTTPS beacon on non-standard ports — evades port-443-only TLS inspection"
+    command: |
+      Write-Host "[PAS] HTTPS on non-standard ports (evades port-specific TLS inspection):"
+      $nonStandardPorts = @(8443, 4433, 8080, 9443, 2083, 2096)
+      foreach ($port in $nonStandardPorts) {
+          try {
+              $tcp  = New-Object System.Net.Sockets.TcpClient
+              $conn = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+              $conn.AsyncWaitHandle.WaitOne(200, $false) | Out-Null
+              $tcp.Close()
+          } catch {}
+          Write-Host "[PAS] HTTPS probe: 127.0.0.1:$port"
+      }
+      Write-Host "[PAS] Non-standard HTTPS ports probed — detection gap if proxy only inspects 443"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate HTTP beacon on high/alternate ports — evades HTTP proxy on port 80 only"
+    command: |
+      Write-Host "[PAS] HTTP C2 on non-standard ports:"
+      $httpPorts = @(8080, 8888, 9090, 4444, 1337)
+      foreach ($port in $httpPorts) {
+          try {
+              Invoke-WebRequest -Uri "http://127.0.0.1:$port/beacon" `
+                  -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+          } catch {}
+          Write-Host "[PAS] HTTP beacon attempt: 127.0.0.1:$port"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Enumerate outbound firewall rules — identify gaps allowing non-standard ports"
+    command: |
+      Write-Host "[PAS] Outbound firewall rule audit — non-standard port exposure:"
+      $outboundRules = Get-NetFirewallRule -Direction Outbound -Action Allow `
+          -ErrorAction SilentlyContinue |
+          Where-Object { $_.Enabled -eq 'True' }
+      Write-Host "  Total enabled outbound Allow rules: $($outboundRules.Count)"
+
+      # Check for overly permissive "Allow All" outbound rules
+      $permitAll = $outboundRules | Where-Object {
+          $filter = $_ | Get-NetFirewallPortFilter -ErrorAction SilentlyContinue
+          $filter.RemotePort -eq 'Any' -or $filter.LocalPort -eq 'Any'
+      }
+      if ($permitAll) {
+          Write-Host "  WARNING: $($permitAll.Count) outbound rules permit ANY port — non-standard ports allowed"
+          $permitAll | Select-Object -First 3 | ForEach-Object {
+              Write-Host "    Rule: $($_.DisplayName)"
+          }
+      } else {
+          Write-Host "  Outbound rules appear port-specific — good baseline posture"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — connections to non-standard ports (8080/8443/4444) from scripting processes"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1571 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe or cmd.exe connecting to ports other than 80, 443 outbound"
+  - "Network event: HTTPS (TLS handshake) on non-443 port from scripting engine"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' and RemotePort !in (80,443,53)"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort in (4444,1337,8080,8443,8888,9090,4433) and InitiatingProcessFileName != 'svchost.exe'"
+  - "MDE alert: 'Suspicious connection on non-standard port'"
+  - "CONTROL CHECK: Outbound firewall policy should restrict endpoints to approved ports (80, 443, 53 minimum)"
+  - "CONTROL CHECK: TLS inspection proxy must listen on ALL ports, not just 443 — or block all non-443 HTTPS"
+  - "CONTROL CHECK: NGFW application-awareness — identify HTTP/HTTPS regardless of port number"

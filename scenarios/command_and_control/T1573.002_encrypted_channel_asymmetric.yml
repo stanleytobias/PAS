@@ -1,0 +1,92 @@
+id: T1573.002_encrypted_channel_asymmetric
+name: "Encrypted Channel — Asymmetric Cryptography"
+mitre_technique: "T1573.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use asymmetric cryptography (RSA, ECDH) for C2 channel key exchange,
+  typically to protect an ephemeral symmetric session key. The implant contains the
+  C2 server's public key — it generates a random AES key, encrypts it with the RSA
+  public key, and sends it to the C2. All subsequent traffic uses the AES key.
+  This pattern means: (1) even if the network traffic is captured, the session key
+  cannot be recovered without the C2 private key, (2) each session has a unique key,
+  making traffic correlation harder. Cobalt Strike and many RATs use this pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1573/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1573.002 — Asymmetric Encryption C2 key exchange simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate RSA public key encryption of session key — implant key exchange"
+    command: |
+      Write-Host "[PAS] RSA key exchange simulation (C2 public key hardcoded in implant):"
+
+      # Generate ephemeral RSA key pair (simulates C2 server key pair)
+      $rsa = [Security.Cryptography.RSA]::Create(2048)
+      $pubKeyXml = $rsa.ToXmlString($false)  # Public key only (what's in the implant)
+      Write-Host "[PAS] C2 RSA public key (hardcoded in implant): $($pubKeyXml.Substring(0,60))..."
+
+      # Implant generates random AES session key
+      $sessionKey = New-Object byte[] 32
+      [Security.Cryptography.RandomNumberGenerator]::Fill($sessionKey)
+      Write-Host "[PAS] Ephemeral AES session key generated: $([Convert]::ToBase64String($sessionKey))"
+
+      # Encrypt session key with RSA public key (OAEP padding)
+      $encSessionKey = $rsa.Encrypt($sessionKey, [Security.Cryptography.RSAEncryptionPadding]::OaepSHA256)
+      Write-Host "[PAS] Session key encrypted with C2 RSA public key: $([Convert]::ToBase64String($encSessionKey).Substring(0,40))..."
+      Write-Host "[PAS] Implant sends encrypted session key in initial beacon"
+
+      # Send encrypted key exchange to loopback
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/stage0")
+          $req.Method = "POST"; $req.Timeout = 500
+          $req.ContentType = "application/octet-stream"
+          $s = $req.GetRequestStream()
+          $s.Write($encSessionKey, 0, $encSessionKey.Length)
+          $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] RSA-encrypted session key transmitted — key exchange beacon sent"
+      $rsa.Dispose()
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate subsequent AES-encrypted C2 traffic using negotiated session key"
+    command: |
+      Write-Host "[PAS] Post-key-exchange AES-encrypted traffic pattern:"
+      Write-Host "[PAS] All subsequent C2 traffic encrypted with ephemeral AES key"
+      Write-Host "[PAS] Each session: unique key -> captures from different sessions cannot be correlated"
+      Write-Host "[PAS] Without C2 private key: captured traffic is permanently opaque"
+      Write-Host "[PAS] Detection approach: behavioural anomaly, not content inspection"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging for RSA.Encrypt + session key generation pattern"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1573.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): RSA.Create + RSA.Encrypt + RandomNumberGenerator in same script context"
+  - "Network event: large (256-byte) initial POST to new domain (RSA-encrypted session key characteristic)"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'RSA' and AdditionalFields contains 'Encrypt'"
+  - "MDE: AMSI scans RSA public key material embedded in scripts — known C2 public keys are IOCs"
+  - "CONTROL CHECK: Content inspection cannot defeat asymmetric C2 — rely on process behaviour and connection anomalies"
+  - "CONTROL CHECK: Certificate pinning-aware NGFW: RSA key exchange to non-TLS ports from scripting process = high confidence C2"
+  - "CONTROL CHECK: JA3 fingerprinting distinguishes custom RSA key exchange from legitimate TLS even when content is identical"

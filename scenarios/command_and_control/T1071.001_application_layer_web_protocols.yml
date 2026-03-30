@@ -1,0 +1,103 @@
+id: T1071.001_application_layer_protocol_web
+name: "Application Layer Protocol — Web Protocols"
+mitre_technique: "T1071.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use HTTP and HTTPS to blend C2 traffic with legitimate web traffic.
+  The C2 beacon is typically an HTTP GET or POST to a controller, with commands
+  returned in the response body. HTTPS provides encryption, making content inspection
+  difficult. Detection relies on behavioural analysis: beaconing regularity, unusual
+  User-Agent strings, HTTP connections to newly-registered or low-reputation domains,
+  and JA3/JA3S TLS fingerprinting for non-browser HTTPS.
+  This scenario generates HTTP/S beacon telemetry to loopback and exercises
+  the User-Agent and beaconing pattern detections.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1071/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1071.001 — HTTP/HTTPS C2 beacon simulation (loopback only — no external traffic)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate HTTP beacon with malware-like User-Agent — most common C2 pattern"
+    command: |
+      Write-Host "[PAS] Simulating HTTP C2 beacon (loopback):"
+      # Common C2 frameworks use custom or fake User-Agents
+      $malwareUAs = @(
+          "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0",  # Old browser version
+          "Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 6.1; Trident/4.0)",             # IE7 — extremely old
+          "python-requests/2.28.0",                                                         # Raw HTTP library
+          "Go-http-client/1.1"                                                              # Go runtime — Sliver/Cobalt Strike
+      )
+      foreach ($ua in $malwareUAs) {
+          try {
+              Invoke-WebRequest -Uri "http://127.0.0.1/beacon" `
+                  -UserAgent $ua -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+          } catch {}
+          Write-Host "[PAS] Beacon with UA: $ua"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate regular beaconing interval — fixed-interval HTTP check-in"
+    command: |
+      Write-Host "[PAS] Simulating 5-beacon check-in interval (compressed for lab):"
+      $interval = 500  # 500ms in lab vs 60s in real malware
+      1..5 | ForEach-Object {
+          try {
+              Invoke-WebRequest -Uri "http://127.0.0.1/check?id=PAS_T1071_001&seq=$_" `
+                  -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" `
+                  -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+          } catch {}
+          Write-Host "[PAS] Beacon $_/5 sent"
+          Start-Sleep -Milliseconds $interval
+      }
+      Write-Host "[PAS] Beaconing pattern complete — check for periodic network events in SIEM"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate HTTPS beacon — encrypted C2 over TLS to avoid content inspection"
+    command: |
+      Write-Host "[PAS] Simulating HTTPS C2 beacon:"
+      try {
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Invoke-WebRequest -Uri "https://127.0.0.1/tasking" `
+              -UserAgent "WindowsUpdate/10.0" `
+              -SkipCertificateCheck `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] HTTPS beacon executed — TLS connection to loopback:443"
+      Write-Host "[PAS] Detection: JA3 fingerprint of non-browser HTTPS from powershell.exe"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — periodic HTTP connections from powershell.exe to same destination, anomalous User-Agent strings"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1071.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe making periodic HTTP/HTTPS connections to same destination IP/domain"
+  - "Network event: HTTP connections with anomalous User-Agent (old browser version, python-requests, Go-http-client)"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' and RemotePort in (80, 443, 8080, 8443)"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'powershell.exe' | summarize count(), dcount(RemoteUrl) by InitiatingProcessFileName, bin(TimeGenerated, 1m) | where count_ > 3"
+  - "MDE alert: 'Suspicious network connection from scripting engine' or 'Beaconing pattern detected'"
+  - "CONTROL CHECK: Proxy must log User-Agent strings — alert on non-browser UAs making repeated connections"
+  - "CONTROL CHECK: JA3/JA3S TLS fingerprinting — PowerShell TLS handshake differs from browser; baseline and alert on deviations"
+  - "CONTROL CHECK: DNS-layer security should flag newly-registered or low-reputation domains that C2 beacons connect to"
+  - "CONTROL CHECK: Network baseline — powershell.exe should not be making internet connections in most environments"

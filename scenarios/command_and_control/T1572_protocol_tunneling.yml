@@ -1,0 +1,125 @@
+id: T1572_protocol_tunneling
+name: "Protocol Tunneling"
+mitre_technique: "T1572"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries tunnel one protocol inside another to bypass network controls —
+  SSH over HTTP/HTTPS (HTTP CONNECT tunneling), DNS tunneling (iodine/dnscat2),
+  ICMP tunneling, or RDP/SMB tunneled through an allowed protocol. The outer
+  protocol is allowed by the firewall/proxy while the inner tunneled traffic
+  carries C2 communications. Common tools: plink.exe, SSH tunneling via
+  OpenSSH, Chisel (HTTP tunnel), and ngrok-style reverse tunnels.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1572/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1572 — Protocol Tunneling C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate HTTP CONNECT tunnel — SSH tunneled through HTTP proxy"
+    command: |
+      Write-Host "[PAS] HTTP CONNECT tunnel simulation (SSH-over-HTTP):"
+      Write-Host "[PAS] Real pattern: plink.exe or ssh.exe -D 1080 via HTTP proxy CONNECT"
+
+      # Generate HTTP CONNECT request — characteristic tunnel setup
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/")
+          $req.Method  = "CONNECT"
+          $req.Headers.Add("Host", "c2.attacker.example:443")
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] HTTP CONNECT request sent to loopback:80"
+      Write-Host "[PAS] Detection: HTTP CONNECT method from non-browser process"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate SSH tunnel via Windows OpenSSH — ssh.exe -L portforward"
+    command: |
+      Write-Host "[PAS] SSH local port forward tunnel simulation:"
+      $sshPath = "$env:SystemRoot\System32\OpenSSH\ssh.exe"
+      if (-not (Test-Path $sshPath)) {
+          $sshPath = (Get-Command ssh -ErrorAction SilentlyContinue)?.Source
+      }
+      if ($sshPath) {
+          Write-Host "[PAS] SSH found: $sshPath"
+          Write-Host "[PAS] Real attack command: ssh -N -L 4444:internal-host:445 user@127.0.0.1"
+          # Start then immediately kill — just generates the process event
+          $proc = Start-Process $sshPath `
+              -ArgumentList "-o StrictHostKeyChecking=no -o ConnectTimeout=1 -N -L 4444:127.0.0.1:445 pas@127.0.0.1" `
+              -PassThru -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] ssh.exe -L port forward process event generated"
+      } else {
+          Write-Host "[PAS] OpenSSH not installed — simulating via netsh portproxy instead"
+          netsh interface portproxy add v4tov4 listenport=4444 listenaddress=127.0.0.1 `
+              connectport=445 connectaddress=127.0.0.1 2>&1 | Out-Null
+          Write-Host "[PAS] netsh portproxy tunnel established: 127.0.0.1:4444 -> 127.0.0.1:445"
+          netsh interface portproxy delete v4tov4 listenport=4444 listenaddress=127.0.0.1 2>&1 | Out-Null
+          Write-Host "[PAS] netsh portproxy cleaned up"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate Chisel-style reverse HTTP tunnel — common post-exploitation pivot tool"
+    command: |
+      Write-Host "[PAS] Reverse HTTP tunnel pattern (Chisel/ngrok style):"
+      Write-Host "[PAS] Real attack: chisel client 127.0.0.1:8080 R:socks"
+      Write-Host "[PAS] Creates reverse SOCKS5 proxy from victim to attacker over HTTP"
+      Write-Host "[PAS] Attacker browses victim's internal network via SOCKS proxy over HTTP"
+
+      # Simulate the HTTP upgrade to WebSocket (Chisel uses WS)
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1:8080/")
+          $req.Headers.Add("Upgrade", "websocket")
+          $req.Headers.Add("Connection", "Upgrade")
+          $req.Headers.Add("Sec-WebSocket-Protocol", "chisel")
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Chisel WebSocket upgrade request generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTP CONNECT method, ssh.exe with -L/-R/-D flags, netsh portproxy additions"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any portproxy rules created during simulation"
+    command: |
+      netsh interface portproxy delete v4tov4 listenport=4444 listenaddress=127.0.0.1 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] portproxy rules cleaned"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1572 cleanup complete"
+
+analyst_checklist:
+  - "Process event: ssh.exe with -L, -R, or -D flags (port forwarding/SOCKS proxy)"
+  - "Network event: HTTP CONNECT method from non-browser process"
+  - "Registry/network: netsh portproxy rules added (HKLM\\SYSTEM\\CurrentControlSet\\Services\\PortProxy)"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ssh.exe' and ProcessCommandLine matches regex @'-[LRD]\\s+'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'ssh.exe' and RemotePort !in (22)"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'PortProxy' and ActionType == 'RegistryValueSet'"
+  - "MDE alert: 'SSH tunneling activity' or 'Protocol tunnel established'"
+  - "CONTROL CHECK: Monitor netsh portproxy rules — Run: netsh interface portproxy show all on endpoints periodically"
+  - "CONTROL CHECK: Block SSH (port 22) outbound from endpoints unless explicitly required; use jump hosts"
+  - "CONTROL CHECK: HTTP CONNECT from non-browser processes should always alert — proxies log this method"

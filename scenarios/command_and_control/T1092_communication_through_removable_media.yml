@@ -1,0 +1,119 @@
+id: T1092_communication_through_removable_media
+name: "Communication Through Removable Media"
+mitre_technique: "T1092"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries relay C2 commands between an internet-connected compromised system
+  and an air-gapped network by writing tasking to removable media (USB) on the
+  internet-connected host, physically moving the media to the air-gapped host,
+  and reading commands there. Results travel back the same way. This is how
+  Stuxnet, Agent.BTZ, and USBStealer operated. The host-side artifacts are:
+  file writes and reads in the USB root, a polling loop watching for specific
+  filenames on removable drives, and staging directories containing tasking/results.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1092/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1092 — Removable Media C2 relay simulation (using TEMP as USB stand-in)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate internet-connected side — write C2 tasking to USB staging directory"
+    command: |
+      $usbRoot   = "$env:TEMP\PAS_T1092_USB"
+      $taskingDir = "$usbRoot\RECYCLER\.trash"
+      New-Item -ItemType Directory $taskingDir -Force | Out-Null
+
+      # Adversary writes encoded command to hidden directory on USB
+      $taskFile = "$taskingDir\dt_$(Get-Date -Format 'yyyyMMddHHmmss').bin"
+      $command  = "whoami /all"
+      $encoded  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($command))
+      Set-Content $taskFile $encoded
+      # Set hidden+system attributes to mimic real USB C2 staging
+      (Get-Item $taskFile).Attributes = 'Hidden,System'
+
+      Write-Host "[PAS] C2 tasking written to USB staging path: $taskFile"
+      Write-Host "[PAS] Encoded command: $encoded"
+      Write-Host "[PAS] In real scenario: USB physically transported to air-gapped host"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate air-gapped side — poll USB for new tasking, execute, write results"
+    command: |
+      $usbRoot    = "$env:TEMP\PAS_T1092_USB"
+      $taskingDir = "$usbRoot\RECYCLER\.trash"
+      $resultsDir = "$usbRoot\RECYCLER\.out"
+      New-Item -ItemType Directory $resultsDir -Force | Out-Null
+
+      Write-Host "[PAS] Air-gapped host polling USB for tasking files:"
+      $tasks = Get-ChildItem $taskingDir -Force -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match '\.bin$' }
+
+      foreach ($task in $tasks) {
+          $encoded = Get-Content $task.FullName
+          $command = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+          Write-Host "[PAS] Task found: $($task.Name) — command: $command"
+
+          # Execute and capture results
+          $output  = cmd.exe /c $command 2>&1 | Out-String
+          $encResult = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($output))
+          $resultFile = "$resultsDir\rs_$(Get-Date -Format 'yyyyMMddHHmmss').bin"
+          Set-Content $resultFile $encResult
+          (Get-Item $resultFile).Attributes = 'Hidden,System'
+          Write-Host "[PAS] Results written: $resultFile"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate USB polling loop — implant watching for new task files"
+    command: |
+      Write-Host "[PAS] USB polling loop pattern (2 iterations for lab):"
+      $usbRoot = "$env:TEMP\PAS_T1092_USB"
+      1..2 | ForEach-Object {
+          Write-Host "[PAS] Poll $_: checking $usbRoot\RECYCLER\.trash for new tasking..."
+          Get-ChildItem "$usbRoot\RECYCLER\.trash" -Force -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '\.bin$' } |
+              ForEach-Object { Write-Host "  Found: $($_.Name)" }
+          Start-Sleep -Milliseconds 500
+      }
+      Write-Host "[PAS] Polling loop telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — hidden files written to RECYCLER directory on removable drive, cmd.exe from USB path context"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove USB C2 simulation directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1092_USB" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] USB C2 simulation directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1092 cleanup complete"
+
+analyst_checklist:
+  - "File event: hidden/system files created in RECYCLER or hidden directories on removable drives"
+  - "Process event: cmd.exe or powershell.exe reading files from removable media path"
+  - "File event: .bin or encoded files written to USB with hidden+system attributes"
+  - "Sentinel: DeviceFileEvents | where FolderPath matches regex @'^[D-Z]:\\\\RECYCLER' and ActionType == 'FileCreated'"
+  - "Sentinel: DeviceProcessEvents | where FolderPath matches regex @'^[D-Z]:\\\\' and FileName in ('cmd.exe','powershell.exe')"
+  - "MDE alert: 'Suspicious file activity on removable media'"
+  - "CONTROL CHECK: USB device control policy — only approved devices; block all others via Intune/MDE Device Control"
+  - "CONTROL CHECK: For truly air-gapped environments — implement data diode or approved transfer station for file movement"
+  - "CONTROL CHECK: Scan all files from removable media before execution — mandatory AV scan on USB insertion"

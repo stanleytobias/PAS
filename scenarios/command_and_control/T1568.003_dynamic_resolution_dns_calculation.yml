@@ -1,0 +1,87 @@
+id: T1568.003_dynamic_resolution_dns_calculation
+name: "Dynamic Resolution — DNS Calculation"
+mitre_technique: "T1568.003"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries derive the C2 IP address and/or port by performing mathematical
+  calculations on DNS response values rather than using the returned IP directly.
+  For example, an implant queries a legitimate-looking domain, receives an IP
+  like 10.20.30.40, then XORs each octet with a hardcoded key to reveal the true
+  C2 IP. This technique defeats DNS sinkholing — the sinkholed response produces a
+  wrong C2 address because the defender does not know the calculation key.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1568/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1568.003 — DNS Calculation C2 resolution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate DNS calculation — derive C2 IP by XORing resolved IP octets with key"
+    command: |
+      Write-Host "[PAS] DNS Calculation simulation:"
+      Write-Host "[PAS] Real technique: resolve decoy domain, apply math to returned IP to get true C2"
+
+      # Simulate: query a domain, use returned IP to calculate actual C2 destination
+      $decoyDomain = "pas-dns-calc-test.local"
+      $xorKey      = @(0x11, 0x22, 0x33, 0x44)  # Hardcoded in implant
+
+      # Simulate a DNS response (loopback returns 127.0.0.1 or NXDOMAIN)
+      # We use a known IP for demonstration
+      $simulatedResponse = "10.20.30.40"
+      Write-Host "[PAS] Simulated DNS response for $decoyDomain : $simulatedResponse"
+
+      # Perform XOR calculation on each octet
+      $octets   = $simulatedResponse -split '\.' | ForEach-Object { [int]$_ }
+      $c2Octets = 0..3 | ForEach-Object { $octets[$_] -bxor $xorKey[$_] }
+      $c2IP     = $c2Octets -join '.'
+      Write-Host "[PAS] XOR key applied: $($xorKey -join '.')"
+      Write-Host "[PAS] Calculated C2 IP: $c2IP"
+      Write-Host "[PAS] Implant connects to: $c2IP (not the sinkholed response)"
+
+      # Generate DNS query telemetry
+      try { [System.Net.Dns]::GetHostAddresses($decoyDomain) | Out-Null } catch {}
+      Write-Host "[PAS] DNS query generated for: $decoyDomain"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate port calculation from DNS TTL value"
+    command: |
+      Write-Host "[PAS] Port derivation from DNS TTL:"
+      Write-Host "[PAS] Real technique: C2 port = (TTL value * port_multiplier) mod 65535"
+      $simulatedTTL  = 300
+      $portMultiplier = 200
+      $c2Port = ($simulatedTTL * $portMultiplier) % 65535
+      Write-Host "[PAS] DNS TTL: $simulatedTTL"
+      Write-Host "[PAS] Calculated C2 port: $c2Port"
+      Write-Host "[PAS] Implant connects to calculated IP:$c2Port"
+      Write-Host "[PAS] Sinkhole returns wrong TTL -> wrong port -> connection fails for defenders"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — DNS query followed immediately by TCP connection to an IP that does not match the DNS response"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1568.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Behaviour: DNS query for a domain immediately followed by TCP connection to a different IP than the DNS response"
+  - "Network event: TCP connection to IP with no corresponding DNS query (pre-calculated C2 IP)"
+  - "Sentinel: correlate DeviceNetworkEvents RemoteIP against DnsEvents IPAddresses for same process — flag mismatches"
+  - "CONTROL CHECK: DNS-aware firewall rules — block outbound connections to IPs not returned by any recent DNS query from that host"
+  - "CONTROL CHECK: This technique specifically defeats DNS sinkholing — combine sinkholing with outbound IP reputation filtering"

@@ -1,0 +1,94 @@
+id: T1568.002_dynamic_resolution_dga
+name: "Dynamic Resolution — Domain Generation Algorithms"
+mitre_technique: "T1568.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries implement Domain Generation Algorithms (DGAs) in malware to
+  programmatically generate hundreds of candidate C2 domains per day based on a
+  seed (often the current date). The adversary registers only one or a few of these
+  domains, while defenders cannot block them all in advance. DGA domains appear as
+  high-entropy, pseudo-random strings (e.g. xkqjrtpvbnmz.com). Detection relies on
+  DNS query entropy analysis, NX-domain burst detection (many NXDOMAIN responses from
+  one host in a short period), and ML-based DGA classifiers.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1568/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1568.002 — DGA domain generation and resolution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Implement and execute a simple date-seeded DGA — generates realistic DGA telemetry"
+    command: |
+      Write-Host "[PAS] DGA simulation — date-seeded pseudo-random domain generation:"
+
+      function Get-DGADomain {
+          param([datetime]$Date, [int]$Index)
+          # Simple DGA: seed from date + index, generate 12-char lowercase domain
+          $seed  = [int]($Date.ToString('yyyyMMdd')) + $Index
+          $rng   = New-Object System.Random($seed)
+          $chars = 'abcdefghijklmnopqrstuvwxyz'
+          $len   = $rng.Next(8, 14)
+          $domain = -join (1..$len | ForEach-Object { $chars[$rng.Next(0, 26)] })
+          return "$domain.com"
+      }
+
+      $today   = Get-Date
+      $domains = 0..9 | ForEach-Object { Get-DGADomain -Date $today -Index $_ }
+
+      Write-Host "[PAS] Generated DGA domains for today ($($today.ToString('yyyy-MM-dd'))):"
+      foreach ($domain in $domains) {
+          Write-Host "  $domain"
+          try { [System.Net.Dns]::GetHostAddresses($domain) | Out-Null } catch {}
+      }
+      Write-Host "[PAS] $($domains.Count) DNS queries generated — mostly NXDOMAIN (expected)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate NX-domain burst — characteristic of DGA scanning for active C2 domain"
+    command: |
+      Write-Host "[PAS] NX-domain burst simulation (DGA scanning):"
+      Write-Host "[PAS] Real malware: queries 100s of DGA domains/day until one resolves (active C2)"
+      $nxDomains = @(
+          "xkqjrtpvbnmz.net","wqplfmnjdsxr.org","zvbthnqkxrpl.com",
+          "mnpqsxvwzjkl.net","rlqtnbzxwmpv.io","jvkxtnqbzrsw.com"
+      )
+      $nxCount = 0
+      foreach ($d in $nxDomains) {
+          try { [System.Net.Dns]::GetHostAddresses($d) | Out-Null } catch { $nxCount++ }
+          Write-Host "[PAS] Query: $d (NXDOMAIN)"
+      }
+      Write-Host "[PAS] NX-domain burst: $nxCount NXDOMAIN responses in rapid succession"
+      Write-Host "[PAS] Detection threshold: >20 NXDOMAIN in 60s from single host"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — burst of NXDOMAIN responses, high-entropy domain names in DNS logs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1568.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "DNS event: >20 NXDOMAIN responses from single host within 60 seconds — DGA scanning"
+  - "DNS event: queried domain names with Shannon entropy > 3.5 (high randomness)"
+  - "DNS event: domain names 8-15 chars with no vowel-consonant structure (not real words)"
+  - "Sentinel: DnsEvents | where ResultCode == 'NXDOMAIN' | summarize count() by Computer, bin(TimeGenerated,1m) | where count_ > 20"
+  - "Sentinel: DnsEvents | where strlen(Name) between (8..15) and Name !contains '.' — single-label high-entropy names"
+  - "MDE alert: 'Domain Generation Algorithm activity' or 'NXDomain burst from endpoint'"
+  - "CONTROL CHECK: DNS security tools with ML-based DGA classifiers (Umbrella, Infoblox) can detect DGA in real-time"
+  - "CONTROL CHECK: Sinkhole known DGA families — threat intel providers publish DGA seeds/algorithms for known malware families"

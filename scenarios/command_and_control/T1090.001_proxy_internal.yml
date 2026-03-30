@@ -1,0 +1,100 @@
+id: T1090.001_proxy_internal
+name: "Proxy — Internal Proxy"
+mitre_technique: "T1090.001"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use compromised internal hosts as proxy relay nodes for C2 traffic,
+  routing communication through internal systems to avoid direct connections from
+  compromised endpoints to external C2 infrastructure. This reduces the number of
+  hosts making direct outbound C2 connections (only the relay touches the internet)
+  and makes traffic appear to originate from internal systems, blending with
+  legitimate east-west traffic. Tools: netsh portproxy, HTRAN, custom socket relay.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1090/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1090.001 — Internal Proxy C2 relay simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Establish netsh portproxy relay — forward internal port to C2 destination"
+    command: |
+      Write-Host "[PAS] Setting up internal proxy relay via netsh portproxy:"
+      Write-Host "[PAS] Real pattern: compromise internal host A, set portproxy to relay to internet C2"
+      Write-Host "[PAS] All other compromised hosts beacon to A (internal), A forwards to C2 (internet)"
+
+      # Add portproxy rule: loopback:5555 -> loopback:443
+      netsh interface portproxy add v4tov4 `
+          listenport=5555 listenaddress=127.0.0.1 `
+          connectport=443 connectaddress=127.0.0.1 2>&1 | Out-Null
+      Write-Host "[PAS] Portproxy relay: 127.0.0.1:5555 -> 127.0.0.1:443"
+
+      # Verify the relay was created
+      $rule = netsh interface portproxy show v4tov4 2>&1 |
+          Select-String "5555"
+      if ($rule) { Write-Host "[PAS] Relay confirmed: $($rule.Line.Trim())" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate PowerShell TCP relay — custom socket proxy in script"
+    command: |
+      Write-Host "[PAS] PowerShell TCP relay pattern:"
+      Write-Host "[PAS] Real attack: Start-Job { while (\$true) { relay traffic } }"
+      Write-Host "[PAS] Forwards connections from internal hosts to external C2 over same socket"
+      Write-Host "[PAS] Detection: powershell.exe with persistent TCP listener on unexpected port"
+
+      # Show the relay pattern without actually starting a persistent listener
+      $relayCode = @"
+# Internal proxy relay (PAS simulation — not executed)
+\$listener = [Net.Sockets.TcpListener]::Create(5556)
+\$listener.Start()
+while (\$true) {
+    \$client  = \$listener.AcceptTcpClient()
+    \$c2      = New-Object Net.Sockets.TcpClient("127.0.0.1", 443)
+    # Relay bytes between \$client and \$c2
+}
+"@
+      Write-Host "[PAS] Relay code pattern (not executed):"
+      $relayCode -split "`n" | ForEach-Object { Write-Host "  $_" }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — netsh portproxy registry keys, unexpected TCP listeners on non-standard ports"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove portproxy relay rule"
+    command: |
+      netsh interface portproxy delete v4tov4 listenport=5555 listenaddress=127.0.0.1 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Portproxy relay removed"
+      # Verify removal
+      $check = netsh interface portproxy show v4tov4 2>&1 | Select-String "5555"
+      if (-not $check) { Write-Host "[PAS][Cleanup] Confirmed: portproxy rule removed" }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1090.001 cleanup complete"
+
+analyst_checklist:
+  - "Registry: HKLM\\SYSTEM\\CurrentControlSet\\Services\\PortProxy\\v4tov4 key created"
+  - "Network event: new TCP listener on unexpected port from iphlpapi.dll/netsh context"
+  - "Process event: netsh.exe with 'portproxy add' arguments"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'PortProxy' and ActionType == 'RegistryKeyCreated'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'netsh.exe' and ProcessCommandLine contains 'portproxy add'"
+  - "MDE alert: 'Port proxy configuration added'"
+  - "CONTROL CHECK: Audit portproxy rules regularly: netsh interface portproxy show all"
+  - "CONTROL CHECK: Alert on any new portproxy rule — these have almost no legitimate use on endpoints"

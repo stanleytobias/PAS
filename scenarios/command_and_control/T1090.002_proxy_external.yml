@@ -1,0 +1,86 @@
+id: T1090.002_proxy_external
+name: "Proxy — External Proxy"
+mitre_technique: "T1090.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries route C2 traffic through an external proxy or VPS to avoid direct
+  connections between the victim and their true C2 infrastructure. The victim connects
+  to the proxy (which may be a legitimate-looking VPS or cloud instance), which
+  forwards traffic to the real C2 server. This adds a layer of indirection — defenders
+  can only see the proxy IP, not the true C2. Common tools: proxychains, SOCKS5
+  proxies, socat, and commercial VPS instances spun up for each operation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1090/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1090.002 — External Proxy C2 simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate SOCKS5 proxy-routed C2 connection"
+    command: |
+      Write-Host "[PAS] External SOCKS5 proxy simulation:"
+      Write-Host "[PAS] Real pattern: implant configured with SOCKS5 proxy IP; all C2 through proxy"
+
+      # Simulate SOCKS5 handshake to loopback proxy
+      try {
+          $tcp  = New-Object System.Net.Sockets.TcpClient
+          $conn = $tcp.BeginConnect("127.0.0.1", 1080, $null, $null)
+          if ($conn.AsyncWaitHandle.WaitOne(300, $false) -and $tcp.Connected) {
+              $stream = $tcp.GetStream()
+              # SOCKS5 greeting: version=5, nmethods=1, method=0 (no auth)
+              $greeting = [byte[]](0x05, 0x01, 0x00)
+              $stream.Write($greeting, 0, $greeting.Length)
+              Write-Host "[PAS] SOCKS5 greeting sent to 127.0.0.1:1080"
+          }
+          $tcp.Close()
+      } catch {}
+      Write-Host "[PAS] SOCKS5 proxy connection attempt telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate proxy-aware HTTP request using system proxy settings"
+    command: |
+      Write-Host "[PAS] HTTP via explicit proxy configuration:"
+      # Set system proxy temporarily for telemetry generation
+      $proxyAddr = "http://127.0.0.1:8080"
+      Write-Host "[PAS] Routing HTTP beacon through proxy: $proxyAddr"
+      try {
+          $proxy   = New-Object System.Net.WebProxy($proxyAddr)
+          $request = [System.Net.WebRequest]::Create("http://127.0.0.1/c2beacon")
+          $request.Proxy   = $proxy
+          $request.Timeout = 500
+          $request.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Proxy-routed HTTP request executed — proxy connection telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — connections to port 1080 (SOCKS) from scripting process, proxy-routed HTTP from non-browser"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1090.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: connection to port 1080 (SOCKS) from scripting process"
+  - "Network event: HTTP CONNECT to port 8080 from non-browser process (proxy traversal)"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 1080 and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 8080 and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Proxy tunneling from scripting engine'"
+  - "CONTROL CHECK: Monitor proxy logs for non-browser User-Agents — scripting engines routing through proxy are anomalous"
+  - "CONTROL CHECK: Block SOCKS proxy ports (1080, 3128) outbound from endpoints — no legitimate endpoint use"

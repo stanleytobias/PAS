@@ -1,0 +1,112 @@
+id: T1001.003_data_obfuscation_protocol_impersonation
+name: "Data Obfuscation — Protocol or Service Impersonation"
+mitre_technique: "T1001.003"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries make C2 traffic mimic legitimate protocols or well-known web services
+  to evade detection. Common patterns: C2 traffic that looks like Windows Update
+  requests (same headers, URI format, User-Agent), Office 365 API calls, or Dropbox
+  sync traffic. Cobalt Strike malleable profiles are a primary tool for this technique,
+  allowing operators to define exactly what the C2 traffic looks like at the wire level.
+  Detection requires deep packet inspection, JA3 fingerprinting, and behavioural
+  analysis beyond just looking at HTTP headers.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1001/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1001.003 — Protocol Impersonation C2 simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Windows Update impersonation — C2 traffic mimics WSUS/WU requests"
+    command: |
+      Write-Host "[PAS] Windows Update protocol impersonation:"
+      # Real Cobalt Strike WU malleable profile pattern
+      $headers = @{
+          "User-Agent"      = "Windows-Update-Agent/10.0.10011.16384 Client-Protocol/2.31"
+          "Content-Type"    = "application/octet-stream"
+          "Accept"          = "*/*"
+          "Accept-Encoding" = "identity"
+          "Connection"      = "Keep-Alive"
+          "Cache-Control"   = "no-cache"
+          "Pragma"          = "no-cache"
+      }
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/selfupdate/AU?OS=6.2.9200.2.0.0.256.1&Arch=x64" `
+              -Headers $headers -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] WU-impersonating beacon sent — UA: Windows-Update-Agent/10.0"
+      Write-Host "[PAS] Detection: WU UA but destination is not *.windowsupdate.com"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Office 365 API impersonation — C2 traffic mimics Graph API calls"
+    command: |
+      Write-Host "[PAS] Office 365 / Microsoft Graph API impersonation:"
+      $headers = @{
+          "User-Agent"    = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          "Authorization" = "Bearer PAS_FAKE_TOKEN_$(([guid]::NewGuid()) -replace '-','')"
+          "Content-Type"  = "application/json"
+          "Accept"        = "application/json"
+          "client-request-id" = [guid]::NewGuid().ToString()
+      }
+      $body = '{"value":"PAS-T1001.003-GRAPH-C2-BEACON","@odata.context":"https://graph.microsoft.com"}'
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/v1.0/me/mailFolders/inbox/messages" `
+              -Method POST -Body $body -Headers $headers `
+              -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Graph API-impersonating beacon sent"
+      Write-Host "[PAS] Detection: Graph API URI pattern but destination not graph.microsoft.com; fake Bearer token"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate Dropbox sync impersonation — C2 traffic mimics Dropbox API"
+    command: |
+      Write-Host "[PAS] Dropbox sync impersonation:"
+      $headers = @{
+          "User-Agent"    = "dbxDesktop/63.4.113 (Windows; en-US)"
+          "Authorization" = "Bearer PAS_DROPBOX_FAKE_TOKEN"
+          "Content-Type"  = "application/octet-stream"
+          "Dropbox-API-Arg" = '{"path":"/c2/beacon.bin","mode":"overwrite"}'
+      }
+      try {
+          Invoke-WebRequest -Uri "http://127.0.0.1/2/files/upload" `
+              -Method POST -Body "PAS-T1001.003-DROPBOX-C2" `
+              -Headers $headers -TimeoutSec 1 -ErrorAction SilentlyContinue | Out-Null
+      } catch {}
+      Write-Host "[PAS] Dropbox-impersonating beacon sent"
+      Write-Host "[PAS] Detection: Dropbox UA/headers but not connecting to content.dropboxapi.com"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — legitimate-looking User-Agent strings with mismatched destination domains"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1001.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: Windows-Update-Agent User-Agent connecting to non-Microsoft IP/domain"
+  - "Network event: Graph API URI patterns or Bearer tokens in requests to non-Microsoft destinations"
+  - "Network event: Dropbox/OneDrive User-Agent connecting to non-cloud-provider IP"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl !contains 'microsoft.com' and InitiatingProcessCommandLine contains 'Windows-Update-Agent'"
+  - "JA3 fingerprint: powershell.exe TLS fingerprint differs from genuine browser — even with identical headers"
+  - "MDE alert: 'C2 protocol impersonation' or 'Suspicious HTTP headers mimicking cloud service'"
+  - "CONTROL CHECK: DNS-over-HTTPS to Microsoft resolver — WU traffic must go to *.windowsupdate.com; alert on UA/dest mismatch"
+  - "CONTROL CHECK: TLS inspection + JA3/JA3S fingerprinting — the TLS handshake cannot be faked as easily as HTTP headers"
+  - "CONTROL CHECK: Allowlist known-good cloud service destination IPs/ASNs; block same UA patterns to unknown destinations"

