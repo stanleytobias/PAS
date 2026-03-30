@@ -1,0 +1,98 @@
+id: T1036.001_invalid_code_signature
+name: "Masquerading — Invalid Code Signature"
+mitre_technique: "T1036.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries copy valid code signing metadata from a legitimate signed binary and
+  embed it in their malware so that at a glance it appears signed, even though the
+  signature does not validate. Tools and analysts performing quick triage on "company"
+  or "signer" fields without verifying the certificate chain are deceived.
+  This scenario copies a legitimate PE's version info and signature metadata fields
+  to a test binary and demonstrates the difference between catalog-signed and
+  authenticode-signed files and how to detect invalid/copied signatures.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.001 — Invalid Code Signature simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a test binary and examine what an invalid signature looks like vs a valid one"
+    command: |
+      # Copy a signed system binary and examine its signature
+      $signed   = "$env:SystemRoot\System32\cmd.exe"
+      $unsigned = "$env:TEMP\PAS_T1036_001_fakesigned.exe"
+      Copy-Item $signed $unsigned -Force
+
+      Write-Host "[PAS] Checking signature of LEGITIMATE cmd.exe:"
+      $legit = Get-AuthenticodeSignature $signed
+      Write-Host "  Status:   $($legit.Status)"
+      Write-Host "  Signer:   $($legit.SignerCertificate.Subject)"
+      Write-Host "  Issuer:   $($legit.SignerCertificate.Issuer)"
+
+      Write-Host "[PAS] Checking signature of COPY (same file, but would be modified in real attack):"
+      $copy = Get-AuthenticodeSignature $unsigned
+      Write-Host "  Status:   $($copy.Status)"
+      Write-Host "  Signer:   $($copy.SignerCertificate.Subject)"
+
+      # Append a byte to break the signature (simulates modification after signing)
+      Add-Content -Path $unsigned -Value "PAS_MODIFIED" -Encoding Byte -ErrorAction SilentlyContinue
+      # Use stream approach to append
+      $stream = [IO.File]::Open($unsigned, [IO.FileMode]::Append)
+      $byte   = [byte[]](0x00)
+      $stream.Write($byte, 0, 1)
+      $stream.Close()
+
+      Write-Host "[PAS] Modified binary — checking signature after modification:"
+      $modified = Get-AuthenticodeSignature $unsigned
+      Write-Host "  Status:   $($modified.Status)  ← should now be HashMismatch or NotSigned"
+      Write-Host "  Signer:   $($modified.SignerCertificate.Subject)"
+      Write-Host "[PAS] A signature status of 'HashMismatch' is the invalid code signature indicator"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute the binary with invalid signature — generates process event with signature anomaly"
+    command: |
+      $unsigned = "$env:TEMP\PAS_T1036_001_fakesigned.exe"
+      Write-Host "[PAS] Executing binary with invalid signature:"
+      Start-Process $unsigned -ArgumentList "/c echo PAS-T1036.001-INVALID-SIG" -Wait -NoNewWindow
+      Write-Host "[PAS] Binary executed — check MDE SignatureStatus field in process event"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — process event with SignatureStatus=InvalidSignature or HashMismatch for executed binary"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove modified binary"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1036_001_fakesigned.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed fake-signed binary"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.001 cleanup complete"
+
+analyst_checklist:
+  - "MDE: DeviceProcessEvents — check ProcessSignatureStatus field for 'InvalidSignature' or 'HashMismatch'"
+  - "Sentinel: DeviceProcessEvents | where ProcessSignatureStatus == 'InvalidSignature' and FolderPath contains 'Temp'"
+  - "Sentinel: DeviceImageLoadEvents | where not(IsCodeSigned) or SignatureStatus == 'InvalidSignature'"
+  - "MDE alert: 'Binary with invalid code signature executed'"
+  - "CONTROL CHECK: Process events must include code signing status fields — verify MDE advanced features are enabled"
+  - "CONTROL CHECK: Alert on any binary with Microsoft/Windows in company name field but invalid/missing signature"
+  - "CONTROL CHECK: Catalog-signed vs Authenticode-signed distinction — catalog signing does not embed a PE signature"

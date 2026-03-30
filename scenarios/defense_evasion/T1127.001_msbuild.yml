@@ -1,0 +1,101 @@
+id: T1127.001_msbuild
+name: "Trusted Developer Utilities Proxy Execution — MSBuild"
+mitre_technique: "T1127.001"
+mitre_tactic: "defense_evasion"
+description: >
+  MSBuild.exe (Microsoft Build Engine) processes XML project files and can execute
+  inline C# or VB.NET tasks via the UsingTask/Exec elements. Adversaries embed
+  malicious code in a .csproj or .xml project file and invoke msbuild.exe — which
+  is a signed Microsoft binary that may be whitelisted. This bypasses AppLocker
+  rules that block execution of arbitrary binaries. The inline task executes as
+  .NET code inside the msbuild.exe process.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1127/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1127.001 — MSBuild inline task proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a malicious MSBuild project with inline C# task"
+    command: |
+      $projPath = "$env:TEMP\PAS_T1127_001.csproj"
+      $outFile  = "$env:TEMP\PAS_T1127_001_fired.txt"
+      Set-Content $projPath @"
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="PASTask">
+    <PASInlineTask />
+  </Target>
+  <UsingTask TaskName="PASInlineTask" TaskFactory="CodeTaskFactory"
+             AssemblyFile="`$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Fragment" Language="cs">
+        <![CDATA[
+          System.IO.File.WriteAllText(@"$outFile", "PAS-T1127.001-MSBUILD-EXECUTED");
+          System.Console.WriteLine("PAS-T1127.001-MSBUILD-INLINE-TASK");
+        ]]>
+      </Code>
+    </Task>
+  </UsingTask>
+</Project>
+"@
+      Write-Host "[PAS] MSBuild project written: $projPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via msbuild.exe — triggers inline C# task"
+    command: |
+      $projPath = "$env:TEMP\PAS_T1127_001.csproj"
+      $msbuild  = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework*" `
+          -Filter MSBuild.exe -Recurse -ErrorAction SilentlyContinue |
+          Sort-Object FullName -Descending | Select-Object -First 1
+
+      if ($msbuild) {
+          Write-Host "[PAS] Executing: $($msbuild.FullName) $projPath"
+          Start-Process $msbuild.FullName -ArgumentList $projPath -Wait -NoNewWindow
+          if (Test-Path "$env:TEMP\PAS_T1127_001_fired.txt") {
+              Write-Host "[PAS] MSBuild inline task EXECUTED"
+          }
+      } else {
+          Write-Host "[PAS] MSBuild.exe not found (.NET Framework not installed)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — MSBuild.exe executing a .csproj from TEMP; inline task compilation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove MSBuild project and output"
+    command: |
+      @("$env:TEMP\PAS_T1127_001.csproj",
+        "$env:TEMP\PAS_T1127_001_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] MSBuild files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1127.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: MSBuild.exe with .csproj or .xml argument from TEMP or user directory"
+  - "File event: .csproj file created in TEMP containing UsingTask/CodeTaskFactory XML"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'MSBuild.exe' and FolderPath !contains 'Visual Studio' and ProcessCommandLine contains 'Temp'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.csproj' and FolderPath contains 'Temp'"
+  - "MDE alert: 'MSBuild executing inline task from non-standard path'"
+  - "CONTROL CHECK: MSBuild.exe running outside of Visual Studio / CI pipeline context should alert"
+  - "CONTROL CHECK: .csproj files in TEMP or user directories are a strong staging indicator"

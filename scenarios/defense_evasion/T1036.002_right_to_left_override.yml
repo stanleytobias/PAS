@@ -1,0 +1,98 @@
+id: T1036.002_right_to_left_override
+name: "Masquerading — Right-to-Left Override"
+mitre_technique: "T1036.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries embed the Unicode Right-to-Left Override character (U+202E) in a filename
+  to reverse the display of characters following it. A file named
+  "document_U+202Eexe.pdf" renders visually as "document_fdp.exe" — appearing to be
+  a PDF while actually being an executable. This tricks users and analysts performing
+  visual triage. This scenario creates a file with an RTLO character in its name and
+  demonstrates how to detect the Unicode codepoint in file telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.002 — Right-to-Left Override filename simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a file with RTLO character embedded in filename"
+    command: |
+      # U+202E = RTLO character
+      $rtlo    = [char]0x202E
+      # Filename that visually appears as "invoice_2024_fdp.exe" but is actually "invoice_2024_U202Eexe.pdf"
+      $fakeName = "invoice_2024_${rtlo}exe.pdf"
+      $destPath  = "$env:TEMP\$fakeName"
+
+      # Copy cmd.exe to this deceptive filename
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $destPath -Force
+      Write-Host "[PAS] File created with RTLO filename: $destPath"
+      Write-Host "[PAS] Visual display: invoice_2024_$(([char]0x202E))exe.pdf"
+      Write-Host "[PAS] Actual extension (after RTLO reversal): .exe"
+      Write-Host "[PAS] Unicode codepoint U+202E present in path: $($destPath -match [char]0x202E)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Verify the RTLO character is detectable in the file path string"
+    command: |
+      $rtlo = [char]0x202E
+      $files = Get-ChildItem "$env:TEMP" | Where-Object { $_.Name -match [char]0x202E }
+      Write-Host "[PAS] Files in TEMP containing RTLO character:"
+      foreach ($f in $files) {
+          Write-Host "  $($f.FullName)"
+          Write-Host "  Hex bytes of name: $([System.Text.Encoding]::Unicode.GetBytes($f.Name) | ForEach-Object { $_.ToString('X2') } | Select-Object -First 30)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Execute the RTLO-named binary — generates process creation telemetry with deceptive filename"
+    command: |
+      $rtlo    = [char]0x202E
+      $fakeName = "invoice_2024_${rtlo}exe.pdf"
+      $destPath  = "$env:TEMP\$fakeName"
+      Write-Host "[PAS] Executing RTLO-named binary:"
+      Start-Process $destPath -ArgumentList "/c echo PAS-T1036.002-RTLO" -Wait -NoNewWindow
+      Write-Host "[PAS] Executed — check DeviceProcessEvents for filename with U+202E"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — process event with RTLO character in filename should be detectable via Unicode character inspection"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove RTLO-named file"
+    command: |
+      $rtlo    = [char]0x202E
+      $fakeName = "invoice_2024_${rtlo}exe.pdf"
+      $destPath  = "$env:TEMP\$fakeName"
+      Remove-Item $destPath -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] RTLO-named file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.002 cleanup complete"
+
+analyst_checklist:
+  - "File event: file creation with Unicode codepoint U+202E (0x202E) in filename"
+  - "Process event: process execution from a filename containing RTLO character"
+  - "Sentinel: DeviceProcessEvents | where FolderPath contains '\u202e' or FileName contains '\u202e'"
+  - "Sentinel: DeviceFileEvents | where FileName contains '\u202e'"
+  - "Sentinel (KQL Unicode match): DeviceProcessEvents | where FolderPath matches regex @'\\x{202e}'"
+  - "MDE alert: 'Suspicious Unicode character in filename'"
+  - "CONTROL CHECK: Defender SmartScreen and Windows Explorer show the reversed display — analysts must inspect raw Unicode, not visual display"
+  - "CONTROL CHECK: Email gateway should block attachments containing RTLO characters in filenames"

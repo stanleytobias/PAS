@@ -1,0 +1,115 @@
+id: T1070.004_file_deletion
+name: "Indicator Removal — File Deletion"
+mitre_technique: "T1070.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries delete tools, scripts, and staged payloads after use to reduce forensic
+  footprint. Methods range from simple del/Remove-Item to secure deletion tools like
+  cipher /w (Windows built-in) and SDelete (Sysinternals), which overwrite file content
+  before deletion to prevent recovery. This scenario drops PAS-tagged test files, then
+  exercises each deletion method — including secure wipe patterns — to validate file
+  deletion telemetry coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.004 — File Deletion simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create test files to be deleted across multiple methods"
+    command: |
+      $testFiles = @(
+          "$env:TEMP\PAS_T1070_004_payload.exe",
+          "$env:TEMP\PAS_T1070_004_staging.ps1",
+          "$env:TEMP\PAS_T1070_004_loot.txt",
+          "$env:TEMP\PAS_T1070_004_wipe_target.txt"
+      )
+      foreach ($f in $testFiles) {
+          Set-Content $f "PAS-T1070-004-TEST-CONTENT"
+          Write-Host "[PAS] Created: $f"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Simple Remove-Item — standard PowerShell deletion"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1070_004_payload.exe" -Force
+      Write-Host "[PAS] Remove-Item: PAS_T1070_004_payload.exe deleted"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: cmd.exe del — common adversary cleanup pattern"
+    command: |
+      Start-Process cmd.exe -ArgumentList "/c del /f /q $env:TEMP\PAS_T1070_004_staging.ps1" `
+          -Wait -NoNewWindow
+      Write-Host "[PAS] cmd del /f /q: PAS_T1070_004_staging.ps1 deleted"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: cipher /w — Windows built-in secure wipe of free space in directory"
+    command: |
+      Write-Host "[PAS] cipher /w — overwrites free space to prevent file recovery:"
+      # cipher /w on a small directory (TEMP) — generates distinctive cipher.exe telemetry
+      # Note: this may take a few seconds
+      Start-Process cipher.exe -ArgumentList "/w:$env:TEMP" -Wait -NoNewWindow `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] cipher /w executed on TEMP directory"
+      # Delete the third test file after wipe
+      Remove-Item "$env:TEMP\PAS_T1070_004_loot.txt" -Force -ErrorAction SilentlyContinue
+
+  - step: 6
+    type: exec_powershell
+    description: "Method 4: Overwrite-then-delete — manual secure wipe without SDelete"
+    command: |
+      $target = "$env:TEMP\PAS_T1070_004_wipe_target.txt"
+      if (Test-Path $target) {
+          # Overwrite with zeros before deletion
+          $zeros = [byte[]](0x00) * 4096
+          [IO.File]::WriteAllBytes($target, $zeros)
+          Write-Host "[PAS] File overwritten with zeros: $target"
+          Remove-Item $target -Force
+          Write-Host "[PAS] File deleted after overwrite — content not recoverable"
+      }
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file deletion events for .exe and .ps1 files from TEMP; cipher.exe execution"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any remaining test files"
+    command: |
+      @("$env:TEMP\PAS_T1070_004_payload.exe","$env:TEMP\PAS_T1070_004_staging.ps1",
+        "$env:TEMP\PAS_T1070_004_loot.txt","$env:TEMP\PAS_T1070_004_wipe_target.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] All test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1070.004 cleanup complete"
+
+analyst_checklist:
+  - "File event: .exe and .ps1 files deleted from TEMP — DeviceFileEvents ActionType=FileDeleted"
+  - "Process event: cipher.exe with /w argument — secure wipe indicator"
+  - "Process event: cmd.exe with 'del /f /q' arguments"
+  - "Sentinel: DeviceFileEvents | where ActionType == 'FileDeleted' and (FileName endswith '.exe' or FileName endswith '.ps1') and FolderPath contains 'Temp'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cipher.exe' and ProcessCommandLine contains '/w'"
+  - "MDE alert: 'Secure file deletion tool used' or 'Executable deleted from staging directory'"
+  - "CONTROL CHECK: File deletion events for executables from TEMP shortly after creation is a strong staging+cleanup indicator"
+  - "CONTROL CHECK: cipher /w and SDelete are extremely rare in production — alert on any use"
+  - "CONTROL CHECK: MDE captures file deletion events — verify DeviceFileEvents is being forwarded and queried"

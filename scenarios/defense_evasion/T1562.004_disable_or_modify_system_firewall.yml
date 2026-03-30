@@ -1,0 +1,112 @@
+id: T1562.004_disable_or_modify_system_firewall
+name: "Impair Defenses — Disable or Modify System Firewall"
+mitre_technique: "T1562.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries disable or modify the Windows Firewall to allow inbound C2 traffic,
+  enable lateral movement, or remove egress controls. Methods include disabling all
+  profiles via netsh or PowerShell, adding rules to allow specific ports, and deleting
+  existing blocking rules. This scenario exercises each method using benign PAS-tagged
+  rules, validates telemetry, then restores the original firewall state.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.004 — Disable/Modify System Firewall simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Record current firewall profile state as baseline"
+    command: |
+      Write-Host "[PAS] Current firewall profile state:"
+      Get-NetFirewallProfile | Select-Object Name, Enabled |
+          Format-Table -AutoSize
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Add an inbound allow rule for a suspicious port — simulates C2 ingress rule"
+    command: |
+      $ruleName = "PAS_T1562_004_AllowInbound4444"
+      New-NetFirewallRule -DisplayName $ruleName `
+          -Direction Inbound -Protocol TCP -LocalPort 4444 `
+          -Action Allow -Profile Any -ErrorAction Stop
+      Write-Host "[PAS] Inbound allow rule added: $ruleName (port 4444)"
+      Write-Host "[PAS] ALERT: Inbound rule on high-risk port should trigger immediate SIEM alert"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Disable Windows Firewall on the Domain profile via netsh"
+    command: |
+      Write-Host "[PAS] Method 2: netsh advfirewall set domainprofile state off"
+      netsh advfirewall set domainprofile state off 2>&1
+      Write-Host "[PAS] Domain profile firewall disabled — restoring immediately"
+      netsh advfirewall set domainprofile state on 2>&1
+      Write-Host "[PAS] Domain profile firewall re-enabled"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: Disable firewall via PowerShell Set-NetFirewallProfile"
+    command: |
+      Write-Host "[PAS] Method 3: Set-NetFirewallProfile -Profile Public -Enabled False"
+      Set-NetFirewallProfile -Profile Public -Enabled False
+      Write-Host "[PAS] Public profile disabled — restoring immediately"
+      Set-NetFirewallProfile -Profile Public -Enabled True
+      Write-Host "[PAS] Public profile re-enabled"
+
+  - step: 6
+    type: exec_powershell
+    description: "Method 4: Add outbound allow rule bypassing egress controls — simulates exfil enablement"
+    command: |
+      $ruleName = "PAS_T1562_004_AllowOutbound8443"
+      New-NetFirewallRule -DisplayName $ruleName `
+          -Direction Outbound -Protocol TCP -RemotePort 8443 `
+          -Action Allow -Profile Any -ErrorAction Stop
+      Write-Host "[PAS] Outbound allow rule added: $ruleName (port 8443)"
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — firewall rule additions, profile disable events (Event ID 2003/2004), and netsh execution"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove PAS firewall rules and verify all profiles are enabled"
+    command: |
+      @("PAS_T1562_004_AllowInbound4444","PAS_T1562_004_AllowOutbound8443") | ForEach-Object {
+          Remove-NetFirewallRule -DisplayName $_ -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed rule: $_"
+      }
+      # Ensure all profiles are on
+      Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
+      Write-Host "[PAS][Cleanup] All firewall profiles confirmed enabled"
+      Get-NetFirewallProfile | Select-Object Name, Enabled | Format-Table -AutoSize
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.004 cleanup complete — all PAS rules removed, firewall profiles verified enabled"
+
+analyst_checklist:
+  - "Event ID 2003: Windows Firewall profile setting changed (disabled)"
+  - "Event ID 2004: Windows Firewall rule added — inbound allow on port 4444"
+  - "Event ID 2006: Windows Firewall rule deleted"
+  - "Process event: netsh.exe with advfirewall arguments spawned from powershell.exe"
+  - "Sentinel: DeviceNetworkEvents | where ActionType == 'FirewallRuleAdded' and LocalPort == 4444"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'netsh.exe' and ProcessCommandLine contains 'advfirewall' and ProcessCommandLine contains 'off'"
+  - "Sentinel: DeviceEvents | where ActionType == 'FirewallDisabled'"
+  - "MDE alert: 'Windows Firewall disabled' or 'Suspicious inbound firewall rule added'"
+  - "CONTROL CHECK: Any inbound allow rule on ports >1024 added by a non-admin process should alert immediately"
+  - "CONTROL CHECK: Firewall disable events should page on-call — there is no legitimate reason to disable Windows Firewall in production"

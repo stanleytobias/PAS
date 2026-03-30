@@ -1,0 +1,114 @@
+id: T1027.010_command_obfuscation
+name: "Obfuscated Files or Information — Command Obfuscation"
+mitre_technique: "T1027.010"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries obfuscate commands to evade string-based detection rules. Common Windows
+  methods include cmd.exe caret insertion (^), PowerShell backtick insertion (`),
+  environment variable substitution, character concatenation, and string reversal.
+  These techniques produce commands that execute identically to their plaintext form
+  but defeat regex and keyword-based SIEM rules.
+  AMSI and script block logging capture the deobfuscated form — making SBL essential
+  for detecting obfuscated PowerShell regardless of the obfuscation method used.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.010 — Command Obfuscation simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: cmd.exe caret (^) insertion obfuscation"
+    command: |
+      Write-Host "[PAS] Method 1: cmd.exe caret obfuscation"
+      # Carets are ignored by cmd.exe — this executes 'whoami' despite looking obfuscated
+      Start-Process cmd.exe -ArgumentList "/c w^h^o^a^m^i" -Wait -NoNewWindow
+      Write-Host "[PAS] w^h^o^a^m^i executed as whoami — caret obfuscation bypasses simple string match"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: PowerShell backtick insertion"
+    command: |
+      Write-Host "[PAS] Method 2: PowerShell backtick obfuscation"
+      # Backticks are ignored between characters in PS — Invoke-`E`x`p`r`e`s`s`i`o`n
+      $cmd = "Wri``te-Ho``st 'PAS-T1027.010-BACKTICK'"
+      Invoke-Expression $cmd
+      Write-Host "[PAS] Backtick-obfuscated command executed"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Environment variable substring substitution"
+    command: |
+      Write-Host "[PAS] Method 3: Environment variable substring"
+      # %COMSPEC% = cmd.exe; adversaries use substrings of env vars to spell commands
+      $env:PAS_CMD = "whoami"
+      Start-Process cmd.exe -ArgumentList "/c %PAS_CMD%" -Wait -NoNewWindow
+      Write-Host "[PAS] Env var substitution executed"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 4: String concatenation and reversal via PowerShell"
+    command: |
+      Write-Host "[PAS] Method 4: String concatenation obfuscation"
+      # Build command from concatenated fragments
+      $a = "Writ"; $b = "e-Ho"; $c = "st"
+      $cmd = $a + $b + $c
+      & ([scriptblock]::Create("$cmd 'PAS-T1027.010-CONCAT'"))
+      Write-Host "[PAS] Concatenated command executed"
+
+      Write-Host "[PAS] Method 5: Reversed string execution"
+      $reversed = ")'ESREVER-010.7201-SAP' tsoH-etirW"
+      $decoded  = -join ($reversed.ToCharArray() | Sort-Object { [array]::IndexOf($reversed.ToCharArray(), $_) } )
+      # Simple reversal
+      $straight = -join $reversed[-1..-($reversed.Length)]
+      Invoke-Expression $straight
+
+  - step: 6
+    type: exec_powershell
+    description: "Method 5: Character code construction ([char] cast)"
+    command: |
+      Write-Host "[PAS] Method 5: [char] code construction"
+      # Build 'whoami' from char codes
+      $cmd = [char]119+[char]104+[char]111+[char]97+[char]109+[char]105
+      Write-Host "[PAS] Constructed: $cmd"
+      Start-Process cmd.exe -ArgumentList "/c $cmd" -Wait -NoNewWindow
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging should show DECODED forms; process events show obfuscated command lines"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test environment variable"
+    command: |
+      Remove-Item Env:\PAS_CMD -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test env var removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.010 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): CRITICAL — SBL captures deobfuscated script content regardless of obfuscation method"
+  - "Process event: cmd.exe with caret-heavy command line (w^h^o^a^m^i pattern)"
+  - "Process event: powershell.exe with Invoke-Expression + obfuscated string argument"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine matches regex @'\\^.\\^.\\^' — caret obfuscation"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'Invoke-Expression' or ProcessCommandLine contains 'IEX'"
+  - "MDE alert: 'Obfuscated PowerShell command' or 'Suspicious use of Invoke-Expression'"
+  - "CONTROL CHECK: Script block logging (Event ID 4104) is the primary defense — without it, obfuscated PS is opaque"
+  - "CONTROL CHECK: AMSI must be enabled and patching-resistant — it deobfuscates before detection"
+  - "CONTROL CHECK: PSScriptAnalyzer rules in Defender can score obfuscation complexity — high-score blocks should alert"

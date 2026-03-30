@@ -1,0 +1,95 @@
+id: T1678_delay_execution
+name: "Delay Execution"
+mitre_technique: "T1678"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries introduce delays before executing malicious code to evade time-limited
+  sandbox analysis and behavioral monitoring that has a fixed observation window.
+  If malware sleeps for longer than the sandbox timeout (typically 2-5 minutes),
+  the analysis window closes and the sample is marked benign. Methods include
+  ping-based delays (ping 127.0.0.1 -n <count>), WScript.Sleep, Start-Sleep,
+  and CPU-burning loops that appear like legitimate computation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1678/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1678 — Delay Execution simulation (short delays used — not full sandbox-evasion duration)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: ping-based delay — ping loopback N times to create N-second delay"
+    command: |
+      Write-Host "[PAS] Method 1: ping-based delay (3 pings = ~3 second delay):"
+      Write-Host "[PAS] Real attack uses 300+ pings to exceed 5-minute sandbox window"
+      Start-Process ping.exe -ArgumentList "127.0.0.1 -n 3" -Wait -NoNewWindow
+      Write-Host "[PAS] ping delay complete"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: WScript.Shell timeout via mshta sleep"
+    command: |
+      Write-Host "[PAS] Method 2: WScript.Sleep via mshta"
+      Write-Host "[PAS] Real pattern: mshta vbscript:Execute(""WScript.Sleep 300000:close"")"
+      # Short version for simulation
+      $proc = Start-Process mshta.exe `
+          -ArgumentList "vbscript:Execute(`"WScript.Sleep 1000:close`")" `
+          -PassThru -NoNewWindow
+      Start-Sleep -Seconds 2
+      $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] mshta delay pattern executed"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Scheduled task delay — execute payload N minutes after drop"
+    command: |
+      $taskName = "PAS_T1678_DelayedExec"
+      $trigTime = (Get-Date).AddMinutes(5)
+      $action   = New-ScheduledTaskAction -Execute "cmd.exe" `
+          -Argument "/c echo PAS-T1678-DELAYED > $env:TEMP\PAS_T1678_fired.txt"
+      $trigger  = New-ScheduledTaskTrigger -Once -At $trigTime
+      Register-ScheduledTask -TaskName $taskName -Action $action `
+          -Trigger $trigger -Force | Out-Null
+      Write-Host "[PAS] Delayed task registered: fires at $($trigTime.ToString('HH:mm:ss'))"
+      Write-Host "[PAS] Payload executes 5 minutes after drop — outside sandbox window"
+      # Cancel immediately for lab safety
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+      Write-Host "[PAS] Task cancelled (lab safety)"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ping.exe in delay pattern; mshta WScript.Sleep; short-lived scheduled task creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any output files"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1678_fired.txt" -Force -ErrorAction SilentlyContinue
+      Unregister-ScheduledTask "PAS_T1678_DelayedExec" -Confirm:$false -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Delay execution test artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1678 cleanup complete"
+
+analyst_checklist:
+  - "Process event: ping.exe with -n >30 to 127.0.0.1 — delay pattern"
+  - "Process event: mshta.exe with WScript.Sleep in vbscript: inline argument"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ping.exe' and ProcessCommandLine contains '-n' and ProcessCommandLine matches regex @'-n\\s+[3-9][0-9]+'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mshta.exe' and ProcessCommandLine contains 'Sleep'"
+  - "MDE alert: 'Execution delay technique detected'"
+  - "CONTROL CHECK: Sandboxes should run samples for minimum 10 minutes to catch delayed execution"
+  - "CONTROL CHECK: Behavioral monitoring must cover post-sleep execution — many EDRs only alert on immediate execution"

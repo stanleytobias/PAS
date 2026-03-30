@@ -1,0 +1,97 @@
+id: T1622_debugger_evasion
+name: "Debugger Evasion"
+mitre_technique: "T1622"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries detect attached debuggers and alter or halt execution to prevent analysis.
+  Common detection methods: IsDebuggerPresent (userland flag in PEB), CheckRemoteDebuggerPresent,
+  NtQueryInformationProcess (ProcessDebugPort), timing checks (RDTSC delta), and
+  heap flag inspection (PEB.NtGlobalFlag). If a debugger is detected, malware may
+  exit, enter an infinite loop, or execute a decoy path that hides its real behavior.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1622/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1622 — Debugger Evasion simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Exercise all major debugger detection APIs"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+      public class PASAntiDebug {
+          [DllImport("kernel32.dll")] public static extern bool IsDebuggerPresent();
+          [DllImport("kernel32.dll")] public static extern bool CheckRemoteDebuggerPresent(
+              IntPtr hProcess, ref bool isDebuggerPresent);
+          [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+          [DllImport("ntdll.dll")]    public static extern int NtQueryInformationProcess(
+              IntPtr hProcess, int infoClass, ref IntPtr pInfo, uint sz, out uint ret);
+      }
+"@
+      Write-Host "[PAS] T1622 — Debugger detection checks:"
+
+      # IsDebuggerPresent — userland PEB flag
+      $debugged = [PASAntiDebug]::IsDebuggerPresent()
+      Write-Host "  IsDebuggerPresent: $debugged"
+
+      # CheckRemoteDebuggerPresent — more thorough kernel check
+      $hProc     = [PASAntiDebug]::GetCurrentProcess()
+      $remoteDbg = $false
+      [PASAntiDebug]::CheckRemoteDebuggerPresent($hProc, [ref]$remoteDbg) | Out-Null
+      Write-Host "  CheckRemoteDebuggerPresent: $remoteDbg"
+
+      # NtQueryInformationProcess ProcessDebugPort (class 7) — kernel-level check
+      $debugPort = [IntPtr]::Zero
+      $ret       = 0u
+      [PASAntiDebug]::NtQueryInformationProcess($hProc, 7, [ref]$debugPort,
+          [IntPtr]::Size, [ref]$ret) | Out-Null
+      Write-Host "  NtQueryInformationProcess(ProcessDebugPort): $debugPort"
+      if ($debugPort -ne [IntPtr]::Zero) {
+          Write-Host "  [Debugger detected] — malware would alter execution path"
+      } else {
+          Write-Host "  No kernel-level debugger detected"
+      }
+
+      # Check for common debugger process names
+      $dbgProcs = @("x32dbg","x64dbg","ollydbg","windbg","ida","ida64",
+                    "idaq","idaq64","radare2","ghidra")
+      $found = Get-Process -ErrorAction SilentlyContinue |
+          Where-Object { $dbgProcs -contains $_.Name.ToLower() }
+      if ($found) {
+          Write-Host "  [Debugger process] Found: $($found.Name -join ', ')"
+      } else {
+          Write-Host "  No debugger processes detected"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — IsDebuggerPresent + CheckRemoteDebuggerPresent + NtQueryInformationProcess(7) API chain"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1622 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): IsDebuggerPresent + CheckRemoteDebuggerPresent API chain"
+  - "API: NtQueryInformationProcess with ProcessDebugPort (class 7) — kernel debugger check"
+  - "MDE: DeviceEvents | where ActionType == 'IsDebuggerPresentApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType contains 'DebuggerPresent' or ActionType contains 'NtQueryInformationProcess'"
+  - "CONTROL CHECK: Anti-debug checks combined with conditional execution are a strong malware indicator"
+  - "CONTROL CHECK: In sandbox environments, patch IsDebuggerPresent to always return FALSE so malware does not abort"

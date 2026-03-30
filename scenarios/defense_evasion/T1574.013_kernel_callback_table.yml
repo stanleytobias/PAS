@@ -1,0 +1,122 @@
+id: T1574.013_kernel_callback_table
+name: "Hijack Execution Flow — KernelCallbackTable"
+mitre_technique: "T1574.013"
+mitre_tactic: "defense_evasion"
+description: >
+  The KernelCallbackTable is a pointer array in a process's PEB that maps GUI message
+  types to handler functions. It is initialized when user32.dll loads into a GUI process.
+  Adversaries overwrite a function pointer in this table (via WriteProcessMemory) so
+  that the next time a specific Windows message is dispatched to that process, their
+  injected code executes — all inside the legitimate target process with no new thread.
+  This scenario generates the full API telemetry chain without patching real function
+  pointers. Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/013/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.013 — KernelCallbackTable hijack simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate KernelCallbackTable read and targeted WriteProcessMemory — PEB manipulation telemetry"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASKCTHijack {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool b, int pid);
+          [DllImport("kernel32.dll")] public static extern bool ReadProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int r);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          [DllImport("ntdll.dll")]    public static extern int NtQueryInformationProcess(
+              IntPtr h, int cls, ref PROCESS_BASIC_INFORMATION pbi, uint sz, out uint ret);
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_BASIC_INFORMATION {
+              public IntPtr Reserved1; public IntPtr PebBaseAddress;
+              public IntPtr Reserved2_0; public IntPtr Reserved2_1;
+              public IntPtr UniqueProcessId; public IntPtr Reserved3;
+          }
+      }
+"@
+      $target = Start-Process notepad.exe -PassThru
+      Start-Sleep -Milliseconds 1500
+      Write-Host "[PAS] Target: notepad.exe PID $($target.Id)"
+
+      $hProc = [PASKCTHijack]::OpenProcess(0x1F0FFF, $false, $target.Id)
+      Write-Host "[PAS] OpenProcess: $hProc"
+
+      if ($hProc -ne [IntPtr]::Zero) {
+          # Read PEB address via NtQueryInformationProcess
+          $pbi  = New-Object PASKCTHijack+PROCESS_BASIC_INFORMATION
+          $ret  = 0u
+          [PASKCTHijack]::NtQueryInformationProcess($hProc, 0, [ref]$pbi,
+              [Runtime.InteropServices.Marshal]::SizeOf($pbi), [ref]$ret) | Out-Null
+          Write-Host "[PAS] NtQueryInformationProcess — PEB base: $($pbi.PebBaseAddress)"
+
+          # Read PEB to find KernelCallbackTable pointer (offset 0x58 on x64)
+          $pebBuf = New-Object byte[] 256
+          $read   = 0
+          [PASKCTHijack]::ReadProcessMemory($hProc, $pbi.PebBaseAddress, $pebBuf, 256, [ref]$read) | Out-Null
+          Write-Host "[PAS] ReadProcessMemory (PEB): $read bytes read"
+
+          # KernelCallbackTable offset 0x58 on x64
+          $kctPtr = [BitConverter]::ToInt64($pebBuf, 0x58)
+          Write-Host "[PAS] KernelCallbackTable pointer from PEB[0x58]: 0x$($kctPtr.ToString('X16'))"
+
+          # Allocate RWX region — would hold hijacked callback shellcode
+          $addr = [PASKCTHijack]::VirtualAllocEx($hProc, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+          Write-Host "[PAS] VirtualAllocEx(RWX): $addr — would store replacement callback"
+
+          # Write benign bytes — simulates callback overwrite without patching real pointer
+          $payload = [byte[]](0x90) * 64
+          $written = 0
+          [PASKCTHijack]::WriteProcessMemory($hProc, $addr, $payload, $payload.Length, [ref]$written) | Out-Null
+          Write-Host "[PAS] WriteProcessMemory: $written bytes — simulates callback payload write"
+          Write-Host "[PAS] Real attack: WriteProcessMemory into KCT entry at 0x$($kctPtr.ToString('X16')) + offset"
+          Write-Host "[PAS] SendMessage to target window would then trigger the hijacked callback"
+
+          [PASKCTHijack]::VirtualFreeEx($hProc, $addr, 0, 0x8000) | Out-Null
+          [PASKCTHijack]::CloseHandle($hProc) | Out-Null
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] KernelCallbackTable hijack API chain complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — NtQueryInformationProcess + ReadProcessMemory(PEB) + VirtualAllocEx(RWX) + WriteProcessMemory targeting notepad.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Terminate notepad"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] notepad.exe terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.013 cleanup complete"
+
+analyst_checklist:
+  - "API: NtQueryInformationProcess + ReadProcessMemory(PEB) from powershell.exe targeting notepad.exe"
+  - "API: VirtualAllocEx(RWX) + WriteProcessMemory targeting same process — KCT overwrite pattern"
+  - "MDE: DeviceEvents | where ActionType == 'ReadProcessMemoryApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType in ('NtQueryInformationProcessApiCall','VirtualAllocExApiCall') and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: PEB read (NtQueryInformationProcess ProcessBasicInformation) from a non-system process is a strong pre-injection indicator"
+  - "CONTROL CHECK: Sequence of ReadProcessMemory(PEB region) → VirtualAllocEx(RWX) → WriteProcessMemory in same target process is high-confidence KCT hijack"

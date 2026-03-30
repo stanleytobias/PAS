@@ -1,0 +1,91 @@
+id: T1006_direct_volume_access
+name: "Direct Volume Access"
+mitre_technique: "T1006"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries open raw handles to logical volumes (\\.\C: or \\.\PhysicalDrive0)
+  to read file system structures directly — bypassing file access controls and
+  file system monitoring tools that operate at the file API level. This is used
+  to read locked files (e.g. SAM, NTDS.dit), extract VSS copies of protected files,
+  and bypass file-based EDR hooks that intercept NtCreateFile calls.
+  Requires elevation (SeBackupPrivilege or administrator).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1006 — Direct Volume Access simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Open a raw handle to the C: volume — generates volume access telemetry"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASVolumeAccess {
+          [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+          public static extern IntPtr CreateFile(string path, uint access, uint share,
+              IntPtr secAttr, uint disposition, uint flags, IntPtr templ);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          [DllImport("kernel32.dll", SetLastError=true)]
+          public static extern bool ReadFile(IntPtr h, byte[] buf, uint toRead,
+              out uint read, IntPtr overlapped);
+      }
+"@
+      $GENERIC_READ  = 0x80000000
+      $FILE_SHARE_RW = 0x03
+      $OPEN_EXISTING = 3
+
+      Write-Host "[PAS] Opening raw handle to \\.\C: volume:"
+      $hVol = [PASVolumeAccess]::CreateFile(
+          "\\.\C:", $GENERIC_READ, $FILE_SHARE_RW, [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
+      $err  = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      Write-Host "[PAS] CreateFile(\\.\C:): handle=$hVol error=$err"
+
+      if ($hVol -ne [IntPtr]-1 -and $hVol -ne [IntPtr]::Zero) {
+          # Read first 512 bytes — MBR/VBR sector
+          $buf  = New-Object byte[] 512
+          $read = 0u
+          [PASVolumeAccess]::ReadFile($hVol, $buf, 512, [ref]$read, [IntPtr]::Zero) | Out-Null
+          Write-Host "[PAS] ReadFile(\\.\C:): $read bytes read from volume boot record"
+          Write-Host "[PAS] First 8 bytes (hex): $($buf[0..7] | ForEach-Object { $_.ToString('X2') })"
+          [PASVolumeAccess]::CloseHandle($hVol) | Out-Null
+      }
+
+      Write-Host "[PAS] Also attempting \\.\PhysicalDrive0:"
+      $hDisk = [PASVolumeAccess]::CreateFile(
+          "\\.\PhysicalDrive0", $GENERIC_READ, $FILE_SHARE_RW,
+          [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
+      Write-Host "[PAS] CreateFile(\\.\PhysicalDrive0): handle=$hDisk"
+      if ($hDisk -ne [IntPtr]-1) { [PASVolumeAccess]::CloseHandle($hDisk) | Out-Null }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — raw volume handle creation (\\.\C: and \\.\PhysicalDrive0) from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1006 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: CreateFile targeting \\.\C:, \\.\D:, or \\.\PhysicalDrive0 from non-backup process"
+  - "MDE: DeviceEvents | where ActionType == 'RawVolumeAccessApiCall' or ProcessCommandLine contains '\\\\.\\\\PhysicalDrive'"
+  - "Sentinel: DeviceEvents | where ActionType contains 'VolumeAccess' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Direct volume access' or 'Raw disk read from non-backup utility'"
+  - "CONTROL CHECK: \\.\GLOBALROOT\Device\HarddiskVolumeShadowCopy* access is also used to read VSS copies of SAM/NTDS"
+  - "CONTROL CHECK: Legitimate backup software (Windows Backup, Veeam) also uses raw volume access — baseline and exclude known-good"
+  - "CONTROL CHECK: Direct volume access from scripts (cscript, powershell, wscript) has no legitimate use — alert immediately"

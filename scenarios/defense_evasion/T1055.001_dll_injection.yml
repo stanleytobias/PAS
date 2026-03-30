@@ -1,0 +1,92 @@
+id: T1055.001_dynamic_link_library_injection
+name: "Process Injection — DLL Injection"
+mitre_technique: "T1055.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries inject malicious DLLs into legitimate processes using Windows API calls
+  (VirtualAllocEx, WriteProcessMemory, CreateRemoteThread) to execute code in the
+  context of a trusted process. This scenario simulates the API call pattern using
+  a benign payload to generate telemetry without injecting shellcode.
+  Detection relies on API sequence monitoring, cross-process memory writes,
+  and remote thread creation events.
+  Note: Requires elevation. Run as Administrator.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.001 — DLL Injection simulation (API telemetry only — no shellcode)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate cross-process memory access pattern — open handle to notepad, allocate memory"
+    command: |
+      # Start a target process to inject into
+      $proc = Start-Process notepad.exe -PassThru
+      Start-Sleep -Seconds 2
+      Write-Host "[PAS] Target process: notepad.exe PID $($proc.Id)"
+
+      # P/Invoke stubs for API telemetry generation (no actual injection payload)
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASInjectionSim {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint dwAccess, bool bInherit, int dwPid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr hObject);
+      }
+"@
+      $PROCESS_ALL_ACCESS = 0x1F0FFF
+      $MEM_COMMIT         = 0x1000
+      $PAGE_READWRITE     = 0x04
+
+      $hProcess = [PASInjectionSim]::OpenProcess($PROCESS_ALL_ACCESS, $false, $proc.Id)
+      Write-Host "[PAS] OpenProcess handle: $hProcess"
+
+      if ($hProcess -ne [IntPtr]::Zero) {
+          $addr = [PASInjectionSim]::VirtualAllocEx($hProcess, [IntPtr]::Zero, 4096, $MEM_COMMIT, $PAGE_READWRITE)
+          Write-Host "[PAS] VirtualAllocEx returned: $addr (memory allocated in target process)"
+          [PASInjectionSim]::CloseHandle($hProcess) | Out-Null
+      } else {
+          Write-Host "[PAS] OpenProcess failed — elevation required for cross-process memory access"
+      }
+
+      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Target process terminated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cross-process OpenProcess + VirtualAllocEx API sequence from powershell.exe into notepad.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure target notepad process is terminated"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] notepad.exe processes terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API event: OpenProcess + VirtualAllocEx from powershell.exe targeting notepad.exe — classic injection precursor"
+  - "MDE alert: 'Process injection' or 'Suspicious cross-process memory allocation'"
+  - "Sentinel: DeviceEvents | where ActionType == 'CreateRemoteThreadApiCall' or ActionType == 'VirtualAllocExApiCall'"
+  - "Sentinel: DeviceEvents | where ActionType == 'OpenProcessApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Script block logging (Event ID 4104): P/Invoke DllImport for kernel32 injection APIs visible"
+  - "CONTROL CHECK: Does your EDR have API-level telemetry (not just process events) for cross-process memory operations?"
+  - "CONTROL CHECK: Alert rules should fire on OpenProcess → VirtualAllocEx → WriteProcessMemory API chain regardless of parent process name"

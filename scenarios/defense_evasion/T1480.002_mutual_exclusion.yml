@@ -1,0 +1,101 @@
+id: T1480.002_mutual_exclusion
+name: "Execution Guardrails — Mutual Exclusion"
+mitre_technique: "T1480.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use named mutexes as both an anti-analysis guardrail and a reinfection
+  prevention mechanism. Before executing, malware checks for the presence of a specific
+  named mutex — if it exists, the malware exits (already running or a cleanup flag was
+  set). Defenders can set the mutex manually to inoculate a system or use mutex names
+  as a threat intelligence IOC. This scenario creates, detects, and exercises the mutex
+  check pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1480/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1480.002 — Mutual Exclusion guardrail simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a named mutex — simulates malware's single-instance check"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Threading;
+      public class PASMutex {
+          public static Mutex Create(string name) {
+              bool created;
+              return new Mutex(true, name, out created);
+          }
+          public static bool Exists(string name) {
+              Mutex m = null;
+              try {
+                  m = Mutex.OpenExisting(name);
+                  return true;
+              } catch {
+                  return false;
+              } finally {
+                  if (m != null) m.Close();
+              }
+          }
+      }
+"@
+      $mutexName = "Global\PAS_T1480_002_{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+
+      # Check if mutex already exists (inoculation check)
+      $exists = [PASMutex]::Exists($mutexName)
+      Write-Host "[PAS] Pre-check — mutex exists: $exists"
+      if ($exists) {
+          Write-Host "[PAS] Mutex present — malware would EXIT (already running or inoculated)"
+      } else {
+          Write-Host "[PAS] Mutex not present — malware would CONTINUE execution"
+          $mutex = [PASMutex]::Create($mutexName)
+          Write-Host "[PAS] Mutex created: $mutexName"
+          Write-Host "[PAS] A second instance would detect this and abort"
+          Start-Sleep -Milliseconds 500
+          $mutex.ReleaseMutex()
+          $mutex.Dispose()
+          Write-Host "[PAS] Mutex released"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate inoculation — set mutex to prevent malware execution"
+    command: |
+      $mutexName = "Global\PAS_T1480_002_{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+      $mutex     = [PASMutex]::Create($mutexName)
+      Write-Host "[PAS] Inoculation mutex set: $mutexName"
+      Write-Host "[PAS] If real malware checks for this mutex, it will abort execution"
+      Write-Host "[PAS] Inoculation is a low-cost defensive technique for known mutex IOCs"
+      $mutex.ReleaseMutex()
+      $mutex.Dispose()
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures mutex creation; named mutex is a threat intel IOC"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1480.002 cleanup complete — mutex released in-step"
+
+analyst_checklist:
+  - "Script block logging (4104): Mutex.OpenExisting + new Mutex() creation pattern"
+  - "MDE: DeviceEvents | where ActionType == 'CreateMutexApiCall' and AdditionalFields contains 'Global'"
+  - "Sentinel: DeviceEvents | where ActionType == 'CreateMutexApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Known malware mutex names are strong IOCs — add to threat intel watchlist"
+  - "CONTROL CHECK: Inoculation (pre-creating malware mutexes) is a valid and free defensive technique for known samples"
+  - "CONTROL CHECK: Monitor for Mutex creation with GUIDs or long random-looking strings from non-system processes"

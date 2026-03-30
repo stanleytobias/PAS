@@ -1,0 +1,85 @@
+id: T1480.001_environmental_keying
+name: "Execution Guardrails — Environmental Keying"
+mitre_technique: "T1480.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries derive a decryption key from environment-specific values (hostname,
+  domain, username, MAC address) so the payload only decrypts on the intended target.
+  If detonated in a sandbox with different environment values, the derived key is wrong
+  and the payload cannot be decrypted — the sample appears inert to automated analysis.
+  This scenario demonstrates AES key derivation from system properties to simulate
+  the environmental keying pattern and validate telemetry coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1480/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1480.001 — Environmental Keying simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Derive an AES key from environment properties — payload only works on this host"
+    command: |
+      Write-Host "[PAS] Environmental keying — deriving key from system properties:"
+      $hostname = $env:COMPUTERNAME
+      $domain   = $env:USERDOMAIN
+      $username = $env:USERNAME
+
+      # Collect MAC addresses
+      $macs = Get-NetAdapter -ErrorAction SilentlyContinue |
+          Where-Object Status -eq 'Up' |
+          Select-Object -ExpandProperty MacAddress -First 1
+
+      Write-Host "  Hostname: $hostname"
+      Write-Host "  Domain:   $domain"
+      Write-Host "  Username: $username"
+      Write-Host "  MAC:      $macs"
+
+      # Derive key material from environment
+      $keyMaterial = "$hostname|$domain|$username|$macs"
+      $sha256      = [Security.Cryptography.SHA256]::Create()
+      $keyBytes    = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($keyMaterial))
+      Write-Host "[PAS] Derived key (first 8 bytes): $($keyBytes[0..7] | ForEach-Object { $_.ToString('X2') })"
+      Write-Host "[PAS] This key only decrypts correctly on: $hostname in domain $domain"
+      Write-Host "[PAS] Sandbox with different hostname = wrong key = inert payload"
+
+      # Encrypt and decrypt a benign payload using the derived key
+      $payload    = [Text.Encoding]::UTF8.GetBytes("PAS-T1480.001-ENV-KEYED-PAYLOAD")
+      $aes        = [Security.Cryptography.Aes]::Create()
+      $aes.Key    = $keyBytes
+      $aes.IV     = [byte[]](0x00)*16
+      $enc        = $aes.CreateEncryptor().TransformFinalBlock($payload, 0, $payload.Length)
+      $dec        = $aes.CreateDecryptor().TransformFinalBlock($enc, 0, $enc.Length)
+      $decStr     = [Text.Encoding]::UTF8.GetString($dec)
+      Write-Host "[PAS] Encrypted+decrypted with derived key: $decStr"
+      Write-Host "[PAS] On wrong host: decryption produces garbage — payload never executes"
+      $aes.Dispose()
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SHA256 + AES operations on system property strings in script block logging"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1480.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): SHA256 hash of hostname/MAC + AES decrypt chain"
+  - "Process event: powershell.exe enumerating hostname, domain, MAC address before decryption"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'SHA256' and AdditionalFields contains 'COMPUTERNAME'"
+  - "CONTROL CHECK: Environmental keying defeats sandbox analysis — test samples must be run on the actual target host to detonate"
+  - "CONTROL CHECK: Defender for Identity can correlate 'password spray on host X' with subsequent 'targeted sample on host X'"
+  - "CONTROL CHECK: Deception technology (honeypot hostnames in DNS) can detect target enumeration preceding environmental keying"

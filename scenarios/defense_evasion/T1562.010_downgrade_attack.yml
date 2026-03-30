@@ -1,0 +1,102 @@
+id: T1562.010_downgrade_attack
+name: "Impair Defenses — Downgrade Attack"
+mitre_technique: "T1562.010"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries force a system or application to use an older, less secure version of
+  a protocol or runtime to bypass modern defenses. The most common Windows example is
+  forcing PowerShell to use version 2 (which lacks AMSI, constrained language mode,
+  and script block logging). Other examples include TLS downgrade (POODLE/BEAST) and
+  Windows authentication downgrade (NTLM vs Kerberos). This scenario exercises the
+  PowerShell v2 downgrade and validates whether the downgrade is blocked or generates
+  alertable telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.010 — Downgrade Attack simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check if PowerShell v2 engine is available — prerequisite for downgrade"
+    command: |
+      Write-Host "[PAS] Checking PowerShell v2 engine availability:"
+      $v2Feature = Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root `
+          -ErrorAction SilentlyContinue
+      if ($v2Feature) {
+          Write-Host "  MicrosoftWindowsPowerShellV2Root: $($v2Feature.State)"
+      }
+      $v2Engine = Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2 `
+          -ErrorAction SilentlyContinue
+      if ($v2Engine) {
+          Write-Host "  MicrosoftWindowsPowerShellV2 engine: $($v2Engine.State)"
+      }
+      Write-Host "[PAS] Current PowerShell version: $($PSVersionTable.PSVersion)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Attempt PowerShell v2 downgrade — the primary AMSI/SBL bypass method"
+    command: |
+      Write-Host "[PAS] Attempting PowerShell -Version 2 downgrade:"
+      Write-Host "[PAS] Command: powershell.exe -Version 2 -Command 'Write-Host PAS-DOWNGRADE'"
+      $result = Start-Process powershell.exe `
+          -ArgumentList "-Version 2 -NoProfile -Command `"Write-Host 'PAS-T1562.010-DOWNGRADE'; `$PSVersionTable.PSVersion`"" `
+          -Wait -PassThru -NoNewWindow
+      Write-Host "[PAS] Exit code: $($result.ExitCode)"
+      if ($result.ExitCode -eq 0) {
+          Write-Host "[PAS] WARNING: PowerShell v2 downgrade SUCCEEDED — AMSI and script block logging are bypassed"
+          Write-Host "[PAS] REMEDIATION: Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2"
+      } else {
+          Write-Host "[PAS] PowerShell v2 unavailable or blocked (expected on hardened systems)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate WDAC/AppLocker downgrade bypass pattern — using older scripting host"
+    command: |
+      Write-Host "[PAS] Testing older scripting engine fallback patterns:"
+      # cscript.exe with .vbs — older execution path that may bypass newer controls
+      $testScript = "$env:TEMP\PAS_T1562_010_test.vbs"
+      Set-Content $testScript 'WScript.Echo "PAS-T1562.010-CSCRIPT"'
+      Start-Process cscript.exe -ArgumentList "//NoLogo $testScript" -Wait -NoNewWindow
+      Write-Host "[PAS] cscript.exe VBScript execution path tested"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — powershell.exe -Version 2 argument in process events; cscript.exe execution"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test VBS script"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1562_010_test.vbs" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test VBS removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.010 cleanup complete"
+
+analyst_checklist:
+  - "Process event: powershell.exe with '-Version 2' argument — definitive downgrade indicator"
+  - "Process event: powershell.exe with '-v 2' or '-ver 2' short-form arguments"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine matches regex @'(?i)-ver(sion)?\\s+2'"
+  - "MDE alert: 'PowerShell version 2 used' or 'PowerShell downgrade attack'"
+  - "CONTROL CHECK: If step 3 succeeded — PowerShell v2 engine is enabled and must be removed:"
+  - "  Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2"
+  - "  Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root"
+  - "CONTROL CHECK: PowerShell v2 has no AMSI, no ScriptBlock logging, no Constrained Language Mode — it is a complete defensive bypass"
+  - "CONTROL CHECK: Confirm removal via: Get-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2"

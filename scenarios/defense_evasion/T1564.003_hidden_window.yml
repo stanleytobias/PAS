@@ -1,0 +1,97 @@
+id: T1564.003_hidden_window
+name: "Hide Artifacts — Hidden Window"
+mitre_technique: "T1564.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries suppress the visible window of processes they launch so activity runs
+  silently without alerting the user. PowerShell's -WindowStyle Hidden flag, the
+  WindowStyle=0 parameter in WScript.Shell.Run, and SW_HIDE in CreateProcess all
+  achieve this. This is one of the most common execution-hiding patterns — nearly
+  every PowerShell-based malware uses -WindowStyle Hidden or -w hidden.
+  Detection relies on command-line inspection in process telemetry rather than
+  visual observation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.003 — Hidden Window simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: PowerShell -WindowStyle Hidden — most common adversary pattern"
+    command: |
+      Write-Host "[PAS] Method 1: powershell.exe -WindowStyle Hidden"
+      Start-Process powershell.exe `
+          -ArgumentList "-WindowStyle Hidden -NoProfile -Command `"Write-Host 'PAS-T1564.003-HIDDEN-PS'`"" `
+          -Wait
+      Write-Host "[PAS] Hidden PowerShell window executed — no visible window to user"
+      Write-Host "[PAS] Process telemetry: ProcessCommandLine contains '-WindowStyle Hidden'"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: WScript.Shell Run with window style 0 (hidden)"
+    command: |
+      Write-Host "[PAS] Method 2: WScript.Shell.Run with window=0"
+      $wsh = New-Object -ComObject WScript.Shell
+      # WindowStyle 0 = hidden, bWaitOnReturn = true
+      $ret = $wsh.Run(
+          "cmd.exe /c echo PAS-T1564.003-WSCRIPT-HIDDEN > $env:TEMP\PAS_T1564_003_wsh.txt",
+          0, $true)
+      Write-Host "[PAS] WScript.Shell.Run(0) executed — exit code: $ret"
+      if (Test-Path "$env:TEMP\PAS_T1564_003_wsh.txt") {
+          Write-Host "[PAS] Hidden cmd.exe ran successfully"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Start-Process with -WindowStyle Hidden shorthand variants"
+    command: |
+      Write-Host "[PAS] Method 3: -w hidden and -windowstyle 1 variants:"
+      # Short form -w hidden
+      Start-Process powershell.exe `
+          -ArgumentList "-w hidden -Command `"exit 0`"" -Wait
+      Write-Host "[PAS] '-w hidden' short form executed"
+
+      # -NonInteractive combined with hidden
+      Start-Process powershell.exe `
+          -ArgumentList "-WindowStyle Hidden -NonInteractive -Command `"exit 0`"" -Wait
+      Write-Host "[PAS] '-WindowStyle Hidden -NonInteractive' executed"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — powershell.exe process events with -WindowStyle Hidden or -w hidden in CommandLine"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove WScript output file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1564_003_wsh.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test output removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.003 cleanup complete"
+
+analyst_checklist:
+  - "Process event: powershell.exe with '-WindowStyle Hidden' or '-w hidden' in CommandLine"
+  - "Process event: wscript.exe or cscript.exe spawning hidden child processes"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine matches regex @'(?i)-w(indowstyle)?\\s+(hidden|h\\b)'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine contains 'Hidden'"
+  - "MDE alert: 'PowerShell with hidden window' — this is a built-in MDE behavioral signal"
+  - "CONTROL CHECK: -WindowStyle Hidden combined with -EncodedCommand is a highest-priority alert combination"
+  - "CONTROL CHECK: WScript.Shell.Run(windowStyle=0) does not generate a distinct process event — look for cmd.exe children of wscript.exe with no visible interaction"
+  - "CONTROL CHECK: Legitimate software rarely needs -WindowStyle Hidden — treat as suspicious by default"

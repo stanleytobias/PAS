@@ -1,0 +1,106 @@
+id: T1218.005_mshta_proxy_execution
+name: "System Binary Proxy Execution — Mshta"
+mitre_technique: "T1218.005"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use mshta.exe (Microsoft HTML Application Host) to execute malicious
+  VBScript or JavaScript embedded in .hta files or passed inline via the command line.
+  Mshta is a signed Windows binary that can bypass AppLocker rules and is often less
+  monitored than powershell.exe. This scenario creates a benign HTA file and executes
+  it via mshta.exe, then exercises the inline script execution pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.005 — Mshta proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a benign HTA file and execute it with mshta.exe"
+    command: |
+      $htaPath = "$env:TEMP\PAS_T1218_005.hta"
+      $htaContent = @"
+<html>
+<head>
+<script language="VBScript">
+  Sub Window_onLoad()
+    CreateObject("WScript.Shell").Run "cmd.exe /c echo PAS-T1218-HTA > %TEMP%\PAS_T1218_005_output.txt", 0, True
+    window.close
+  End Sub
+</script>
+</head>
+<body/>
+</html>
+"@
+      Set-Content -Path $htaPath -Value $htaContent
+      Write-Host "[PAS] HTA file written: $htaPath"
+      Start-Process mshta.exe -ArgumentList $htaPath -Wait
+      Write-Host "[PAS] mshta.exe executed HTA file"
+      if (Test-Path "$env:TEMP\PAS_T1218_005_output.txt") {
+          Write-Host "[PAS] HTA payload executed — output file created"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute inline VBScript via mshta javascript: URI — common fileless mshta pattern"
+    command: |
+      # Inline execution via javascript: (triggers same telemetry as malicious use)
+      Write-Host "[PAS] Executing mshta with inline vbscript:"
+      Start-Process mshta.exe `
+          -ArgumentList 'vbscript:Execute("CreateObject(""WScript.Shell"").Run ""cmd /c echo PAS-T1218-INLINE > %TEMP%\PAS_T1218_inline.txt"",0:close")' `
+          -NoNewWindow -Wait
+      Write-Host "[PAS] mshta inline vbscript executed"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — mshta.exe spawning cmd.exe as child process should be high-priority alert"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove HTA file and output artifacts"
+    command: |
+      $artifacts = @(
+          "$env:TEMP\PAS_T1218_005.hta",
+          "$env:TEMP\PAS_T1218_005_output.txt",
+          "$env:TEMP\PAS_T1218_inline.txt"
+      )
+      foreach ($f in $artifacts) {
+          Remove-Item $f -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed $f"
+      }
+
+  - step: 2
+    type: exec_powershell
+    description: "Kill any lingering mshta processes"
+    command: |
+      Get-Process mshta -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] mshta processes terminated"
+
+  - step: 3
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.005 cleanup complete — HTA artifacts removed"
+
+analyst_checklist:
+  - "Process event: mshta.exe spawning cmd.exe as child — CRITICAL high-fidelity indicator"
+  - "Process event: mshta.exe executing .hta file from TEMP directory"
+  - "Process event: mshta.exe with vbscript: or javascript: inline argument"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'mshta.exe' and FileName == 'cmd.exe'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mshta.exe' and ProcessCommandLine contains 'vbscript:'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mshta.exe' and FolderPath !contains 'System32' — mshta from unusual path"
+  - "MDE alert: 'Mshta.exe executing suspicious script' or 'HTML application file executed'"
+  - "CONTROL CHECK: ASR rule 'Block execution of potentially obfuscated scripts' should fire on inline vbscript: pattern"
+  - "CONTROL CHECK: Alert on any mshta.exe spawning cmd.exe, powershell.exe, or wscript.exe as child"

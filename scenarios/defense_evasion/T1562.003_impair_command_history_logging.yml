@@ -1,0 +1,120 @@
+id: T1562.003_impair_command_history_logging
+name: "Impair Defenses — Impair Command History Logging"
+mitre_technique: "T1562.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries disable PowerShell command history logging (PSReadLine history file)
+  and clear existing history to remove evidence of commands run during an intrusion.
+  Methods include Set-PSReadLineOption -HistorySaveStyle SaveNothing, deleting the
+  history file directly, and setting the MaximumHistoryCount to 0.
+  This scenario exercises all major history-suppression patterns and validates that
+  registry and file-level telemetry captures the impairment attempt.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.003 — Impair Command History Logging simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate and record the PSReadLine history file path"
+    command: |
+      $histPath = (Get-PSReadLineOption).HistorySavePath
+      Write-Host "[PAS] PSReadLine history file: $histPath"
+      Write-Host "[PAS] Current history save style: $((Get-PSReadLineOption).HistorySaveStyle)"
+      Write-Host "[PAS] History count: $((Get-PSReadLineOption).MaximumHistoryCount)"
+      # Store path for cleanup reference
+      $histPath | Out-File "$env:TEMP\PAS_T1562_003_histpath.txt"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Disable PSReadLine history saving — SaveNothing"
+    command: |
+      Write-Host "[PAS] Method 1: Set-PSReadLineOption -HistorySaveStyle SaveNothing"
+      Set-PSReadLineOption -HistorySaveStyle SaveNothing
+      Write-Host "[PAS] History save style now: $((Get-PSReadLineOption).HistorySaveStyle)"
+      Write-Host "[PAS] Future commands in this session will not be saved to history"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Delete the history file directly"
+    command: |
+      $histPath = Get-Content "$env:TEMP\PAS_T1562_003_histpath.txt" -ErrorAction SilentlyContinue
+      if ($histPath -and (Test-Path $histPath)) {
+          $backup = "$env:TEMP\PAS_T1562_003_history_backup.txt"
+          Copy-Item $histPath $backup -Force
+          Write-Host "[PAS] History file backed up to: $backup"
+          Remove-Item $histPath -Force
+          Write-Host "[PAS] Method 2: History file deleted: $histPath"
+      } else {
+          Write-Host "[PAS] History file not found at expected path"
+      }
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: Set MaximumHistoryCount to 0 — prevents any history retention"
+    command: |
+      Write-Host "[PAS] Method 3: Set-PSReadLineOption -MaximumHistoryCount 0"
+      Set-PSReadLineOption -MaximumHistoryCount 0
+      Write-Host "[PAS] MaximumHistoryCount now: $((Get-PSReadLineOption).MaximumHistoryCount)"
+
+  - step: 6
+    type: exec_powershell
+    description: "Method 4: Clear in-session command history via Clear-History"
+    command: |
+      Write-Host "[PAS] Method 4: Clear-History — removes in-session history buffer"
+      Clear-History
+      Write-Host "[PAS] In-session history cleared"
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Set-PSReadLineOption and Clear-History commands visible in script block logging; history file deletion in file events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore PSReadLine defaults and history file"
+    command: |
+      # Restore save style and count
+      Set-PSReadLineOption -HistorySaveStyle SaveIncrementally
+      Set-PSReadLineOption -MaximumHistoryCount 4096
+      Write-Host "[PAS][Cleanup] PSReadLine settings restored"
+
+      # Restore history file from backup
+      $backup   = "$env:TEMP\PAS_T1562_003_history_backup.txt"
+      $histPath = Get-Content "$env:TEMP\PAS_T1562_003_histpath.txt" -ErrorAction SilentlyContinue
+      if ($backup -and (Test-Path $backup) -and $histPath) {
+          $histDir = Split-Path $histPath
+          if (-not (Test-Path $histDir)) { New-Item -ItemType Directory $histDir -Force | Out-Null }
+          Copy-Item $backup $histPath -Force
+          Write-Host "[PAS][Cleanup] History file restored"
+      }
+      Remove-Item "$env:TEMP\PAS_T1562_003_histpath.txt"   -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1562_003_history_backup.txt" -Force -ErrorAction SilentlyContinue
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.003 cleanup complete — PSReadLine history settings restored"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): Set-PSReadLineOption, Clear-History, Remove-Item on history path"
+  - "File event: deletion of %APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+  - "Sentinel: DeviceFileEvents | where FileName == 'ConsoleHost_history.txt' and ActionType == 'FileDeleted'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'HistorySaveStyle'"
+  - "MDE alert: 'PowerShell history disabled' or 'Command history file deleted'"
+  - "CONTROL CHECK: Script block logging captures Set-PSReadLineOption even if history is suppressed — verify SBL is active"
+  - "CONTROL CHECK: Forward PSReadLine history file deletion events from DeviceFileEvents to SIEM"
+  - "CONTROL CHECK: MaximumHistoryCount=0 or HistorySaveStyle=SaveNothing set at session start is a strong evasion indicator"

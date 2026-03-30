@@ -1,0 +1,106 @@
+id: T1574.011_services_registry_permissions_weakness
+name: "Hijack Execution Flow — Services Registry Permissions Weakness"
+mitre_technique: "T1574.011"
+mitre_tactic: "defense_evasion"
+description: >
+  Windows service configuration is stored under HKLM\SYSTEM\CurrentControlSet\Services.
+  If a service's registry key has weak ACLs (allowing non-admin users to write), an
+  adversary can modify the ImagePath value to point to their own binary. The service
+  will then execute the adversary's payload on next start — typically with SYSTEM
+  privileges. This scenario enumerates services with weak registry key ACLs and
+  demonstrates the modification telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/011/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.011 — Service Registry Permissions Weakness simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate service registry keys with non-admin write access"
+    command: |
+      Write-Host "[PAS] Scanning service registry keys for weak ACLs:"
+      $svcBase   = "HKLM:\SYSTEM\CurrentControlSet\Services"
+      $vulnCount = 0
+
+      Get-ChildItem $svcBase -ErrorAction SilentlyContinue | ForEach-Object {
+          try {
+              $acl  = Get-Acl $_.PSPath -ErrorAction SilentlyContinue
+              $weak = $acl.Access | Where-Object {
+                  $_.RegistryRights -match 'SetValue|FullControl|WriteKey' -and
+                  $_.IdentityReference -match 'Users|Everyone|Authenticated Users|INTERACTIVE' -and
+                  $_.AccessControlType -eq 'Allow'
+              }
+              if ($weak) {
+                  Write-Host "  VULNERABLE: $($_.PSChildName)"
+                  Write-Host "    ACE: $($weak.IdentityReference) — $($weak.RegistryRights)"
+                  $vulnCount++
+              }
+          } catch {}
+      }
+      if ($vulnCount -eq 0) { Write-Host "  No vulnerable service registry keys found" }
+      Write-Host "[PAS] Scan complete: $vulnCount weak service registry key(s)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a test service registry key and modify its ImagePath — simulates the attack"
+    command: |
+      $svcName = "PAS_T1574_011_RegWeakSvc"
+      $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
+
+      # Create a minimal service key
+      New-Item $svcPath -Force | Out-Null
+      Set-ItemProperty $svcPath -Name "ImagePath" `
+          -Value "$env:SystemRoot\System32\cmd.exe" -Force
+      Set-ItemProperty $svcPath -Name "Type"  -Value 16 -Force
+      Set-ItemProperty $svcPath -Name "Start" -Value 3  -Force
+      Write-Host "[PAS] Test service registry key created: $svcPath"
+
+      # Simulate adversary overwriting ImagePath (what they'd do with write access)
+      $maliciousPath = "$env:TEMP\PAS_T1574_011_payload.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $maliciousPath -Force
+      Set-ItemProperty $svcPath -Name "ImagePath" -Value $maliciousPath -Force
+      Write-Host "[PAS] ImagePath hijacked to: $maliciousPath"
+      Write-Host "[PAS] On service start, this path would execute (with service privileges)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry write to HKLM\...\Services\*\ImagePath by non-SYSTEM process"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test service key and payload"
+    command: |
+      $svcPath = "HKLM:\SYSTEM\CurrentControlSet\Services\PAS_T1574_011_RegWeakSvc"
+      if (Test-Path $svcPath) {
+          Remove-Item $svcPath -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Service registry key removed"
+      }
+      Remove-Item "$env:TEMP\PAS_T1574_011_payload.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Payload file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.011 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\SYSTEM\CurrentControlSet\Services\*\ImagePath modified by non-SYSTEM process"
+  - "Event ID 4657: Registry value modified — ImagePath under Services key"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Services' and RegistryValueName == 'ImagePath' and InitiatingProcessIntegrityLevel != 'System'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'CurrentControlSet\\Services' and ActionType == 'RegistryValueSet'"
+  - "CONTROL CHECK: Run AccessChk -kwsu HKLM\System\CurrentControlSet\Services — any non-admin write is a vulnerability"
+  - "CONTROL CHECK: Service registry key ACLs should restrict writes to SYSTEM and Administrators only"

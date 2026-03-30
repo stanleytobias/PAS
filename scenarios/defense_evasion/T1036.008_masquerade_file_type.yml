@@ -1,0 +1,101 @@
+id: T1036.008_masquerade_file_type
+name: "Masquerading — Masquerade File Type"
+mitre_technique: "T1036.008"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries change a file's apparent type by modifying its extension, magic bytes, or
+  icon to make it appear as a different file type (e.g. a PE with a PDF icon and .pdf
+  extension, or a script file renamed to .jpg). This is distinct from double extensions —
+  the file has only one extension, but it misrepresents the true file type.
+  Detection relies on comparing file magic bytes (file header) against the declared
+  extension and inspecting file type metadata rather than trusting the extension alone.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.008 — Masquerade File Type simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Rename cmd.exe to .pdf — extension does not match magic bytes"
+    command: |
+      $dest = "$env:TEMP\PAS_T1036_008_invoice.pdf"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $dest -Force
+      Write-Host "[PAS] Dropped cmd.exe renamed as: $dest"
+
+      # Show magic bytes — PE files start with 0x4D 0x5A (MZ)
+      $bytes = [IO.File]::ReadAllBytes($dest) | Select-Object -First 4
+      $hex   = $bytes | ForEach-Object { $_.ToString("X2") }
+      Write-Host "[PAS] Magic bytes of '$dest': $hex"
+      Write-Host "[PAS] Extension says .pdf but magic bytes say MZ (PE executable)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a script renamed to .jpg — common in phishing and dropper chains"
+    command: |
+      $dest = "$env:TEMP\PAS_T1036_008_photo.jpg"
+      Set-Content $dest "powershell.exe -Command `"Write-Host 'PAS-T1036.008-SCRIPT'`""
+      Write-Host "[PAS] Script file written as: $dest"
+      Write-Host "[PAS] Extension says .jpg but content is a script"
+
+      $bytes = [IO.File]::ReadAllBytes($dest) | Select-Object -First 4
+      $hex   = $bytes | ForEach-Object { $_.ToString("X2") }
+      Write-Host "[PAS] Magic bytes: $hex (no JPEG FF D8 header — type mismatch)"
+
+  - step: 4
+    type: exec_powershell
+    description: "Validate magic byte detection — compare declared extension vs actual file type"
+    command: |
+      Write-Host "[PAS] File type verification:"
+      $tests = @(
+          "$env:TEMP\PAS_T1036_008_invoice.pdf",
+          "$env:TEMP\PAS_T1036_008_photo.jpg"
+      )
+      foreach ($f in $tests) {
+          if (Test-Path $f) {
+              $ext   = [IO.Path]::GetExtension($f)
+              $bytes = [IO.File]::ReadAllBytes($f) | Select-Object -First 2
+              $magic = $bytes | ForEach-Object { $_.ToString("X2") }
+              $isPE  = ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A)
+              $isJPG = ($bytes[0] -eq 0xFF -and $bytes[1] -eq 0xD8)
+              Write-Host "  $([IO.Path]::GetFileName($f)) | Ext: $ext | Magic: $magic | Is PE: $isPE | Is JPEG: $isJPG"
+          }
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file creation events where extension does not match magic bytes should be flagged"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove masqueraded files"
+    command: |
+      @("$env:TEMP\PAS_T1036_008_invoice.pdf","$env:TEMP\PAS_T1036_008_photo.jpg") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Masqueraded files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.008 cleanup complete"
+
+analyst_checklist:
+  - "File event: PE (MZ header) file written with non-.exe extension (.pdf, .jpg, .docx)"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.pdf' and SHA256 in (known_pe_hashes) — requires enrichment"
+  - "MDE: File events include FileType field which uses magic bytes — query where FileType == 'PE' and FileName !endswith '.exe'"
+  - "CONTROL CHECK: File type mismatch detection requires magic byte inspection, not extension matching alone"
+  - "CONTROL CHECK: Defender for Office 365 has true file type detection for email attachments — validate this is active"
+  - "CONTROL CHECK: EDR file events should include FileType or MagicBytes field for extension-vs-content mismatch alerting"

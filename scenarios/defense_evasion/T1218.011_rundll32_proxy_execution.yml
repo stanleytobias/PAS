@@ -1,0 +1,86 @@
+id: T1218.011_rundll32_proxy_execution
+name: "System Binary Proxy Execution — Rundll32"
+mitre_technique: "T1218.011"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use rundll32.exe to proxy execution of malicious code by calling exported
+  functions from DLLs — including inline JavaScript via url.dll, arbitrary DLL loading,
+  or executing COM scriptlets via .sct files. Rundll32 is a signed Windows binary and
+  its network and execution activity is often less scrutinized than cmd.exe or powershell.exe.
+  This scenario exercises the most common rundll32 LOLBin patterns used for defense evasion.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/011/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.011 — Rundll32 proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Rundll32 executing a benign export from a system DLL — validates basic proxy execution telemetry"
+    command: |
+      # Calling a benign, harmless export — just generates the rundll32 process event
+      Write-Host "[PAS] Executing benign system DLL export via rundll32:"
+      & rundll32.exe shell32.dll,Control_RunDLL
+      Write-Host "[PAS] rundll32 shell32.dll,Control_RunDLL executed"
+
+  - step: 3
+    type: exec_powershell
+    description: "Rundll32 with url.dll OpenURL — common method to proxy network requests or script execution"
+    command: |
+      # url.dll,OpenURL is abused to load remote content; point to loopback for safety
+      Write-Host "[PAS] Executing rundll32 url.dll,OpenURL (loopback — no external traffic):"
+      Start-Process rundll32.exe -ArgumentList "url.dll,OpenURL http://127.0.0.1/PAS_T1218_test" `
+          -NoNewWindow -Wait
+      Write-Host "[PAS] rundll32 url.dll,OpenURL executed"
+
+  - step: 4
+    type: exec_powershell
+    description: "Rundll32 executing javascript: URI via ieframe.dll — known LOLBin execution vector"
+    command: |
+      # ieframe.dll OpenURL with javascript: is a known code execution vector
+      # Using a benign alert-less javascript: URI for telemetry only
+      Write-Host "[PAS] Simulating rundll32 ieframe.dll,OpenURL with javascript: prefix:"
+      Write-Host "[PAS] Command would be: rundll32.exe ieframe.dll,OpenURL javascript:eval('PAS-T1218')"
+      Write-Host "[PAS] Executing benign variant (ieframe not called with JS to avoid dialog):"
+      Start-Process rundll32.exe -ArgumentList "ieframe.dll,OpenURL about:blank" `
+          -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] rundll32 ieframe.dll,OpenURL executed"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — rundll32.exe events with url.dll and ieframe.dll arguments should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Kill any rundll32 windows opened during test"
+    command: |
+      Get-Process rundll32 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] rundll32 processes terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.011 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: rundll32.exe spawned from powershell.exe with url.dll or ieframe.dll arguments"
+  - "Process event: rundll32.exe making network connections (DeviceNetworkEvents) — should alert on LOLBin network activity"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'rundll32.exe' and ProcessCommandLine contains 'url.dll'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'rundll32.exe' and ProcessCommandLine contains 'ieframe.dll'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'rundll32.exe' and ProcessCommandLine contains 'javascript:'"
+  - "MDE alert: 'Suspicious rundll32 execution' or 'LOLBin network activity'"
+  - "CONTROL CHECK: Does your detection cover rundll32 with DLLs other than the default system UI ones?"
+  - "CONTROL CHECK: Any rundll32 spawning child processes (cmd.exe, powershell.exe) should be high-priority alert"

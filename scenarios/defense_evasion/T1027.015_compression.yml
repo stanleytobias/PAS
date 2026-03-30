@@ -1,0 +1,104 @@
+id: T1027.015_compression
+name: "Obfuscated Files or Information — Compression"
+mitre_technique: "T1027.015"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries compress payloads to change their on-disk signature, reduce file size,
+  and defeat file-content scanning tools that don't decompress archives before scanning.
+  Common methods: GZip, Deflate, and ZIP compression applied to PowerShell payloads or
+  shellcode, followed by in-memory decompression and execution. PowerShell has native
+  GZip/Deflate support via System.IO.Compression. Compressed shellcode stored in
+  registry or delivered via HTTP is a common C2 staging pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/015/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.015 — Compression simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "GZip compress a benign payload and store compressed blob"
+    command: |
+      $compPath = "$env:TEMP\PAS_T1027_015_payload.gz"
+      $payload  = [Text.Encoding]::UTF8.GetBytes("Write-Host 'PAS-T1027.015-GZIP-DECOMPRESSED'")
+
+      # Compress
+      $ms   = New-Object IO.MemoryStream
+      $gz   = New-Object IO.Compression.GZipStream($ms, [IO.Compression.CompressionMode]::Compress)
+      $gz.Write($payload, 0, $payload.Length)
+      $gz.Close()
+      $compressed = $ms.ToArray()
+      [IO.File]::WriteAllBytes($compPath, $compressed)
+      Write-Host "[PAS] GZip compressed payload: $compPath"
+      Write-Host "[PAS] Original: $($payload.Length) bytes | Compressed: $($compressed.Length) bytes"
+
+  - step: 3
+    type: exec_powershell
+    description: "Runtime decompress and execute — in-memory decompression pattern"
+    command: |
+      $compPath  = "$env:TEMP\PAS_T1027_015_payload.gz"
+      $compressed = [IO.File]::ReadAllBytes($compPath)
+
+      # Decompress in memory
+      $ms2  = New-Object IO.MemoryStream(,$compressed)
+      $gz2  = New-Object IO.Compression.GZipStream($ms2, [IO.Compression.CompressionMode]::Decompress)
+      $out  = New-Object IO.MemoryStream
+      $gz2.CopyTo($out)
+      $decoded = [Text.Encoding]::UTF8.GetString($out.ToArray())
+      Write-Host "[PAS] Decompressed at runtime: $decoded"
+      Invoke-Expression $decoded
+
+  - step: 4
+    type: exec_powershell
+    description: "Demonstrate base64 + gzip combined — common double-encoding pattern"
+    command: |
+      $payload = [Text.Encoding]::UTF8.GetBytes("Write-Host 'PAS-T1027.015-B64GZIP'")
+      $ms      = New-Object IO.MemoryStream
+      $gz      = New-Object IO.Compression.GZipStream($ms, [IO.Compression.CompressionMode]::Compress)
+      $gz.Write($payload, 0, $payload.Length); $gz.Close()
+      $b64compressed = [Convert]::ToBase64String($ms.ToArray())
+      Write-Host "[PAS] Base64+GZip double-encoded payload: $($b64compressed.Substring(0,40))..."
+
+      # Decode and execute — one-liner form commonly seen in malware
+      $ms2  = New-Object IO.MemoryStream(,[Convert]::FromBase64String($b64compressed))
+      $gz2  = New-Object IO.Compression.GZipStream($ms2,[IO.Compression.CompressionMode]::Decompress)
+      $out2 = New-Object IO.MemoryStream; $gz2.CopyTo($out2)
+      Invoke-Expression ([Text.Encoding]::UTF8.GetString($out2.ToArray()))
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures GZipStream decompression + IEX; .gz file in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove compressed payload file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_015_payload.gz" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Compressed payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.015 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (4104): GZipStream + Invoke-Expression — decompression-then-execute pattern"
+  - "File event: .gz or .bin file created in TEMP then read within same session"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'GZipStream'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'FromBase64String' and AdditionalFields contains 'GZip'"
+  - "MDE alert: 'Compressed payload decompressed in memory'"
+  - "CONTROL CHECK: GZipStream + IEX in same script block is a canonical malware loader pattern — high-priority alert"
+  - "CONTROL CHECK: Script block logging must be enabled — compressed+encoded payloads are fully opaque without it"

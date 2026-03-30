@@ -1,0 +1,103 @@
+id: T1036.005_match_legitimate_name_or_location
+name: "Masquerading — Match Legitimate Name or Location"
+mitre_technique: "T1036.005"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries place malicious files in directories associated with legitimate software,
+  or name them after legitimate system binaries (e.g. dropping 'svchost.exe' in
+  C:\Users\Public\ or naming a payload 'explorer.exe' outside System32).
+  This scenario drops benign marker files into masquerade locations commonly abused
+  by adversaries and simulates execution from those paths.
+  Detection relies on process image path anomaly — legitimate svchost.exe only runs
+  from System32; any other path is a masquerade.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.005 — Match Legitimate Name or Location simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Drop cmd.exe copy named svchost.exe into C:\Users\Public and execute"
+    command: |
+      $dest = "C:\Users\Public\svchost.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $dest -Force
+      Write-Host "[PAS] Dropped: $dest"
+      & $dest /c "echo PAS-T1036.005-SVCHOST"
+
+  - step: 3
+    type: exec_powershell
+    description: "Drop cmd.exe copy named explorer.exe into TEMP and execute"
+    command: |
+      $dest = "$env:TEMP\explorer.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $dest -Force
+      Write-Host "[PAS] Dropped: $dest"
+      & $dest /c "echo PAS-T1036.005-EXPLORER"
+
+  - step: 4
+    type: exec_powershell
+    description: "Drop cmd.exe copy into a fake Windows directory path (common adversary trick)"
+    command: |
+      # Adversaries abuse directory names with trailing spaces: 'Windows ' vs 'Windows'
+      $fakeDir = "C:\Windows \System32"
+      if (-not (Test-Path $fakeDir)) {
+          New-Item -ItemType Directory -Path $fakeDir -Force | Out-Null
+      }
+      $dest = "$fakeDir\cmd.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $dest -Force
+      Write-Host "[PAS] Dropped in fake Windows path: $dest"
+      & $dest /c "echo PAS-T1036.005-FAKEPATH"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — svchost.exe and explorer.exe running from non-System32 paths should trigger path anomaly alerts"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all masquerade binary drops"
+    command: |
+      $artifacts = @(
+          "C:\Users\Public\svchost.exe",
+          "$env:TEMP\explorer.exe",
+          "C:\Windows \System32\cmd.exe"
+      )
+      foreach ($f in $artifacts) {
+          if (Test-Path $f) {
+              Remove-Item $f -Force
+              Write-Host "[PAS][Cleanup] Removed $f"
+          }
+      }
+      # Remove fake directory if empty
+      $fakeDir = "C:\Windows \System32"
+      if (Test-Path $fakeDir) {
+          Remove-Item $fakeDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "C:\Windows " -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed fake Windows directory"
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.005 cleanup complete — all masquerade artifacts removed"
+
+analyst_checklist:
+  - "CRITICAL: svchost.exe running from any path OTHER than C:\Windows\System32\ or C:\Windows\SysWOW64\ is a masquerade"
+  - "CRITICAL: explorer.exe running from any path other than C:\Windows\ is a masquerade"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('svchost.exe','explorer.exe','lsass.exe') and FolderPath !startswith 'C:\\Windows\\System32'"
+  - "Sentinel: DeviceProcessEvents | where FolderPath matches regex '(?i)C:\\\\Windows\\\\s' — detect trailing-space directory trick"
+  - "Process event: cmd.exe (original filename) running as svchost.exe from C:\Users\Public\"
+  - "MDE alert: 'Suspicious process from unusual path' or 'Process name spoofing detected'"
+  - "CONTROL CHECK: Validate your detection rules check FolderPath, not just FileName — name-only rules are bypassed by this technique"

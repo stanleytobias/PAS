@@ -1,0 +1,93 @@
+id: T1218.013_mavinject
+name: "System Binary Proxy Execution — Mavinject"
+mitre_technique: "T1218.013"
+mitre_tactic: "defense_evasion"
+description: >
+  mavinject.exe (Microsoft Application Virtualization Injector) is a signed Windows
+  utility that injects DLLs into running processes as part of App-V. Adversaries abuse
+  it to inject arbitrary DLLs into legitimate processes:
+  mavinject.exe <PID> /INJECTRUNNING <dll_path>
+  This gives them code execution inside a trusted process (e.g. explorer.exe) using
+  a signed Microsoft binary — making the injection appear legitimate.
+  This scenario generates the mavinject telemetry without injecting a real payload.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/013/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.013 — mavinject proxy execution simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate mavinject.exe DLL injection command — generates full process telemetry"
+    command: |
+      $fakeDll = "$env:TEMP\PAS_T1218_013_inject.dll"
+      # Create a benign placeholder DLL
+      Copy-Item "$env:SystemRoot\System32\shell32.dll" $fakeDll -Force
+
+      # Get a target process PID
+      $target  = Get-Process notepad -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+      if (-not $target) {
+          $target = Start-Process notepad.exe -PassThru
+          Start-Sleep -Milliseconds 800
+      }
+      Write-Host "[PAS] Target process: notepad.exe PID $($target.Id)"
+
+      # Locate mavinject.exe
+      $mavinject = "$env:SystemRoot\System32\mavinject.exe"
+      if (-not (Test-Path $mavinject)) {
+          $mavinject = "$env:SystemRoot\SysWOW64\mavinject.exe"
+      }
+
+      if (Test-Path $mavinject) {
+          Write-Host "[PAS] Executing: mavinject.exe $($target.Id) /INJECTRUNNING $fakeDll"
+          Start-Process $mavinject `
+              -ArgumentList "$($target.Id) /INJECTRUNNING $fakeDll" `
+              -NoNewWindow -Wait -ErrorAction SilentlyContinue
+          Write-Host "[PAS] mavinject.exe /INJECTRUNNING executed — injection attempted"
+      } else {
+          Write-Host "[PAS] mavinject.exe not found on this system"
+          Write-Host "[PAS] Simulating command telemetry via Start-Process pattern"
+          Write-Host "[PAS] Real command: mavinject.exe $($target.Id) /INJECTRUNNING $fakeDll"
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — mavinject.exe with PID and /INJECTRUNNING arguments"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test DLL and terminate notepad"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_013_inject.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test DLL and processes cleaned up"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.013 cleanup complete"
+
+analyst_checklist:
+  - "Process event: mavinject.exe with PID argument and /INJECTRUNNING flag"
+  - "DLL load event: DLL loaded into target process by mavinject.exe"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mavinject.exe' and ProcessCommandLine contains 'INJECTRUNNING'"
+  - "MDE alert: 'Mavinject used for DLL injection' — this is a built-in MDE detection"
+  - "CONTROL CHECK: mavinject.exe has no legitimate use outside App-V environments — alert on any execution"
+  - "CONTROL CHECK: If App-V is not deployed, mavinject.exe should be blocked via AppLocker/WDAC"

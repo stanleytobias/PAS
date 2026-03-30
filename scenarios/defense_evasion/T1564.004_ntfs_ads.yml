@@ -1,0 +1,113 @@
+id: T1564.004_ntfs_file_attributes_ads
+name: "Hide Artifacts — NTFS File Attributes / Alternate Data Streams"
+mitre_technique: "T1564.004"
+mitre_tactic: "defense_evasion"
+description: >
+  NTFS supports Alternate Data Streams (ADS) — additional named data streams attached
+  to a file. A file can have content in both its primary stream (file.exe) and hidden
+  named streams (file.exe:hidden_payload). ADS are invisible in Windows Explorer and
+  standard dir listings, but the data is fully present on disk. Adversaries store
+  payloads, configuration, or tools in ADS to hide them from casual inspection.
+  Executables can also be launched directly from ADS using wscript.exe or start.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.004 — NTFS Alternate Data Streams simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Write a payload to an ADS — hidden alongside a benign carrier file"
+    command: |
+      $carrier    = "$env:TEMP\PAS_T1564_004_invoice.txt"
+      $adsPayload = "$carrier`:hidden_payload"
+      $adsExec    = "$carrier`:exec.js"
+
+      # Create carrier file
+      Set-Content $carrier "This is a normal invoice document."
+
+      # Write payload to ADS — invisible in Explorer and dir
+      Set-Content $adsPayload "PAS-T1564.004-ADS-PAYLOAD-CONTENT"
+      Write-Host "[PAS] ADS written: $adsPayload"
+
+      # Write executable script to ADS
+      Set-Content $adsExec "WSH.Echo('PAS-T1564.004-ADS-EXEC');"
+      Write-Host "[PAS] Executable ADS written: $adsExec"
+
+      # Show that carrier file size appears normal
+      $fi = Get-Item $carrier
+      Write-Host "[PAS] Carrier file size: $($fi.Length) bytes (ADS not counted)"
+      Write-Host "[PAS] dir /r reveals streams:"
+      cmd /c "dir /r $env:TEMP\PAS_T1564_004_invoice.txt" 2>&1 |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Read back ADS content — demonstrates payload retrieval"
+    command: |
+      $carrier    = "$env:TEMP\PAS_T1564_004_invoice.txt"
+      $adsPayload = "$carrier`:hidden_payload"
+
+      $content = Get-Content $adsPayload
+      Write-Host "[PAS] ADS content retrieved: $content"
+      Write-Host "[PAS] ADS content is invisible without explicit stream name"
+
+  - step: 4
+    type: exec_powershell
+    description: "Store a binary executable in an ADS and demonstrate execution path"
+    command: |
+      $carrier  = "$env:TEMP\PAS_T1564_004_invoice.txt"
+      $adsExe   = "$carrier`:payload.exe"
+
+      # Write a copy of cmd.exe into the ADS
+      $exeBytes = [IO.File]::ReadAllBytes("$env:SystemRoot\System32\cmd.exe")
+      $stream   = [IO.File]::Open($adsExe, [IO.FileMode]::Create)
+      $stream.Write($exeBytes, 0, $exeBytes.Length)
+      $stream.Close()
+      Write-Host "[PAS] Executable written to ADS: $adsExe"
+      Write-Host "[PAS] Size of carrier file in Explorer: still shows original size"
+      Write-Host "[PAS] Execution via: wmic process call create '$adsExe'"
+      Write-Host "[PAS] Or: start '' '$adsExe'"
+      Write-Host "[PAS] Direct ADS execution for testing — generating telemetry via WMIC:"
+      Start-Process wmic.exe `
+          -ArgumentList "process call create `"$adsExe /c echo PAS-ADS-EXEC`"" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ADS creation events; wmic.exe executing from ADS path; dir /r to confirm streams"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove carrier file (deletes all ADS with it)"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1564_004_invoice.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Carrier file removed (all ADS deleted with it)"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.004 cleanup complete"
+
+analyst_checklist:
+  - "File event: file creation with stream name — DeviceFileEvents FileName contains ':'"
+  - "Process event: process execution from a path containing ':' (ADS execution)"
+  - "Sentinel: DeviceFileEvents | where FileName contains ':' and ActionType == 'FileCreated'"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains ':' and FolderPath contains 'Temp'"
+  - "MDE alert: 'Alternate data stream created' or 'Execution from NTFS stream'"
+  - "CONTROL CHECK: Use 'dir /r /s C:\Users' during threat hunting to enumerate all ADS in user profiles"
+  - "CONTROL CHECK: Streams.exe (Sysinternals) lists all ADS on a system — include in incident response runbooks"
+  - "CONTROL CHECK: ADS on executable files is extremely unusual — alert on any ADS creation on .exe, .dll, .ps1 files"

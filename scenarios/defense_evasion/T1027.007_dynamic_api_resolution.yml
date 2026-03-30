@@ -1,0 +1,100 @@
+id: T1027.007_dynamic_api_resolution
+name: "Obfuscated Files or Information — Dynamic API Resolution"
+mitre_technique: "T1027.007"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries resolve Windows API function addresses at runtime rather than importing
+  them statically, making import table analysis ineffective for detection. Instead of
+  calling VirtualAlloc directly (which appears in the PE import table), malware uses
+  GetProcAddress(GetModuleHandle("kernel32"), "VirtualAlloc") to resolve the address
+  dynamically. More advanced variants use API hashing — computing a hash of each
+  export name and comparing to a hardcoded value, so the API name never appears as
+  a string in the binary.
+  This scenario demonstrates both GetProcAddress resolution and a simple hash-based
+  resolution pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.007 — Dynamic API Resolution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Resolve APIs via GetProcAddress at runtime"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASDynAPI {
+          [DllImport("kernel32.dll")] public static extern IntPtr GetModuleHandle(string module);
+          [DllImport("kernel32.dll")] public static extern IntPtr GetProcAddress(IntPtr module, string proc);
+          [DllImport("kernel32.dll")] public static extern bool VirtualProtect(
+              IntPtr addr, uint size, uint newProtect, out uint oldProtect);
+      }
+"@
+      Write-Host "[PAS] Resolving APIs dynamically via GetProcAddress:"
+      $k32 = [PASDynAPI]::GetModuleHandle("kernel32.dll")
+      Write-Host "  kernel32.dll base: 0x$($k32.ToString('X16'))"
+
+      # Resolve common injection APIs without static imports
+      $apis = @("VirtualAlloc","VirtualAllocEx","WriteProcessMemory",
+                "CreateRemoteThread","OpenProcess","LoadLibraryA")
+      foreach ($api in $apis) {
+          $addr = [PASDynAPI]::GetProcAddress($k32, $api)
+          Write-Host "  $api -> 0x$($addr.ToString('X16'))"
+      }
+      Write-Host "[PAS] All APIs resolved dynamically — no static import table entries needed"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Simulate API hash resolution — resolve by hash not by name"
+    command: |
+      Write-Host "[PAS] Method 2: API hashing simulation"
+      # Simple hash function (ROR13 additive — common in shellcode)
+      function Get-APIHash([string]$name) {
+          $hash = 0
+          foreach ($c in $name.ToCharArray()) {
+              $hash = (($hash -shr 13) -bor ($hash -shl (32-13))) -band 0xFFFFFFFF
+              $hash = ($hash + [byte][char]$c) -band 0xFFFFFFFF
+          }
+          return "0x{0:X8}" -f $hash
+      }
+
+      $targets = @("VirtualAlloc","CreateRemoteThread","WriteProcessMemory","LoadLibraryA")
+      Write-Host "  API Name -> ROR13 Hash (hardcoded in shellcode — no string present):"
+      foreach ($t in $targets) {
+          Write-Host "  $t -> $(Get-APIHash $t)"
+      }
+      Write-Host "[PAS] Malware iterates export table, computes hash of each name, matches hardcoded value"
+      Write-Host "[PAS] API name never appears as a string — defeats string-based import scanning"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures GetProcAddress calls; API resolution visible despite no static imports"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1027.007 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): GetModuleHandle + GetProcAddress calls visible even though no static imports"
+  - "API event: GetProcAddress called for injection-related APIs from powershell.exe"
+  - "MDE: DeviceEvents | where ActionType == 'GetProcAddressApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'GetProcAddressApiCall' and AdditionalFields contains 'VirtualAlloc'"
+  - "CONTROL CHECK: EDR must have API-level telemetry — process-level events miss dynamic resolution"
+  - "CONTROL CHECK: Import table analysis tools (PEStudio, DIE) cannot detect dynamically-resolved APIs — behavioral EDR is required"
+  - "CONTROL CHECK: GetProcAddress calls for injection APIs (VirtualAlloc, CreateRemoteThread) from scripting engines should alert"

@@ -1,0 +1,127 @@
+id: T1197_bits_jobs
+name: "BITS Jobs"
+mitre_technique: "T1197"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use the Windows Background Intelligent Transfer Service (BITS) to
+  download payloads, transfer data, or maintain persistence while blending into
+  legitimate Windows update traffic. BITS jobs survive reboots, run as a Windows
+  service, and are commonly overlooked by defenders. This scenario creates BITS
+  download jobs pointing to benign content and registers a persistent BITS notification
+  to simulate the persistence-through-BITS pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1197/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1197 — BITS Jobs simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a BITS download job to a benign public endpoint — simulates payload staging via BITS"
+    command: |
+      $jobName  = "PAS_T1197_DownloadJob"
+      $destFile = "$env:TEMP\PAS_T1197_download.txt"
+
+      # Use a benign, always-available URL (plain text file)
+      $url = "https://raw.githubusercontent.com/nicowillis/public/main/ping.txt"
+
+      Import-Module BitsTransfer
+      $job = Start-BitsTransfer -Source $url -Destination $destFile `
+          -DisplayName $jobName -Asynchronous -ErrorAction SilentlyContinue
+
+      if ($job) {
+          Write-Host "[PAS] BITS job created: $($job.JobId) — $jobName"
+          Write-Host "[PAS] State: $($job.JobState)"
+      } else {
+          # Fallback: create job with bitsadmin (always available)
+          bitsadmin /create $jobName | Out-Null
+          bitsadmin /addfile $jobName "http://127.0.0.1/PAS_T1197_test.txt" $destFile | Out-Null
+          Write-Host "[PAS] BITS job created via bitsadmin: $jobName"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "List all active BITS jobs — validates job was created and is visible"
+    command: |
+      Write-Host "[PAS] Active BITS jobs:"
+      bitsadmin /list /allusers 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate BITS persistence — set job notification command (executes on job completion)"
+    command: |
+      $jobName    = "PAS_T1197_PersistJob"
+      $destFile   = "$env:TEMP\PAS_T1197_persist.txt"
+      $notifyCmd  = "cmd.exe /c echo PAS-T1197-NOTIFY > $env:TEMP\PAS_T1197_notify_fired.txt"
+
+      bitsadmin /create $jobName | Out-Null
+      bitsadmin /addfile $jobName "http://127.0.0.1/PAS_T1197_persist.txt" $destFile | Out-Null
+      bitsadmin /SetNotifyCmdLine $jobName cmd.exe `
+          "/c echo PAS-T1197-NOTIFY > $env:TEMP\PAS_T1197_notify_fired.txt" | Out-Null
+      Write-Host "[PAS] BITS persistence job with notification command created: $jobName"
+      Write-Host "[PAS] Notification command: $notifyCmd"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — bitsadmin.exe execution and BITS job creation events should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Cancel and remove all PAS BITS jobs"
+    command: |
+      $jobNames = @("PAS_T1197_DownloadJob", "PAS_T1197_PersistJob")
+      foreach ($name in $jobNames) {
+          bitsadmin /cancel $name 2>&1 | Out-Null
+          Write-Host "[PAS][Cleanup] Cancelled BITS job: $name"
+      }
+
+      # Remove via PowerShell as well
+      Import-Module BitsTransfer -ErrorAction SilentlyContinue
+      Get-BitsTransfer -AllUsers -ErrorAction SilentlyContinue |
+          Where-Object { $_.DisplayName -like "PAS_T1197*" } |
+          ForEach-Object {
+              Remove-BitsTransfer -BitsJob $_
+              Write-Host "[PAS][Cleanup] Removed BITS transfer: $($_.DisplayName)"
+          }
+
+  - step: 2
+    type: exec_powershell
+    description: "Remove temp files"
+    command: |
+      $artifacts = @(
+          "$env:TEMP\PAS_T1197_download.txt",
+          "$env:TEMP\PAS_T1197_persist.txt",
+          "$env:TEMP\PAS_T1197_notify_fired.txt"
+      )
+      foreach ($f in $artifacts) {
+          Remove-Item $f -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS][Cleanup] Temp files removed"
+
+  - step: 3
+    type: marker
+    description: "Cleanup complete"
+    message: "T1197 cleanup complete — all BITS jobs cancelled and artifacts removed"
+
+analyst_checklist:
+  - "Process event: bitsadmin.exe spawned from powershell.exe with /create and /SetNotifyCmdLine arguments"
+  - "BITS event: Microsoft-Windows-Bits-Client/Operational Event ID 3 — new BITS job created"
+  - "BITS event: Event ID 59/60 — BITS job started/completed with notification command"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'bitsadmin.exe' and ProcessCommandLine contains '/SetNotifyCmdLine'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'svchost.exe' and ProcessCommandLine contains 'BITS' — BITS persistence execution via svchost"
+  - "MDE alert: 'Suspicious BITS job' or 'BITS used for download or persistence'"
+  - "CONTROL CHECK: Is Microsoft-Windows-Bits-Client/Operational log collected by your SIEM?"
+  - "CONTROL CHECK: Alert rule should fire on any BITS job with a SetNotifyCmdLine pointing to cmd.exe, powershell.exe, or TEMP paths"

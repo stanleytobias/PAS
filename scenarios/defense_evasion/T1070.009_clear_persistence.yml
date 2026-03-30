@@ -1,0 +1,116 @@
+id: T1070.009_clear_persistence
+name: "Indicator Removal — Clear Persistence"
+mitre_technique: "T1070.009"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries remove persistence mechanisms they previously installed once they have
+  completed their objectives or are concerned about detection. This includes deleting
+  Run keys, unregistering scheduled tasks, removing services, and deleting startup
+  folder entries. The removal itself generates telemetry — registry deletes, task
+  deregistration events — which are a strong indicator of an adversary covering tracks.
+  This scenario creates benign persistence markers then exercises each removal method.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.009 — Clear Persistence simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Install benign persistence markers to be removed"
+    command: |
+      # Run key
+      Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1070_009_RunKey" `
+          -Value "cmd.exe /c echo PAS" -Force
+      Write-Host "[PAS] Run key installed"
+
+      # Scheduled task
+      $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c echo PAS"
+      Register-ScheduledTask -TaskName "PAS_T1070_009_Task" `
+          -Action $action -Force | Out-Null
+      Write-Host "[PAS] Scheduled task installed"
+
+      # Service
+      sc.exe create "PAS_T1070_009_Svc" `
+          binPath= "$env:SystemRoot\System32\cmd.exe" start= demand | Out-Null
+      Write-Host "[PAS] Service installed"
+
+      # Startup folder
+      $startupEntry = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\PAS_T1070_009.bat"
+      Set-Content $startupEntry "@echo PAS-STARTUP"
+      Write-Host "[PAS] Startup folder entry installed: $startupEntry"
+
+  - step: 3
+    type: exec_powershell
+    description: "Remove persistence — simulates adversary covering tracks"
+    command: |
+      Write-Host "[PAS] Removing persistence artifacts:"
+
+      # Remove Run key
+      Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1070_009_RunKey" -Force -ErrorAction SilentlyContinue
+      Write-Host "  [+] Run key deleted"
+
+      # Remove scheduled task
+      Unregister-ScheduledTask -TaskName "PAS_T1070_009_Task" -Confirm:$false `
+          -ErrorAction SilentlyContinue
+      Write-Host "  [+] Scheduled task unregistered"
+
+      # Remove service
+      sc.exe delete "PAS_T1070_009_Svc" | Out-Null
+      Write-Host "  [+] Service deleted"
+
+      # Remove startup entry
+      Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\PAS_T1070_009.bat" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "  [+] Startup entry removed"
+
+      Write-Host "[PAS] All persistence artifacts removed — cleanup telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Run key deletion, task unregistration (Event ID 4699), service deletion (Event ID 7036), startup file deletion"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure all PAS persistence artifacts are removed"
+    command: |
+      Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+          -Name "PAS_T1070_009_RunKey" -Force -ErrorAction SilentlyContinue
+      Unregister-ScheduledTask -TaskName "PAS_T1070_009_Task" -Confirm:$false `
+          -ErrorAction SilentlyContinue
+      sc.exe delete "PAS_T1070_009_Svc" 2>&1 | Out-Null
+      Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\PAS_T1070_009.bat" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] All persistence artifacts confirmed removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1070.009 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\...\Run value deleted — persistence removal"
+  - "Event ID 4699: Scheduled task deleted"
+  - "Event ID 7036/7009: Service state change/deleted"
+  - "File event: .bat/.exe deleted from Startup folder"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'CurrentVersion\\Run' and ActionType == 'RegistryValueDeleted'"
+  - "Sentinel: DeviceEvents | where ActionType == 'ScheduledTaskDeleted'"
+  - "Sentinel: SecurityEvent | where EventID == 4699"
+  - "MDE alert: 'Persistence mechanism removed' — this is as suspicious as it being created"
+  - "CONTROL CHECK: Deleting persistence artifacts is a TTI (tactic, technique, indicator) for an attacker wrapping up — treat removals with same priority as creations"
+  - "CONTROL CHECK: Correlate persistence creation (T1053/T1547) events with removal events in the same session to identify full attack timeline"

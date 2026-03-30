@@ -1,0 +1,135 @@
+id: T1134.002_create_process_with_token
+name: "Access Token Manipulation — Create Process with Token"
+mitre_technique: "T1134.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries steal a process token and use CreateProcessWithTokenW to spawn a new
+  process running under that stolen identity — effectively executing as another user
+  without knowing their password. This is the escalation step after token theft:
+  rather than just impersonating, they launch a full child process in the target context.
+  Common use: steal SYSTEM token from a service, spawn cmd.exe as SYSTEM.
+  This scenario simulates the API chain using the current user token to spawn a
+  benign child process — generating full telemetry without actual privilege escalation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.002 — Create Process with Token simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate runas.exe token-based process creation — visible in process telemetry"
+    command: |
+      Write-Host "[PAS] Simulating token-based process creation via runas pattern:"
+      # runas /user generates CreateProcessWithLogonW telemetry (similar API surface)
+      # Use current user context — no credential required for same-user demo
+      $proc = Start-Process cmd.exe -ArgumentList "/c echo PAS-T1134.002-RUNAS-TOKEN" `
+          -PassThru -NoNewWindow -Wait
+      Write-Host "[PAS] Child process spawned PID $($proc.Id) — parent: powershell.exe"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate CreateProcessWithTokenW API chain — duplicate token then create process"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASCreateProcToken {
+          [DllImport("advapi32.dll", SetLastError=true)]
+          public static extern bool OpenProcessToken(IntPtr hProcess, uint access, out IntPtr token);
+          [DllImport("advapi32.dll", SetLastError=true)]
+          public static extern bool DuplicateTokenEx(IntPtr hToken, uint access, IntPtr attr,
+              int impLevel, int tokenType, out IntPtr newToken);
+          [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+          public static extern bool CreateProcessWithTokenW(IntPtr hToken, uint logonFlags,
+              string appName, string cmdLine, uint creationFlags, IntPtr env,
+              string curDir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+          [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          [DllImport("kernel32.dll")] public static extern bool TerminateProcess(IntPtr h, uint code);
+
+          [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+          public struct STARTUPINFO {
+              public int cb; public string lpReserved; public string lpDesktop;
+              public string lpTitle; public int dwX; public int dwY;
+              public int dwXSize; public int dwYSize; public int dwXCountChars;
+              public int dwYCountChars; public int dwFillAttribute; public int dwFlags;
+              public short wShowWindow; public short cbReserved2;
+              public IntPtr lpReserved2; public IntPtr hStdInput;
+              public IntPtr hStdOutput; public IntPtr hStdError;
+          }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_INFORMATION {
+              public IntPtr hProcess; public IntPtr hThread;
+              public int dwProcessId; public int dwThreadId;
+          }
+      }
+"@
+      $TOKEN_ALL_ACCESS    = 0xF01FF
+      $SecurityImpersonation = 2
+      $TokenPrimary          = 1
+      $CREATE_NO_WINDOW      = 0x08000000
+
+      $hCurrent = [PASCreateProcToken]::GetCurrentProcess()
+      $hToken   = [IntPtr]::Zero
+      [PASCreateProcToken]::OpenProcessToken($hCurrent, $TOKEN_ALL_ACCESS, [ref]$hToken) | Out-Null
+      Write-Host "[PAS] OpenProcessToken: handle $hToken"
+
+      $hPrimary = [IntPtr]::Zero
+      [PASCreateProcToken]::DuplicateTokenEx($hToken, $TOKEN_ALL_ACCESS, [IntPtr]::Zero,
+          $SecurityImpersonation, $TokenPrimary, [ref]$hPrimary) | Out-Null
+      Write-Host "[PAS] DuplicateTokenEx (Primary token): handle $hPrimary"
+
+      if ($hPrimary -ne [IntPtr]::Zero) {
+          $si = New-Object PASCreateProcToken+STARTUPINFO
+          $si.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
+          $pi = New-Object PASCreateProcToken+PROCESS_INFORMATION
+
+          $created = [PASCreateProcToken]::CreateProcessWithTokenW(
+              $hPrimary, 0,
+              "$env:SystemRoot\System32\cmd.exe",
+              "cmd.exe /c echo PAS-T1134.002-CREATEPROCESSWITHTOKEN",
+              $CREATE_NO_WINDOW, [IntPtr]::Zero, $null, [ref]$si, [ref]$pi)
+
+          Write-Host "[PAS] CreateProcessWithTokenW: $created — PID: $($pi.dwProcessId)"
+          if ($pi.hProcess -ne [IntPtr]::Zero) {
+              Start-Sleep -Milliseconds 500
+              [PASCreateProcToken]::TerminateProcess($pi.hProcess, 0) | Out-Null
+              [PASCreateProcToken]::CloseHandle($pi.hProcess) | Out-Null
+              [PASCreateProcToken]::CloseHandle($pi.hThread) | Out-Null
+          }
+          [PASCreateProcToken]::CloseHandle($hPrimary) | Out-Null
+      }
+      [PASCreateProcToken]::CloseHandle($hToken) | Out-Null
+      Write-Host "[PAS] CreateProcessWithTokenW API chain complete"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CreateProcessWithTokenW spawning cmd.exe from powershell.exe should appear as anomalous token-based process creation"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1134.002 cleanup complete — spawned process was terminated inline"
+
+analyst_checklist:
+  - "API event: DuplicateTokenEx (Primary type) + CreateProcessWithTokenW from powershell.exe"
+  - "Process event: cmd.exe spawned from powershell.exe with unusual token lineage"
+  - "MDE alert: 'Token-based process creation' or 'Suspicious use of CreateProcessWithTokenW'"
+  - "Sentinel: DeviceEvents | where ActionType == 'CreateProcessWithTokenWApiCall'"
+  - "Event ID 4688: Process creation with token type showing impersonation — check SubjectLogonId vs TokenLogonId delta"
+  - "CONTROL CHECK: Alert on CreateProcessWithTokenW calls from non-LSASS, non-service host processes"
+  - "CONTROL CHECK: Process creation where ParentProcess token user != spawned process token user is a strong indicator"

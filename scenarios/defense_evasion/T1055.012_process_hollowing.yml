@@ -1,0 +1,108 @@
+id: T1055.012_process_hollowing
+name: "Process Injection — Process Hollowing"
+mitre_technique: "T1055.012"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries create a legitimate process in a suspended state, hollow out its memory,
+  replace it with malicious code, then resume execution — all under a trusted process name.
+  This scenario simulates the API call telemetry (CreateProcess suspended, NtUnmapViewOfSection,
+  VirtualAllocEx, WriteProcessMemory, SetThreadContext, ResumeThread) without injecting
+  a real payload. Detection relies on API sequence anomaly and image-vs-on-disk hash mismatch.
+  Note: Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.012 — Process Hollowing simulation (API sequence telemetry only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate process hollowing API sequence — create suspended process and perform cross-process operations"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+
+      public class PASHollowSim {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint dwAccess, bool bInherit, int dwPid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint dwFreeType);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr hObject);
+          [DllImport("kernel32.dll")] public static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, uint nSize, out int lpNumberOfBytesRead);
+      }
+"@
+      # Spawn svchost.exe suspended (simulates hollow target choice)
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      $psi.FileName  = "$env:SystemRoot\System32\svchost.exe"
+      $psi.Arguments = "-k netsvcs"
+      $psi.CreateNoWindow = $true
+      $psi.UseShellExecute = $false
+
+      $proc = [System.Diagnostics.Process]::Start($psi)
+      Write-Host "[PAS] Spawned target: svchost.exe PID $($proc.Id)"
+      Start-Sleep -Milliseconds 500
+
+      $hProcess = [PASHollowSim]::OpenProcess(0x1F0FFF, $false, $proc.Id)
+      Write-Host "[PAS] OpenProcess handle acquired: $hProcess"
+
+      if ($hProcess -ne [IntPtr]::Zero) {
+          # Allocate — simulates where hollowed payload would be written
+          $addr = [PASHollowSim]::VirtualAllocEx($hProcess, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+          Write-Host "[PAS] VirtualAllocEx (RWX region) allocated at: $addr — hollowing telemetry generated"
+
+          # Read a few bytes from the process base — simulates image read before unmapping
+          $buf   = New-Object byte[] 64
+          $bytes = 0
+          [PASHollowSim]::ReadProcessMemory($hProcess, [IntPtr]::new(0x400000), $buf, 64, [ref]$bytes) | Out-Null
+          Write-Host "[PAS] ReadProcessMemory: $bytes bytes read from svchost base — simulates pre-hollow image read"
+
+          if ($addr -ne [IntPtr]::Zero) {
+              [PASHollowSim]::VirtualFreeEx($hProcess, $addr, 0, 0x8000) | Out-Null
+          }
+          [PASHollowSim]::CloseHandle($hProcess) | Out-Null
+      } else {
+          Write-Host "[PAS] OpenProcess failed — elevation required"
+      }
+
+      $proc.Kill()
+      Write-Host "[PAS] Target process terminated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — VirtualAllocEx RWX allocation + ReadProcessMemory against svchost.exe from powershell.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure any orphaned svchost instances spawned by PAS are cleaned up"
+    command: |
+      # Only kill the specific PAS-spawned svchost if identifiable; do not kill system svchost instances
+      Write-Host "[PAS][Cleanup] No persistent artifacts to remove — process was killed inline"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.012 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API event: powershell.exe → OpenProcess(svchost.exe) → VirtualAllocEx(RWX) — process hollowing API chain"
+  - "API event: ReadProcessMemory from powershell.exe into svchost.exe address space"
+  - "MDE alert: 'Process hollowing' or 'Suspicious memory allocation in system process'"
+  - "Sentinel: DeviceEvents | where ActionType in ('VirtualAllocExApiCall','ReadProcessMemoryApiCall') and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'VirtualAllocExApiCall' and AdditionalFields contains 'PAGE_EXECUTE_READWRITE'"
+  - "Script block logging (Event ID 4104): P/Invoke for VirtualAllocEx, ReadProcessMemory visible"
+  - "CONTROL CHECK: Does your EDR detect RWX memory allocation in cross-process context, not just known-malicious payloads?"
+  - "CONTROL CHECK: Validate image-load-vs-on-disk hash mismatch detection is active in your EDR policy"

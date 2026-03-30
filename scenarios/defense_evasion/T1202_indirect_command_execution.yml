@@ -1,0 +1,104 @@
+id: T1202_indirect_command_execution
+name: "Indirect Command Execution"
+mitre_technique: "T1202"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use utilities that invoke commands indirectly — without calling cmd.exe
+  or powershell.exe directly — to bypass rules that alert on those well-monitored
+  interpreters. Windows utilities that proxy command execution include forfiles.exe,
+  pcalua.exe (Program Compatibility Assistant), scriptrunner.exe, and bash.exe (WSL).
+  The spawned process inherits the utility's trust context and may not trigger
+  detections targeting cmd.exe or powershell.exe specifically.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1202/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1202 — Indirect Command Execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: forfiles.exe — executes a command for each file matched"
+    command: |
+      Write-Host "[PAS] Method 1: forfiles.exe /c execution"
+      # forfiles /p <dir> /m <mask> /c <cmd> — adversaries use it to run arbitrary commands
+      Start-Process forfiles.exe `
+          -ArgumentList "/p $env:SystemRoot\System32 /m cmd.exe /c `"echo PAS-T1202-FORFILES`"" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] forfiles.exe /c executed"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: pcalua.exe — Program Compatibility Assistant proxy"
+    command: |
+      Write-Host "[PAS] Method 2: pcalua.exe -a (execute binary)"
+      # pcalua.exe -a <binary> [-d <directory>] [-c <parameters>]
+      Start-Process pcalua.exe `
+          -ArgumentList "-a $env:SystemRoot\System32\cmd.exe -c `"/c echo PAS-T1202-PCALUA`"" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] pcalua.exe -a executed"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: scriptrunner.exe — script compatibility launcher"
+    command: |
+      Write-Host "[PAS] Method 3: scriptrunner.exe -appvscript"
+      $scriptPath = "$env:TEMP\PAS_T1202_test.bat"
+      Set-Content $scriptPath "@echo PAS-T1202-SCRIPTRUNNER"
+      Start-Process scriptrunner.exe `
+          -ArgumentList "-appvscript $scriptPath" `
+          -Wait -NoNewWindow -ErrorAction SilentlyContinue
+      Write-Host "[PAS] scriptrunner.exe executed"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 4: SyncAppvPublishingServer.exe — App-V indirect execution"
+    command: |
+      Write-Host "[PAS] Method 4: SyncAppvPublishingServer.exe PowerShell proxy"
+      $syncAppv = "$env:SystemRoot\System32\SyncAppvPublishingServer.exe"
+      if (Test-Path $syncAppv) {
+          Start-Process $syncAppv `
+              -ArgumentList "`"; Write-Host 'PAS-T1202-SYNCAPPV'`"" `
+              -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          Write-Host "[PAS] SyncAppvPublishingServer.exe executed"
+      } else {
+          Write-Host "[PAS] SyncAppvPublishingServer.exe not present (App-V not installed)"
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — forfiles.exe, pcalua.exe, scriptrunner.exe process events with command arguments"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test batch file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1202_test.bat" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test batch file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1202 cleanup complete"
+
+analyst_checklist:
+  - "Process event: forfiles.exe with /c argument containing cmd.exe or powershell.exe"
+  - "Process event: pcalua.exe with -a argument executing a binary"
+  - "Process event: scriptrunner.exe with -appvscript or -appvscriptrunnercomponent"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('forfiles.exe','pcalua.exe','scriptrunner.exe')"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('forfiles.exe','pcalua.exe') and FileName == 'cmd.exe'"
+  - "MDE alert: 'Indirect command execution via LOLBin'"
+  - "CONTROL CHECK: forfiles.exe and pcalua.exe are rarely used outside of specific installer contexts — alert on any execution"
+  - "CONTROL CHECK: Detection rules targeting only cmd.exe and powershell.exe miss these indirect paths — include the full LOLBin list"

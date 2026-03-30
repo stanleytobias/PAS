@@ -1,0 +1,99 @@
+id: T1222.001_windows_file_permissions_modification
+name: "File and Directory Permissions Modification — Windows"
+mitre_technique: "T1222.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries modify file and directory ACLs to make their files inaccessible to
+  security tools, prevent deletion by defenders during incident response, or grant
+  themselves access to protected files (e.g. SAM, NTDS.dit). Common methods:
+  icacls.exe to grant or remove permissions, takeown.exe to claim ownership before
+  modifying ACLs, and [Security.AccessControl] .NET API. This scenario exercises
+  each permission modification pattern on test files.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1222/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1222.001 — Windows File Permissions Modification simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create test files and directories for permission modification"
+    command: |
+      $testDir  = "$env:TEMP\PAS_T1222_001_dir"
+      $testFile = "$testDir\PAS_payload.exe"
+      New-Item -ItemType Directory $testDir -Force | Out-Null
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $testFile -Force
+      Write-Host "[PAS] Test artifacts created: $testFile"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: icacls — grant full control to Everyone (adversary staging access)"
+    command: |
+      $testFile = "$env:TEMP\PAS_T1222_001_dir\PAS_payload.exe"
+      Write-Host "[PAS] Method 1: icacls grant Everyone:F"
+      icacls $testFile /grant "Everyone:(F)" 2>&1 | Out-Null
+      Write-Host "[PAS] icacls Everyone:FullControl applied to $testFile"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: icacls — deny read to BUILTIN\Administrators (hinder defenders)"
+    command: |
+      $testDir = "$env:TEMP\PAS_T1222_001_dir"
+      Write-Host "[PAS] Method 2: icacls deny Administrators read (hinder IR)"
+      icacls $testDir /deny "BUILTIN\Administrators:(R)" 2>&1 | Out-Null
+      Write-Host "[PAS] Deny ACE applied — Administrators cannot read this directory"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: takeown then icacls — claim ownership of protected file"
+    command: |
+      $protectedPath = "$env:TEMP\PAS_T1222_001_protected.txt"
+      Set-Content $protectedPath "PAS-protected-content"
+      Write-Host "[PAS] Method 3: takeown /f then icacls grant"
+      takeown /f $protectedPath 2>&1 | Out-Null
+      icacls $protectedPath /grant "$env:USERNAME:(F)" 2>&1 | Out-Null
+      Write-Host "[PAS] takeown + icacls executed on: $protectedPath"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — icacls.exe and takeown.exe process events; ACL change events on executable files"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore permissions and remove test directory"
+    command: |
+      $testDir = "$env:TEMP\PAS_T1222_001_dir"
+      # Remove deny ACE first, then delete
+      icacls $testDir /remove:d "BUILTIN\Administrators" /T 2>&1 | Out-Null
+      icacls $testDir /reset /T 2>&1 | Out-Null
+      Remove-Item $testDir -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1222_001_protected.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test directory and files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1222.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: icacls.exe with /grant Everyone or /deny Administrators arguments"
+  - "Process event: takeown.exe targeting files outside normal admin scope"
+  - "File event: ACL modified on executable file — DeviceFileEvents ActionType=FilePermissionsModified"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'icacls.exe' and ProcessCommandLine contains 'Everyone'"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('icacls.exe','takeown.exe') and ProcessCommandLine contains '/deny'"
+  - "MDE alert: 'File permissions modified to grant broad access'"
+  - "CONTROL CHECK: icacls granting Everyone or BUILTIN\Users full control on .exe/.dll files should always alert"
+  - "CONTROL CHECK: Deny ACEs for Administrators on directories are extremely unusual and a strong IR-hindrance indicator"

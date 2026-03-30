@@ -1,0 +1,107 @@
+id: T1574.002_dll_side_loading
+name: "Hijack Execution Flow — DLL Side-Loading"
+mitre_technique: "T1574.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries plant a malicious DLL alongside a legitimate, signed executable that
+  loads DLLs from its own directory without full path specification. The signed binary
+  acts as a loader — lending its trust and signature to the malicious DLL.
+  Common targets include security tool binaries, Windows components, and third-party
+  applications with weak DLL loading patterns.
+  This scenario copies a vulnerable signed binary to TEMP alongside a benign marker DLL
+  and exercises the side-loading path pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.002 — DLL Side-Loading simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Copy a legitimate signed binary to TEMP — simulates adversary staging a hijackable executable"
+    command: |
+      # OneDriveStandaloneUpdater.exe is a well-known side-loading target (loads version.dll from app dir)
+      # Use a benign system binary that loads non-essential DLLs from its own directory
+      $targets = @(
+          "$env:SystemRoot\System32\mtstocom.exe",
+          "$env:SystemRoot\System32\dxcap.exe",
+          "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+      )
+      $staged = $null
+      foreach ($t in $targets) {
+          if (Test-Path $t) {
+              $staged = "$env:TEMP\PAS_SideLoad_$([IO.Path]::GetFileName($t))"
+              Copy-Item $t $staged -Force
+              Write-Host "[PAS] Staged signed binary: $staged"
+              break
+          }
+      }
+      if (-not $staged) {
+          # Fallback: use any available signed binary
+          $staged = "$env:TEMP\PAS_SideLoad_cmd.exe"
+          Copy-Item "$env:SystemRoot\System32\cmd.exe" $staged -Force
+          Write-Host "[PAS] Fallback: staged cmd.exe as side-load target: $staged"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Plant a benign marker DLL in the same directory as the staged binary"
+    command: |
+      $markerDll = "$env:TEMP\version.dll"
+      # Write a minimal marker (not a functional DLL in this context — telemetry focus)
+      Set-Content $markerDll "PAS-T1574-SIDE-LOAD-MARKER"
+      Write-Host "[PAS] Planted marker DLL: $markerDll"
+      Write-Host "[PAS] Directory now contains both signed binary and planted DLL — side-load condition"
+
+  - step: 4
+    type: exec_powershell
+    description: "Execute the staged signed binary from TEMP — generates process event showing signed binary running from user-writable directory"
+    command: |
+      $staged = Get-ChildItem "$env:TEMP\PAS_SideLoad_*" | Select-Object -First 1
+      if ($staged) {
+          Write-Host "[PAS] Executing staged signed binary from TEMP:"
+          Start-Process $staged.FullName -ArgumentList "/?" -WorkingDirectory $env:TEMP `
+              -NoNewWindow -Wait -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Signed binary executed from TEMP — check image load and process events"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — signed binary executing from TEMP with DLL in same directory should trigger side-loading detection"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove staged binary and planted DLL"
+    command: |
+      Get-ChildItem "$env:TEMP\PAS_SideLoad_*" | Remove-Item -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\version.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Staged binaries and planted DLLs removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.002 cleanup complete — all side-loading artifacts removed"
+
+analyst_checklist:
+  - "Process event: signed Microsoft binary executing from C:\Users\*\AppData\Local\Temp\ — path anomaly"
+  - "Image load event: version.dll or other common side-load target DLL loaded from TEMP alongside signed binary"
+  - "Sentinel: DeviceProcessEvents | where FolderPath contains 'Temp' and ProcessVersionInfoCompanyName == 'Microsoft Corporation'"
+  - "Sentinel: DeviceImageLoadEvents | where FolderPath contains 'Temp' and not(SHA256 in (allowed_hashes))"
+  - "Sentinel: DeviceImageLoadEvents | where not(isCodeSigned) and InitiatingProcessVersionInfoCompanyName == 'Microsoft Corporation'"
+  - "MDE alert: 'DLL side-loading attempt' or 'Signed binary loaded untrusted DLL'"
+  - "CONTROL CHECK: DeviceImageLoadEvents must be enabled in MDE advanced hunting — without it, DLL loads are invisible"
+  - "CONTROL CHECK: Alert on any signed Microsoft binary loading an unsigned DLL from a user-writable path"
+  - "CONTROL CHECK: Review LOLBAS project (lolbas-project.github.io) for DLL side-loading vulnerable binaries in your environment"

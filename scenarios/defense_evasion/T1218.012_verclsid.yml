@@ -1,0 +1,81 @@
+id: T1218.012_verclsid
+name: "System Binary Proxy Execution — Verclsid"
+mitre_technique: "T1218.012"
+mitre_tactic: "defense_evasion"
+description: >
+  verclsid.exe (Extension CLSID Verification Host) is a signed Windows binary that
+  verifies shell extensions before they run. Adversaries abuse it by passing a malicious
+  CLSID that points to their payload — verclsid.exe loads and instantiates the COM object,
+  executing adversary code via the trusted binary.
+  This scenario registers a benign COM object and invokes it via verclsid.exe /S /C.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.012 — verclsid proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register a benign CLSID and invoke via verclsid.exe"
+    command: |
+      # Register a benign CLSID pointing to a system COM object
+      $clsid    = "{0002DF01-0000-0000-C000-000000000046}" # Internet Explorer COM
+      Write-Host "[PAS] Executing: verclsid.exe /S /C $clsid"
+      Start-Process verclsid.exe -ArgumentList "/S /C $clsid" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] verclsid.exe /S /C executed with CLSID: $clsid"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute with /S /C and a user-registered CLSID — adversary pattern"
+    command: |
+      # Register a test CLSID in HKCU pointing to shell32.dll
+      $testClsid = "{PAS11111-T121-8012-VRCL-SIDTEST1111}"
+      $regPath   = "HKCU:\Software\Classes\CLSID\$testClsid\InprocServer32"
+      New-Item $regPath -Force | Out-Null
+      Set-ItemProperty $regPath "(Default)" "$env:SystemRoot\System32\shell32.dll" -Force
+      Set-ItemProperty $regPath "ThreadingModel" "Apartment" -Force
+      Write-Host "[PAS] HKCU CLSID registered: $testClsid -> shell32.dll"
+
+      Start-Process verclsid.exe -ArgumentList "/S /C $testClsid" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] verclsid.exe executed with user-registered CLSID"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — verclsid.exe with /S /C flags; CLSID lookup in HKCU"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test CLSID"
+    command: |
+      $testClsid = "{PAS11111-T121-8012-VRCL-SIDTEST1111}"
+      Remove-Item "HKCU:\Software\Classes\CLSID\$testClsid" -Recurse -Force `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test CLSID removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.012 cleanup complete"
+
+analyst_checklist:
+  - "Process event: verclsid.exe with /S /C arguments"
+  - "Registry event: HKCU CLSID registration prior to verclsid.exe execution"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'verclsid.exe' and ProcessCommandLine contains '/S'"
+  - "MDE alert: 'Verclsid used for COM proxy execution'"
+  - "CONTROL CHECK: verclsid.exe is rarely invoked directly — any command-line execution should alert"
+  - "CONTROL CHECK: HKCU CLSID registration + verclsid.exe execution in same session is the attack pattern"

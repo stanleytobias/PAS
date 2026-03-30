@@ -1,0 +1,120 @@
+id: T1574.012_cor_profiler
+name: "Hijack Execution Flow — COR_PROFILER"
+mitre_technique: "T1574.012"
+mitre_tactic: "defense_evasion"
+description: >
+  The COR_PROFILER environment variable instructs the .NET Common Language Runtime (CLR)
+  to load a specified unmanaged DLL into every .NET process that starts. Adversaries set
+  COR_ENABLE_PROFILING=1 and COR_PROFILER={CLSID} pointing to a malicious DLL, then
+  register the CLSID in HKCU (no admin needed). Every subsequent .NET process loads
+  the DLL — providing both persistence and defense evasion (execution blends into
+  legitimate .NET processes).
+  This scenario sets the environment variables and registry CLSID pointing to a benign
+  marker DLL, launches a .NET process to trigger loading, then cleans up.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.012 — COR_PROFILER hijack simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Set COR_PROFILER environment variables and register CLSID in HKCU"
+    command: |
+      $clsid    = "{PAS-COR-PROFILER-T1574-012}"
+      $dllPath  = "$env:TEMP\PAS_T1574_012_profiler.dll"
+      $markerFile = "$env:TEMP\PAS_T1574_012_loaded.txt"
+
+      # Create a benign placeholder DLL (marker file, not a real DLL)
+      Set-Content $dllPath "PAS-COR-PROFILER-MARKER"
+      Write-Host "[PAS] Placeholder profiler DLL: $dllPath"
+
+      # Register CLSID in HKCU (no admin required)
+      $clsidPath = "HKCU:\Software\Classes\CLSID\$clsid\InprocServer32"
+      New-Item $clsidPath -Force | Out-Null
+      Set-ItemProperty $clsidPath "(Default)" $dllPath -Force
+      Set-ItemProperty $clsidPath "ThreadingModel" "Both" -Force
+      Write-Host "[PAS] CLSID registered: HKCU\Software\Classes\CLSID\$clsid\InprocServer32 = $dllPath"
+
+      # Set environment variables (session-scope)
+      $env:COR_ENABLE_PROFILING = "1"
+      $env:COR_PROFILER          = $clsid
+      $env:COR_PROFILER_PATH     = $dllPath
+      Write-Host "[PAS] COR_ENABLE_PROFILING=1"
+      Write-Host "[PAS] COR_PROFILER=$clsid"
+      Write-Host "[PAS] COR_PROFILER_PATH=$dllPath"
+
+      # Also write to user environment registry for persistence demonstration
+      $envKey = "HKCU:\Environment"
+      Set-ItemProperty $envKey "COR_ENABLE_PROFILING" "1" -Force
+      Set-ItemProperty $envKey "COR_PROFILER"          $clsid -Force
+      Set-ItemProperty $envKey "COR_PROFILER_PATH"     $dllPath -Force
+      Write-Host "[PAS] Persisted to HKCU\Environment — every new .NET process will attempt to load profiler"
+
+  - step: 3
+    type: exec_powershell
+    description: "Launch a .NET process — CLR will attempt to load the registered profiler DLL"
+    command: |
+      Write-Host "[PAS] Launching .NET process (PowerShell child) — CLR will attempt COR_PROFILER load:"
+      # Use a simple .NET invocation that triggers CLR
+      Start-Process powershell.exe -ArgumentList "-NoProfile -Command `"[System.DateTime]::Now | Out-Null`"" `
+          -NoNewWindow -Wait
+      Write-Host "[PAS] .NET process launched — profiler DLL load attempt should appear in telemetry"
+      Write-Host "[PAS] Real attack: profiler DLL executes adversary code inside every .NET process"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\Environment COR_PROFILER write and CLSID registration in HKCU\Software\Classes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove COR_PROFILER environment variables and registry keys"
+    command: |
+      $clsid  = "{PAS-COR-PROFILER-T1574-012}"
+      $envKey = "HKCU:\Environment"
+
+      # Remove from user environment registry
+      Remove-ItemProperty $envKey "COR_ENABLE_PROFILING" -ErrorAction SilentlyContinue
+      Remove-ItemProperty $envKey "COR_PROFILER"          -ErrorAction SilentlyContinue
+      Remove-ItemProperty $envKey "COR_PROFILER_PATH"     -ErrorAction SilentlyContinue
+
+      # Remove CLSID key
+      $clsidPath = "HKCU:\Software\Classes\CLSID\$clsid"
+      if (Test-Path $clsidPath) {
+          Remove-Item $clsidPath -Recurse -Force -ErrorAction SilentlyContinue
+      }
+      Remove-Item "$env:TEMP\PAS_T1574_012_profiler.dll" -Force -ErrorAction SilentlyContinue
+
+      # Clear session env vars
+      Remove-Item Env:\COR_ENABLE_PROFILING -ErrorAction SilentlyContinue
+      Remove-Item Env:\COR_PROFILER          -ErrorAction SilentlyContinue
+      Remove-Item Env:\COR_PROFILER_PATH     -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] COR_PROFILER vars, CLSID key, and DLL removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.012 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKCU\Environment COR_ENABLE_PROFILING and COR_PROFILER values written"
+  - "Registry event: HKCU\Software\Classes\CLSID\{...}\InprocServer32 pointing to non-standard DLL path"
+  - "Image load event: unexpected DLL loaded into every .NET process from a user-writable path"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueName == 'COR_ENABLE_PROFILING' or RegistryValueName == 'COR_PROFILER'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Environment' and RegistryValueName in ('COR_ENABLE_PROFILING','COR_PROFILER','COR_PROFILER_PATH')"
+  - "MDE alert: 'COR_PROFILER persistence' or 'Suspicious .NET profiler registered'"
+  - "CONTROL CHECK: COR_PROFILER in HKCU\Environment requires no admin — any user can set this persistence"
+  - "CONTROL CHECK: Monitor DeviceImageLoadEvents for DLLs loaded from TEMP/AppData into powershell.exe or other .NET processes"

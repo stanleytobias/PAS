@@ -1,0 +1,97 @@
+id: T1497.003_sandbox_evasion_time_based
+name: "Virtualization/Sandbox Evasion — Time Based Checks"
+mitre_technique: "T1497.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use time-based checks to detect sandboxes that accelerate time to force
+  malware into executing quickly. Techniques include sleeping for extended periods and
+  checking if the elapsed wall-clock time matches the expected sleep duration — if the
+  sandbox fast-forwards the sleep, the times diverge. Other methods compare GetTickCount
+  before and after a sleep, use RDTSC instruction timing, or wait for a specific time
+  of day before executing.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1497/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1497.003 — Time-Based Sandbox Evasion simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Sleep duration validation — detects time-accelerated sandboxes"
+    command: |
+      Write-Host "[PAS] Method 1: Sleep duration validation"
+      $before = [Environment]::TickCount
+      Start-Sleep -Milliseconds 3000
+      $after  = [Environment]::TickCount
+      $elapsed = $after - $before
+      Write-Host "  Requested sleep: 3000ms"
+      Write-Host "  Actual elapsed:  ${elapsed}ms"
+      if ([Math]::Abs($elapsed - 3000) -gt 1000) {
+          Write-Host "  [Sandbox indicator] Time acceleration detected — sleep skipped"
+      } else {
+          Write-Host "  [Normal] Sleep duration matches — likely not accelerated"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: GetTickCount before/after NtDelayExecution — low-level timing"
+    command: |
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASTimingCheck {
+          [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+          [DllImport("ntdll.dll")]    public static extern int NtDelayExecution(bool alertable, ref long interval);
+      }
+"@
+      $t1       = [PASTimingCheck]::GetTickCount()
+      $interval = -10000000L  # 1 second in 100ns units (negative = relative)
+      [PASTimingCheck]::NtDelayExecution($false, [ref]$interval) | Out-Null
+      $t2      = [PASTimingCheck]::GetTickCount()
+      $elapsed = $t2 - $t1
+      Write-Host "[PAS] NtDelayExecution timing: ${elapsed}ms (expected ~1000ms)"
+      if ($elapsed -lt 500) {
+          Write-Host "  [Sandbox indicator] NtDelayExecution fast-forwarded"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Time-of-day check — execute only during business hours"
+    command: |
+      $now  = Get-Date
+      $hour = $now.Hour
+      Write-Host "[PAS] Time-of-day check: $($now.ToString('HH:mm')) (DayOfWeek: $($now.DayOfWeek))"
+      if ($hour -ge 9 -and $hour -le 17 -and $now.DayOfWeek -notin @("Saturday","Sunday")) {
+          Write-Host "  [Normal] Business hours — payload would execute"
+      } else {
+          Write-Host "  [Evasion] Outside business hours — adversary payload would wait"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures GetTickCount and NtDelayExecution timing loops"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1497.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): GetTickCount loops, NtDelayExecution calls, time-of-day checks"
+  - "Process event: Extended sleep (>10s) followed by execution — time-delay evasion pattern"
+  - "CONTROL CHECK: Sandboxes should be configured to NOT accelerate time — or normalise timing to 1x"
+  - "CONTROL CHECK: Samples that only detonate during business hours require extended sandbox run time"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'NtDelayExecution'"
+  - "MDE: Behavioral detection must cover post-sleep execution, not just immediate execution on drop"

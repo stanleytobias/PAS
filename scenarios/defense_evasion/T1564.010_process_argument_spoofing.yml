@@ -1,0 +1,119 @@
+id: T1564.010_process_argument_spoofing
+name: "Hide Artifacts — Process Argument Spoofing"
+mitre_technique: "T1564.010"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries overwrite the command-line arguments stored in a process's PEB
+  (Process Environment Block) after the process starts. Security tools that read
+  command-line from the PEB (via NtQueryInformationProcess or the process list) see
+  the spoofed "benign" arguments, while the process actually executed with the real
+  malicious command line. Detection relies on capturing the command line at process
+  creation time (before the PEB can be overwritten) via ETW/kernel callbacks rather
+  than post-hoc PEB inspection. Requires elevation for cross-process PEB writes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.010 — Process Argument Spoofing simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate PEB CommandLine overwrite — demonstrate the spoofing mechanic"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASArgSpoof {
+          [DllImport("ntdll.dll")] public static extern int NtQueryInformationProcess(
+              IntPtr hProcess, int infoClass, ref PROCESS_BASIC_INFORMATION pbi,
+              uint sz, out uint ret);
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(
+              uint access, bool inherit, int pid);
+          [DllImport("kernel32.dll")] public static extern bool ReadProcessMemory(
+              IntPtr h, IntPtr addr, byte[] buf, uint sz, out int read);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(
+              IntPtr h, IntPtr addr, byte[] buf, uint sz, out int written);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_BASIC_INFORMATION {
+              public IntPtr Reserved1; public IntPtr PebBaseAddress;
+              public IntPtr Reserved2a; public IntPtr Reserved2b;
+              public IntPtr UniqueProcessId; public IntPtr Reserved3;
+          }
+      }
+"@
+      # Launch target process with visible arguments
+      $target = Start-Process powershell.exe `
+          -ArgumentList "-NoProfile -Command `"Start-Sleep 30`"" `
+          -PassThru -WindowStyle Hidden
+      Start-Sleep -Milliseconds 800
+      Write-Host "[PAS] Target process PID: $($target.Id)"
+      Write-Host "[PAS] Real command: powershell.exe -NoProfile -Command Start-Sleep 30"
+
+      $hProc = [PASArgSpoof]::OpenProcess(0x1F0FFF, $false, $target.Id)
+      if ($hProc -ne [IntPtr]::Zero) {
+          # Read PEB
+          $pbi = New-Object PASArgSpoof+PROCESS_BASIC_INFORMATION
+          $ret = 0u
+          [PASArgSpoof]::NtQueryInformationProcess($hProc, 0, [ref]$pbi,
+              [Runtime.InteropServices.Marshal]::SizeOf($pbi), [ref]$ret) | Out-Null
+          Write-Host "[PAS] NtQueryInformationProcess PEB: $($pbi.PebBaseAddress)"
+
+          # Read ProcessParameters pointer from PEB (offset 0x20 on x64)
+          $pebBuf = New-Object byte[] 512
+          $read   = 0
+          [PASArgSpoof]::ReadProcessMemory($hProc, $pbi.PebBaseAddress,
+              $pebBuf, 512, [ref]$read) | Out-Null
+          Write-Host "[PAS] PEB read: $read bytes"
+
+          $paramsPtr = [IntPtr][BitConverter]::ToInt64($pebBuf, 0x20)
+          Write-Host "[PAS] ProcessParameters at: 0x$($paramsPtr.ToString('X16'))"
+
+          # In real attack: read CommandLine UNICODE_STRING from ProcessParameters,
+          # then WriteProcessMemory to overwrite Buffer pointer to spoofed string
+          Write-Host "[PAS] Real attack: WriteProcessMemory → overwrite CommandLine.Buffer"
+          Write-Host "[PAS] After spoof: tools reading PEB see 'notepad.exe' instead of real args"
+          Write-Host "[PAS] MDE captures args at creation time via ETW — spoof happens after"
+
+          [PASArgSpoof]::CloseHandle($hProc) | Out-Null
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — NtQueryInformationProcess + ReadProcessMemory PEB access from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Terminate any lingering target processes"
+    command: |
+      Get-Process powershell -ErrorAction SilentlyContinue |
+          Where-Object { $_.CommandLine -like "*Start-Sleep 30*" } |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Target processes terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.010 cleanup complete"
+
+analyst_checklist:
+  - "API: NtQueryInformationProcess + ReadProcessMemory targeting PEB region from powershell.exe"
+  - "CRITICAL: MDE captures CommandLine at process creation via ETW kernel callback — NOT from PEB post-creation"
+  - "Sentinel: DeviceProcessEvents ProcessCommandLine field is from ETW creation event — spoof-resistant"
+  - "MDE: DeviceEvents | where ActionType == 'ReadProcessMemoryApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Verify your EDR captures command-line at creation time (ETW) not from post-hoc PEB inspection"
+  - "CONTROL CHECK: Process argument spoofing is defeated by kernel-level telemetry — userland tools reading /proc or task manager can be deceived"

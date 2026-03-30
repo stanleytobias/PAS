@@ -1,0 +1,85 @@
+id: T1036.007_double_file_extension
+name: "Masquerading — Double File Extension"
+mitre_technique: "T1036.007"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries give executables a double extension (e.g. invoice.pdf.exe, photo.jpg.exe)
+  so that Windows Explorer — which hides known extensions by default — shows only the
+  first extension, making the file appear to be a PDF or image. Users and analysts
+  performing visual triage are deceived into believing the file is benign.
+  This scenario drops and executes a benign binary with a double extension and
+  validates that detection rules inspect the full filename, not just the display name.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1036.007 — Double File Extension simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create binaries with common double-extension patterns"
+    command: |
+      $variants = @{
+          "invoice_Q4_2024.pdf.exe"  = "$env:SystemRoot\System32\cmd.exe"
+          "photo_holiday.jpg.exe"    = "$env:SystemRoot\System32\cmd.exe"
+          "report_final.docx.exe"    = "$env:SystemRoot\System32\cmd.exe"
+          "update_patch.zip.exe"     = "$env:SystemRoot\System32\cmd.exe"
+      }
+      foreach ($name in $variants.Keys) {
+          $dest = "$env:TEMP\$name"
+          Copy-Item $variants[$name] $dest -Force
+          Write-Host "[PAS] Dropped: $dest"
+          Write-Host "  Explorer display (hide extensions on): $($name -replace '\.exe$', '')"
+          Write-Host "  Actual: $name (.exe)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute a double-extension binary — generates process telemetry with full filename"
+    command: |
+      $target = "$env:TEMP\invoice_Q4_2024.pdf.exe"
+      Write-Host "[PAS] Executing double-extension binary: $target"
+      Start-Process $target -ArgumentList "/c echo PAS-T1036.007-DOUBLEEXT" -Wait -NoNewWindow
+      Write-Host "[PAS] Executed — process event should show full '.pdf.exe' filename"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — process FileName field should show the full '.pdf.exe' double extension"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all double-extension binaries"
+    command: |
+      @("invoice_Q4_2024.pdf.exe","photo_holiday.jpg.exe",
+        "report_final.docx.exe","update_patch.zip.exe") | ForEach-Object {
+          Remove-Item "$env:TEMP\$_" -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed $_"
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1036.007 cleanup complete"
+
+analyst_checklist:
+  - "Process event: FileName ending in '.pdf.exe', '.jpg.exe', '.docx.exe', or similar double extension"
+  - "File event: creation of double-extension executable in user-accessible directory"
+  - "Sentinel: DeviceProcessEvents | where FileName matches regex @'\\.(pdf|docx|jpg|png|zip|txt)\\.exe$'"
+  - "Sentinel: DeviceFileEvents | where FileName matches regex @'\\.(pdf|docx|jpg|png|zip|txt)\\.exe$'"
+  - "MDE alert: 'Double file extension executable' or 'Deceptive filename pattern'"
+  - "CONTROL CHECK: Detection rules must inspect the raw FileName field, not display name — Explorer hides extensions by default but telemetry shows the full name"
+  - "CONTROL CHECK: Email gateway should block .exe attachments regardless of additional extensions"
+  - "CONTROL CHECK: GPO 'Always show file extensions' should be deployed org-wide to defeat visual deception"

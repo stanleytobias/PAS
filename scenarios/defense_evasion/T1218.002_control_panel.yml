@@ -1,0 +1,90 @@
+id: T1218.002_control_panel
+name: "System Binary Proxy Execution — Control Panel"
+mitre_technique: "T1218.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries abuse control.exe to proxy execution of malicious code via .cpl
+  (Control Panel) files. CPL files are DLLs with a specific exported entry point
+  (CPlApplet) that control.exe loads and executes. Since control.exe is a signed
+  Windows binary, the execution of a malicious CPL appears more legitimate.
+  This scenario creates a benign CPL file stub, executes it via control.exe,
+  and validates the process chain telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.002 — control.exe CPL proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate control.exe execution patterns used for proxy execution"
+    command: |
+      Write-Host "[PAS] control.exe CPL execution patterns:"
+
+      # Pattern 1: control.exe executing a system CPL (generates baseline telemetry)
+      Write-Host "[PAS] Pattern 1: control.exe with system CPL:"
+      Start-Process control.exe -ArgumentList "appwiz.cpl" -NoNewWindow
+      Start-Sleep -Seconds 2
+      Stop-Process -Name control -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] control.exe appwiz.cpl executed"
+
+      # Pattern 2: control.exe with full path to arbitrary DLL (adversary pattern)
+      Write-Host "[PAS] Pattern 2: control.exe with arbitrary path — adversary pattern:"
+      $fakeCpl = "$env:TEMP\PAS_T1218_002_payload.cpl"
+      # Copy a benign DLL as .cpl placeholder
+      Copy-Item "$env:SystemRoot\System32\shell32.dll" $fakeCpl -Force
+      Write-Host "[PAS] Benign .cpl placeholder: $fakeCpl"
+      Write-Host "[PAS] Command: control.exe $fakeCpl"
+      Start-Process control.exe -ArgumentList $fakeCpl -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 2
+      Stop-Process -Name control -Force -ErrorAction SilentlyContinue
+
+  - step: 3
+    type: exec_powershell
+    description: "Generate control.exe with shell32.dll,Options_RunDLL — common proxy pattern"
+    command: |
+      Write-Host "[PAS] control.exe shell32.dll,Options_RunDLL — rundll32-style via control:"
+      Start-Process control.exe -ArgumentList "shell32.dll,Options_RunDLL 0" `
+          -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Seconds 2
+      Stop-Process -Name control -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] control.exe shell32 proxy pattern executed"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — control.exe with non-standard CPL path arguments"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove CPL test file"
+    command: |
+      Stop-Process -Name control -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1218_002_payload.cpl" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] CPL test file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.002 cleanup complete"
+
+analyst_checklist:
+  - "Process event: control.exe with a non-system .cpl file path argument"
+  - "Process event: control.exe executing from a non-standard working directory"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'control.exe' and ProcessCommandLine matches regex @'\\.cpl' and ProcessCommandLine !contains 'System32'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'control.exe' and FileName not in ('rundll32.exe')"
+  - "MDE alert: 'Suspicious control panel item execution'"
+  - "CONTROL CHECK: control.exe with a .cpl path outside System32 should always alert"
+  - "CONTROL CHECK: Monitor for .cpl files dropped in TEMP or user directories"

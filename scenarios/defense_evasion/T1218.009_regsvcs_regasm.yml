@@ -1,0 +1,111 @@
+id: T1218.009_regsvcs_regasm
+name: "System Binary Proxy Execution — Regsvcs and Regasm"
+mitre_technique: "T1218.009"
+mitre_tactic: "defense_evasion"
+description: >
+  regsvcs.exe and regasm.exe are .NET COM component registration utilities. Adversaries
+  abuse them to execute arbitrary .NET code by placing malicious logic in
+  [ComRegisterFunction] / [ComUnregisterFunction] decorated methods. When the tool
+  registers or unregisters the assembly, these methods execute — proxied through a
+  trusted, signed .NET utility. regasm.exe /U (unregister) is the most common variant.
+  This scenario compiles a benign regasm-compatible assembly and exercises the proxy.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.009 — regasm/regsvcs proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Compile benign regasm-compatible assembly with ComUnregisterFunction"
+    command: |
+      $srcPath = "$env:TEMP\PAS_T1218_009.cs"
+      $dllPath = "$env:TEMP\PAS_T1218_009.dll"
+      $outFile = "$env:TEMP\PAS_T1218_009_fired.txt"
+
+      Set-Content $srcPath @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+[ComVisible(true)]
+[Guid("12345678-1234-1234-1234-123456789ABC")]
+public class PASComClass {
+    [ComUnregisterFunction]
+    public static void UnregisterMe(Type t) {
+        File.WriteAllText(@"$outFile", "PAS-T1218.009-REGASM-FIRED");
+        Console.WriteLine("PAS-T1218.009-REGASM-COMUN");
+    }
+    [ComRegisterFunction]
+    public static void RegisterMe(Type t) {
+        Console.WriteLine("PAS-T1218.009-REGASM-COMREG");
+    }
+}
+"@
+      $csc = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework64" `
+          -Filter csc.exe -Recurse -ErrorAction SilentlyContinue |
+          Sort-Object FullName -Descending | Select-Object -First 1
+
+      if ($csc) {
+          & $csc.FullName /target:library /out:$dllPath $srcPath 2>&1 | Out-Null
+          if (Test-Path $dllPath) { Write-Host "[PAS] Assembly compiled: $dllPath" }
+      } else {
+          Write-Host "[PAS] csc.exe not found"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute via regasm.exe /U — triggers ComUnregisterFunction"
+    command: |
+      $dllPath = "$env:TEMP\PAS_T1218_009.dll"
+      if (Test-Path $dllPath) {
+          $regasm = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework64" `
+              -Filter regasm.exe -Recurse -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending | Select-Object -First 1
+          if ($regasm) {
+              Write-Host "[PAS] Executing: regasm.exe /U $dllPath"
+              Start-Process $regasm.FullName -ArgumentList "/U $dllPath" -Wait -NoNewWindow
+              if (Test-Path "$env:TEMP\PAS_T1218_009_fired.txt") {
+                  Write-Host "[PAS] regasm ComUnregisterFunction EXECUTED"
+              }
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — regasm.exe with /U flag and .dll path in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove regasm test files"
+    command: |
+      @("$env:TEMP\PAS_T1218_009.cs",
+        "$env:TEMP\PAS_T1218_009.dll",
+        "$env:TEMP\PAS_T1218_009_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] regasm test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.009 cleanup complete"
+
+analyst_checklist:
+  - "Process event: regasm.exe or regsvcs.exe with /U flag and .dll from non-standard path"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('regasm.exe','regsvcs.exe') and ProcessCommandLine contains '/U'"
+  - "MDE alert: 'Regasm/Regsvcs used for proxy execution'"
+  - "CONTROL CHECK: regasm.exe/regsvcs.exe running outside Visual Studio context should alert"
+  - "CONTROL CHECK: /U flag with DLL from TEMP is the definitive bypass invocation"

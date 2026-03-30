@@ -1,0 +1,95 @@
+id: T1574.008_path_interception_search_order
+name: "Hijack Execution Flow — Path Interception by Search Order Hijacking"
+mitre_technique: "T1574.008"
+mitre_tactic: "defense_evasion"
+description: >
+  When a process calls an executable without a full path, Windows searches directories
+  in a defined order — starting with the current working directory. Adversaries place
+  a malicious binary in the same directory as the calling program (or a parent directory
+  it searches). When the legitimate program calls the binary by short name, the
+  adversary's copy is executed instead of the real one.
+  This scenario drops a benign binary named 'net.exe' in the same directory as a
+  calling script, then invokes it without a full path — demonstrating search order
+  hijacking at the application layer.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.008 — Search Order Hijacking simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create an application directory and drop a hijack binary alongside a caller script"
+    command: |
+      $appDir   = "$env:TEMP\PAS_T1574_008_App"
+      $hijackBin = "$appDir\net.exe"
+      $callerScript = "$appDir\PAS_caller.bat"
+
+      New-Item -ItemType Directory $appDir -Force | Out-Null
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $hijackBin -Force
+      Write-Host "[PAS] Fake net.exe dropped in app directory: $hijackBin"
+
+      # Create a batch script that calls 'net' without full path — will find fake first
+      Set-Content $callerScript @"
+@echo off
+echo [PAS] Calling 'net' without full path from app directory...
+net user 2>&1
+echo [PAS] net.exe returned
+"@
+      Write-Host "[PAS] Caller script: $callerScript"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute caller from the hijacked application directory — search order picks fake net.exe"
+    command: |
+      $appDir = "$env:TEMP\PAS_T1574_008_App"
+      Write-Host "[PAS] Executing caller from hijacked directory:"
+      Push-Location $appDir
+      Write-Host "[PAS] CWD: $(Get-Location)"
+
+      # Show what 'net' resolves to from this CWD
+      $resolved = (Get-Command net -ErrorAction SilentlyContinue).Source
+      Write-Host "[PAS] 'net' resolves to: $resolved"
+
+      # Execute the caller batch from the app dir context
+      Start-Process cmd.exe -ArgumentList "/c $appDir\PAS_caller.bat" `
+          -WorkingDirectory $appDir -Wait -NoNewWindow
+      Write-Host "[PAS] Caller executed from hijacked CWD — check process parent and binary path"
+      Pop-Location
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe executing from TEMP\PAS_T1574_008_App instead of System32"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove hijack application directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1574_008_App" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Hijack directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.008 cleanup complete"
+
+analyst_checklist:
+  - "Process event: net.exe or other system binary executing from a non-System32 directory"
+  - "Process event: system-named binary with working directory set to a user-writable path"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and FolderPath !contains 'System32'"
+  - "Sentinel: DeviceProcessEvents | where OriginalFileName in ('net.exe','cmd.exe') and FolderPath contains 'Temp'"
+  - "CONTROL CHECK: Detection rules must validate FolderPath against expected system directories for every system binary"
+  - "CONTROL CHECK: Any system binary running from a user-writable directory (TEMP, AppData, Desktop) should alert immediately"

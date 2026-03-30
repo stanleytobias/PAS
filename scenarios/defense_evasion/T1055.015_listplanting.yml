@@ -1,0 +1,107 @@
+id: T1055.015_listplanting
+name: "Process Injection — ListPlanting"
+mitre_technique: "T1055.015"
+mitre_tactic: "defense_evasion"
+description: >
+  ListPlanting abuses the ListView control (SysListView32) to execute code in a target
+  process. An adversary allocates memory in the target, writes a fake LVITEM structure
+  containing a pointer to shellcode, then sends LVM_SORTITEMS to the ListView — which
+  calls the adversary-supplied comparison function pointer. Execution occurs entirely
+  within the target GUI process via normal Windows message dispatch.
+  This scenario generates the API telemetry without executing a real payload.
+  Requires elevation and a target with a ListView control.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/015/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.015 — ListPlanting simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Identify a target process with a SysListView32 control"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASListPlant {
+          [DllImport("user32.dll")] public static extern IntPtr FindWindow(string cls, string wnd);
+          [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr child, string cls, string wnd);
+          [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int pid);
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool b, int pid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+          [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      # Explorer has a SysListView32 (desktop or folder window)
+      # Find the desktop ListView
+      $progman  = [PASListPlant]::FindWindow("Progman", $null)
+      $defView  = [PASListPlant]::FindWindowEx($progman, [IntPtr]::Zero, "SHELLDLL_DefView", $null)
+      $listView = [PASListPlant]::FindWindowEx($defView, [IntPtr]::Zero, "SysListView32", $null)
+
+      Write-Host "[PAS] Progman: $progman"
+      Write-Host "[PAS] ShellDefView: $defView"
+      Write-Host "[PAS] SysListView32 (desktop): $listView"
+
+      if ($listView -ne [IntPtr]::Zero) {
+          $pid = 0
+          [PASListPlant]::GetWindowThreadProcessId($listView, [ref]$pid) | Out-Null
+          Write-Host "[PAS] ListView owned by PID: $pid (explorer.exe)"
+
+          $hProc = [PASListPlant]::OpenProcess(0x1F0FFF, $false, $pid)
+          Write-Host "[PAS] OpenProcess(explorer.exe): $hProc"
+
+          if ($hProc -ne [IntPtr]::Zero) {
+              # Allocate memory for fake LVITEM + comparison function
+              $addr    = [PASListPlant]::VirtualAllocEx($hProc, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+              $payload = [byte[]](0x90) * 64  # Benign — no real shellcode
+              $written = 0
+              [PASListPlant]::WriteProcessMemory($hProc, $addr, $payload, $payload.Length, [ref]$written) | Out-Null
+              Write-Host "[PAS] VirtualAllocEx(RWX) + WriteProcessMemory in explorer.exe: $written bytes"
+
+              # LVM_SORTITEMS = 0x1030 — sends comparison callback pointer
+              Write-Host "[PAS] LVM_SORTITEMS (0x1030) would call comparison function at injected address"
+              Write-Host "[PAS] Sending benign LVM_GETITEMCOUNT (0x1004) instead to avoid actual execution"
+              $count = [PASListPlant]::SendMessage($listView, 0x1004, [IntPtr]::Zero, [IntPtr]::Zero)
+              Write-Host "[PAS] ListView item count: $count — SendMessage telemetry generated"
+
+              [PASListPlant]::VirtualFreeEx($hProc, $addr, 0, 0x8000) | Out-Null
+              [PASListPlant]::CloseHandle($hProc) | Out-Null
+          }
+      } else {
+          Write-Host "[PAS] SysListView32 not found on desktop — ListView may be in a folder window"
+          Write-Host "[PAS] API chain still generated via OpenProcess + VirtualAllocEx targeting explorer.exe"
+      }
+      Write-Host "[PAS] ListPlanting API chain simulation complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — VirtualAllocEx(RWX) in explorer.exe from powershell.exe and SendMessage to SysListView32"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1055.015 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: OpenProcess(explorer.exe) + VirtualAllocEx(RWX) + WriteProcessMemory from powershell.exe"
+  - "API: SendMessage LVM_SORTITEMS (0x1030) to a SysListView32 window from cross-process context"
+  - "MDE: DeviceEvents | where ActionType == 'VirtualAllocExApiCall' and InitiatingProcessFileName == 'powershell.exe' and TargetProcessFileName == 'explorer.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'SendMessageApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Cross-process VirtualAllocEx(RWX) targeting explorer.exe from any user process is high-priority"
+  - "CONTROL CHECK: LVM_SORTITEMS sent to a ListView in explorer.exe from an external process has essentially no legitimate use"

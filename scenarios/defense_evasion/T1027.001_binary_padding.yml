@@ -1,0 +1,103 @@
+id: T1027.001_binary_padding
+name: "Obfuscated Files or Information — Binary Padding"
+mitre_technique: "T1027.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries append junk data (null bytes, random bytes, or repeated patterns) to
+  a binary to change its hash and file size — defeating signature-based detection
+  that relies on known-bad hashes. The padded binary remains fully functional because
+  Windows PE loaders only read to the end of the legitimate PE headers and sections.
+  Common padding targets 10MB+ to exceed AV file-size scan thresholds.
+  This scenario pads a benign test binary, demonstrates the hash change, and validates
+  that size-anomaly detection can still catch over-sized binaries.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.001 — Binary Padding simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a baseline binary and record its hash and size"
+    command: |
+      $original = "$env:TEMP\PAS_T1027_001_original.exe"
+      $padded   = "$env:TEMP\PAS_T1027_001_padded.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $original -Force
+
+      $origHash = (Get-FileHash $original -Algorithm SHA256).Hash
+      $origSize = (Get-Item $original).Length
+      Write-Host "[PAS] Original binary:"
+      Write-Host "  SHA256: $origHash"
+      Write-Host "  Size:   $origSize bytes ($([Math]::Round($origSize/1KB,1)) KB)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Pad the binary with null bytes — changes hash, binary still executes normally"
+    command: |
+      $original = "$env:TEMP\PAS_T1027_001_original.exe"
+      $padded   = "$env:TEMP\PAS_T1027_001_padded.exe"
+      Copy-Item $original $padded -Force
+
+      # Append 10MB of null bytes — common threshold to defeat AV scanning
+      $paddingSize = 10MB
+      $zeros       = New-Object byte[] $paddingSize
+      $stream      = [IO.File]::Open($padded, [IO.FileMode]::Append)
+      $stream.Write($zeros, 0, $zeros.Length)
+      $stream.Close()
+
+      $newHash = (Get-FileHash $padded -Algorithm SHA256).Hash
+      $newSize = (Get-Item $padded).Length
+      Write-Host "[PAS] Padded binary:"
+      Write-Host "  SHA256: $newHash"
+      Write-Host "  Size:   $newSize bytes ($([Math]::Round($newSize/1MB,1)) MB)"
+      Write-Host "[PAS] Hash changed: $($newHash -ne (Get-FileHash $original -Algorithm SHA256).Hash)"
+      Write-Host "[PAS] Binary still executes normally — padding is ignored by PE loader"
+
+  - step: 4
+    type: exec_powershell
+    description: "Execute the padded binary — generates process event despite changed hash"
+    command: |
+      $padded = "$env:TEMP\PAS_T1027_001_padded.exe"
+      Start-Process $padded -ArgumentList "/c echo PAS-T1027.001-PADDED" -Wait -NoNewWindow
+      Write-Host "[PAS] Padded binary executed — hash-based detection bypassed"
+      Write-Host "[PAS] Size-anomaly detection should flag: $([Math]::Round((Get-Item $padded).Length/1MB,1))MB binary executing from TEMP"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — process event for padded binary; file size anomaly for >10MB executable in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove padded and original test binaries"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_001_original.exe" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1027_001_padded.exe"   -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test binaries removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.001 cleanup complete"
+
+analyst_checklist:
+  - "File event: executable >10MB created in TEMP directory — size anomaly for a staged payload"
+  - "Process event: large executable (>5MB) executing from user-writable directory"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.exe' and FolderPath contains 'Temp' and FileSize > 5000000"
+  - "Sentinel: DeviceProcessEvents | where FolderPath contains 'Temp' — join with file size data"
+  - "MDE alert: 'Large executable in staging directory' — size-based heuristic"
+  - "CONTROL CHECK: Hash-based IOC matching is defeated by padding — rules must use fuzzy hashing (SSDEEP/TLSH) or behavioral detection"
+  - "CONTROL CHECK: Alert on executables >5MB executing from TEMP/AppData — legitimate software rarely stages large binaries there"
+  - "CONTROL CHECK: Imphash or section hash matching (ignoring padding) is more resilient than full-file SHA256"

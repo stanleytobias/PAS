@@ -1,0 +1,103 @@
+id: T1070.003_clear_command_history
+name: "Indicator Removal — Clear Command History"
+mitre_technique: "T1070.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries clear PowerShell and cmd.exe command history to remove evidence of
+  commands run during an intrusion. This overlaps with T1562.003 (which targets
+  logging suppression) but focuses on evidence removal after the fact — deleting
+  existing history files and clearing in-memory buffers. This scenario exercises
+  all major Windows command history removal paths.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.003 — Clear Command History simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate and back up the PSReadLine history file"
+    command: |
+      $histPath = (Get-PSReadLineOption).HistorySavePath
+      Write-Host "[PAS] PSReadLine history file: $histPath"
+      if (Test-Path $histPath) {
+          Copy-Item $histPath "$env:TEMP\PAS_T1070_003_history_backup.txt" -Force
+          Write-Host "[PAS] History backed up"
+      }
+      $histPath | Out-File "$env:TEMP\PAS_T1070_003_histpath.txt"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Clear PSReadLine history file"
+    command: |
+      $histPath = Get-Content "$env:TEMP\PAS_T1070_003_histpath.txt"
+      if (Test-Path $histPath) {
+          Remove-Item $histPath -Force
+          Write-Host "[PAS] PSReadLine history file deleted: $histPath"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Clear in-session PowerShell history"
+    command: |
+      Clear-History
+      Write-Host "[PAS] Clear-History executed — in-memory history buffer cleared"
+      [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory() 2>$null
+      Write-Host "[PAS] PSConsoleReadLine buffer cleared"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: Clear cmd.exe doskey history via registry delete"
+    command: |
+      # cmd.exe history is stored in process memory only — not persisted to disk by default
+      # Adversaries use reg delete to remove any persisted cmd state
+      Write-Host "[PAS] cmd.exe history lives in memory only — cleared on process exit"
+      Write-Host "[PAS] Simulating doskey /reinstall to clear cmd buffer:"
+      Start-Process cmd.exe -ArgumentList "/c doskey /reinstall" -Wait -NoNewWindow
+      Write-Host "[PAS] doskey /reinstall executed"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — history file deletion in DeviceFileEvents; Clear-History and ClearHistory in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore history file"
+    command: |
+      $backup   = "$env:TEMP\PAS_T1070_003_history_backup.txt"
+      $histPath = Get-Content "$env:TEMP\PAS_T1070_003_histpath.txt" -ErrorAction SilentlyContinue
+      if ($backup -and (Test-Path $backup) -and $histPath) {
+          $histDir = Split-Path $histPath
+          if (-not (Test-Path $histDir)) { New-Item -ItemType Directory $histDir -Force | Out-Null }
+          Copy-Item $backup $histPath -Force
+          Write-Host "[PAS][Cleanup] History file restored"
+      }
+      Remove-Item "$env:TEMP\PAS_T1070_003_histpath.txt"        -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1070_003_history_backup.txt"  -Force -ErrorAction SilentlyContinue
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1070.003 cleanup complete — history file restored"
+
+analyst_checklist:
+  - "File event: ConsoleHost_history.txt deleted from %APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\"
+  - "Script block logging (Event ID 4104): Clear-History and ClearHistory() visible"
+  - "Process event: cmd.exe with 'doskey /reinstall' argument"
+  - "Sentinel: DeviceFileEvents | where FileName == 'ConsoleHost_history.txt' and ActionType == 'FileDeleted'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Clear-History'"
+  - "CONTROL CHECK: Script block logging captures Clear-History calls even when history is being erased"
+  - "CONTROL CHECK: Forward all file deletion events for sensitive paths to SIEM — history file deletion at unusual times is a strong indicator"

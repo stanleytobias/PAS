@@ -1,0 +1,141 @@
+id: T1027.004_compile_after_delivery
+name: "Obfuscated Files or Information — Compile After Delivery"
+mitre_technique: "T1027.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries deliver source code or intermediate language files (C#, VBScript, PowerShell
+  Add-Type) rather than compiled binaries, then compile on the victim host using native
+  utilities like csc.exe (C# compiler), vbc.exe (VB compiler), or Add-Type in PowerShell.
+  This evades AV/EDR signature scanning because the payload arrives as plain text with no
+  malicious PE headers — the binary only exists briefly at runtime.
+  This scenario delivers and compiles benign C# source using both csc.exe and Add-Type,
+  generating the compilation telemetry each method produces.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.004 — Compile After Delivery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Deliver and compile C# source via csc.exe"
+    command: |
+      $srcPath = "$env:TEMP\PAS_T1027_004_payload.cs"
+      $binPath = "$env:TEMP\PAS_T1027_004_compiled.exe"
+
+      # Write benign C# source — "delivered" as plaintext
+      Set-Content $srcPath @'
+using System;
+class PASPayload {
+    static void Main() {
+        Console.WriteLine("PAS-T1027.004-COMPILED-CSC");
+    }
+}
+'@
+      Write-Host "[PAS] Source file written: $srcPath"
+
+      # Find csc.exe
+      $csc = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework*" `
+          -Filter csc.exe -Recurse -ErrorAction SilentlyContinue |
+          Sort-Object FullName -Descending | Select-Object -First 1
+
+      if ($csc) {
+          Write-Host "[PAS] Compiling with: $($csc.FullName)"
+          & $csc.FullName /out:$binPath $srcPath 2>&1 | Out-Null
+          if (Test-Path $binPath) {
+              Write-Host "[PAS] Binary compiled: $binPath"
+              Write-Host "[PAS] Hash: $((Get-FileHash $binPath).Hash)"
+              & $binPath
+          }
+      } else {
+          Write-Host "[PAS] csc.exe not found — .NET Framework may not be installed"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Compile inline via PowerShell Add-Type — no disk binary produced"
+    command: |
+      Write-Host "[PAS] Method 2: Add-Type inline compilation (fileless):"
+      Add-Type @"
+      using System;
+      public class PASAddType {
+          public static string Run() {
+              return "PAS-T1027.004-ADDTYPE-COMPILED";
+          }
+      }
+"@
+      $result = [PASAddType]::Run()
+      Write-Host "[PAS] Add-Type compiled and executed: $result"
+      Write-Host "[PAS] No binary on disk — compilation occurs entirely in memory"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Compile VBScript source via vbc.exe — alternate compiler LOLBin"
+    command: |
+      $vbcSrc = "$env:TEMP\PAS_T1027_004_payload.vb"
+      $vbcBin = "$env:TEMP\PAS_T1027_004_vbc.exe"
+
+      Set-Content $vbcSrc @'
+Module PASModule
+    Sub Main()
+        Console.WriteLine("PAS-T1027.004-COMPILED-VBC")
+    End Sub
+End Module
+'@
+      $vbc = Get-ChildItem "$env:SystemRoot\Microsoft.NET\Framework*" `
+          -Filter vbc.exe -Recurse -ErrorAction SilentlyContinue |
+          Sort-Object FullName -Descending | Select-Object -First 1
+
+      if ($vbc) {
+          Write-Host "[PAS] Compiling with vbc.exe: $($vbc.FullName)"
+          & $vbc.FullName /out:$vbcBin $vbcSrc 2>&1 | Out-Null
+          if (Test-Path $vbcBin) {
+              Write-Host "[PAS] VB binary compiled: $vbcBin"
+              & $vbcBin
+          }
+      } else {
+          Write-Host "[PAS] vbc.exe not found"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — csc.exe/vbc.exe spawned from powershell.exe; Add-Type in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove source and compiled binaries"
+    command: |
+      @("$env:TEMP\PAS_T1027_004_payload.cs",
+        "$env:TEMP\PAS_T1027_004_compiled.exe",
+        "$env:TEMP\PAS_T1027_004_payload.vb",
+        "$env:TEMP\PAS_T1027_004_vbc.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Source and compiled files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.004 cleanup complete"
+
+analyst_checklist:
+  - "Process event: csc.exe or vbc.exe spawned from powershell.exe — compilation from script"
+  - "File event: .exe created in TEMP as output of csc.exe or vbc.exe compilation"
+  - "Script block logging (Event ID 4104): Add-Type with inline C# source code visible"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('csc.exe','vbc.exe') and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceFileEvents | where InitiatingProcessFileName == 'csc.exe' and FileName endswith '.exe'"
+  - "MDE alert: 'C# compiler used to compile payload' or 'Suspicious in-memory compilation'"
+  - "CONTROL CHECK: csc.exe and vbc.exe spawned interactively (not by Visual Studio/MSBuild) should always alert"
+  - "CONTROL CHECK: Add-Type with multi-line DllImport or P/Invoke declarations is a strong in-memory injection precursor"

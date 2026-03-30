@@ -1,0 +1,143 @@
+id: T1562.001_disable_or_modify_security_tools
+name: "Impair Defenses — Disable or Modify Security Tools"
+mitre_technique: "T1562.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries disable or modify security tools to reduce detection risk — including
+  stopping AV services, disabling Windows Defender via registry or PowerShell,
+  adding exclusions, or stopping EDR agent services. This scenario simulates the
+  most common defense impairment patterns using commands that generate telemetry
+  without actually disabling security controls in the lab environment.
+  Note: Some steps require elevation. Run as Administrator.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.001 — Disable/Modify Security Tools simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Query Defender status and simulate tamper attempt via Set-MpPreference — generates telemetry even if blocked by tamper protection"
+    command: |
+      Write-Host "[PAS] Current Defender status:"
+      try {
+          $status = Get-MpComputerStatus
+          Write-Host "  RealTimeProtectionEnabled: $($status.RealTimeProtectionEnabled)"
+          Write-Host "  TamperProtectionEnabled:   $($status.IsTamperProtected)"
+          Write-Host "  AMServiceEnabled:          $($status.AMServiceEnabled)"
+      } catch {
+          Write-Host "  Unable to query MpComputerStatus: $_"
+      }
+
+      Write-Host "[PAS] Attempting Set-MpPreference DisableRealtimeMonitoring (tamper protection should block):"
+      try {
+          Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+          Write-Host "  WARNING: Command succeeded — verify tamper protection is enabled"
+          # Immediately re-enable to restore state
+          Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue
+          Write-Host "  Restored: DisableRealtimeMonitoring = false"
+      } catch {
+          Write-Host "  BLOCKED by tamper protection (expected): $_"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Add a Defender exclusion path — common adversary technique to create an unmonitored staging directory"
+    command: |
+      $exclusionPath = "$env:TEMP\PAS_T1562_exclusion_test"
+      New-Item -ItemType Directory -Path $exclusionPath -Force | Out-Null
+
+      try {
+          Add-MpPreference -ExclusionPath $exclusionPath -ErrorAction Stop
+          Write-Host "[PAS] Exclusion added: $exclusionPath"
+          Write-Host "[PAS] ALERT: Exclusion addition should trigger SIEM alert"
+          # Clean up exclusion immediately
+          Remove-MpPreference -ExclusionPath $exclusionPath -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Exclusion removed"
+      } catch {
+          Write-Host "[PAS] Exclusion blocked by tamper protection (expected): $_"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Attempt to stop Windows Defender service via sc.exe — generates high-signal telemetry"
+    command: |
+      Write-Host "[PAS] Attempting to stop WinDefend service via sc.exe (should be blocked):"
+      $result = sc.exe stop WinDefend 2>&1
+      Write-Host "  sc.exe result: $result"
+      Write-Host "[PAS] Note: Access Denied is the expected result with tamper protection active"
+
+  - step: 5
+    type: exec_powershell
+    description: "Simulate disabling Defender via registry — common adversary pattern (write blocked by tamper protection)"
+    command: |
+      Write-Host "[PAS] Attempting registry write to disable Defender real-time monitoring:"
+      $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection"
+      try {
+          if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+          Set-ItemProperty -Path $path -Name "DisableRealtimeMonitoring" -Value 1 -Type DWord -Force
+          Write-Host "  WARNING: Registry write succeeded — tamper protection may not cover policy path"
+          # Immediately reverse
+          Remove-ItemProperty -Path $path -Name "DisableRealtimeMonitoring" -ErrorAction SilentlyContinue
+          Write-Host "  Reversed: DisableRealtimeMonitoring removed"
+      } catch {
+          Write-Host "  BLOCKED (expected): $_"
+      }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Defender tamper attempts, exclusion additions, and service stop attempts should all be alerted"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test exclusion directory"
+    command: |
+      $exclusionPath = "$env:TEMP\PAS_T1562_exclusion_test"
+      Remove-Item $exclusionPath -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed exclusion test directory"
+
+  - step: 2
+    type: exec_powershell
+    description: "Verify Defender real-time protection is active"
+    command: |
+      try {
+          $status = Get-MpComputerStatus
+          if (-not $status.RealTimeProtectionEnabled) {
+              Write-Host "[PAS][Cleanup] WARNING: Real-time protection is OFF — re-enabling"
+              Set-MpPreference -DisableRealtimeMonitoring $false
+          } else {
+              Write-Host "[PAS][Cleanup] Defender real-time protection confirmed ACTIVE"
+          }
+      } catch {
+          Write-Host "[PAS][Cleanup] Unable to verify Defender status: $_"
+      }
+
+  - step: 3
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.001 cleanup complete — verify Defender is fully operational before continuing"
+
+analyst_checklist:
+  - "MDE alert: 'Tampering with Windows Defender antivirus settings' — highest priority alert"
+  - "Event ID 5001: Windows Defender Real-time Protection disabled"
+  - "Event ID 5007: Windows Defender configuration changed — exclusion added"
+  - "Sentinel: DeviceEvents | where ActionType == 'AntivirusExclusionAdded'"
+  - "Sentinel: DeviceEvents | where ActionType == 'TamperingAttempt'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'sc.exe' and ProcessCommandLine contains 'stop' and ProcessCommandLine contains 'WinDefend'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Windows Defender' and RegistryValueName == 'DisableRealtimeMonitoring'"
+  - "CONTROL CHECK: Tamper protection MUST be enabled — if Set-MpPreference succeeded in step 2, tamper protection is off"
+  - "CONTROL CHECK: Verify Defender for Endpoint onboarding is active — MDE provides tamper protection, not standalone Defender alone"
+  - "CONTROL CHECK: Alert on ANY exclusion path addition that points to TEMP, AppData, or user-writable directories"

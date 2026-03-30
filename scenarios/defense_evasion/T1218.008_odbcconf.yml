@@ -1,0 +1,76 @@
+id: T1218.008_odbcconf
+name: "System Binary Proxy Execution — Odbcconf"
+mitre_technique: "T1218.008"
+mitre_tactic: "defense_evasion"
+description: >
+  odbcconf.exe is a Windows utility for configuring ODBC drivers. Its /a {REGSVR <dll>}
+  flag calls DllRegisterServer on the specified DLL — identical in effect to regsvr32.exe
+  but using a less-monitored signed binary. Adversaries use this to register and execute
+  malicious DLLs while evading rules that specifically block regsvr32.exe.
+  This scenario exercises the odbcconf REGSVR proxy pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.008 — odbcconf proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Execute odbcconf /a {REGSVR dll} — DllRegisterServer via ODBC utility"
+    command: |
+      Write-Host "[PAS] odbcconf.exe /a {REGSVR <dll>} proxy pattern:"
+      # Use a benign system DLL for telemetry generation
+      $dll = "$env:SystemRoot\System32\mshtml.dll"
+      Write-Host "[PAS] Command: odbcconf.exe /a {REGSVR $dll}"
+      Start-Process odbcconf.exe -ArgumentList "/a {REGSVR $dll}" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] odbcconf /a {REGSVR} executed"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute odbcconf with response file — alternate execution path"
+    command: |
+      $rspFile = "$env:TEMP\PAS_T1218_008.rsp"
+      Set-Content $rspFile "REGSVR $env:SystemRoot\System32\mshtml.dll"
+      Write-Host "[PAS] Response file pattern: odbcconf.exe /f $rspFile"
+      Start-Process odbcconf.exe -ArgumentList "/f $rspFile" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] odbcconf /f response file executed"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — odbcconf.exe with /a {REGSVR} or /f arguments"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove response file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1218_008.rsp" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Response file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1218.008 cleanup complete"
+
+analyst_checklist:
+  - "Process event: odbcconf.exe with /a {REGSVR <path>} argument"
+  - "Process event: odbcconf.exe with /f <response_file> argument"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'odbcconf.exe' and ProcessCommandLine contains 'REGSVR'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'odbcconf.exe' and ProcessCommandLine contains '/a'"
+  - "MDE alert: 'Odbcconf used for DLL proxy execution'"
+  - "CONTROL CHECK: odbcconf.exe is rarely run outside of DB driver installation — any interactive execution should alert"
+  - "CONTROL CHECK: Detections targeting regsvr32 must also cover odbcconf — functionally identical for DLL registration"

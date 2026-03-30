@@ -1,0 +1,98 @@
+id: T1055.002_portable_executable_injection
+name: "Process Injection — Portable Executable Injection"
+mitre_technique: "T1055.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries manually map a Portable Executable (PE) into a target process's memory
+  using VirtualAllocEx + WriteProcessMemory, then redirect execution via CreateRemoteThread
+  or SetThreadContext. Unlike DLL injection, no LoadLibrary call is needed — the full
+  PE is written directly and executed from the injected memory region.
+  This scenario generates the full API telemetry chain without writing actual shellcode.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.002 — PE Injection API telemetry simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate PE injection API chain: VirtualAllocEx + WriteProcessMemory + CreateRemoteThread"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASPEInject {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool b, int pid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+          [DllImport("kernel32.dll")] public static extern IntPtr CreateRemoteThread(IntPtr h, IntPtr a, uint s, IntPtr f, IntPtr p, uint c, IntPtr id);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      $target = Start-Process notepad.exe -PassThru
+      Start-Sleep -Milliseconds 500
+      Write-Host "[PAS] Target: notepad.exe PID $($target.Id)"
+
+      $hProc = [PASPEInject]::OpenProcess(0x1F0FFF, $false, $target.Id)
+      Write-Host "[PAS] OpenProcess: $hProc"
+
+      if ($hProc -ne [IntPtr]::Zero) {
+          # Allocate RWX region — hallmark of PE injection
+          $addr = [PASPEInject]::VirtualAllocEx($hProc, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+          Write-Host "[PAS] VirtualAllocEx (RWX): $addr"
+
+          # Write benign bytes — simulates PE header write
+          $payload = [byte[]](0x4D,0x5A,0x90,0x00) + ([byte[]](0x00) * 60)
+          $written = 0
+          [PASPEInject]::WriteProcessMemory($hProc, $addr, $payload, $payload.Length, [ref]$written) | Out-Null
+          Write-Host "[PAS] WriteProcessMemory: $written bytes written (benign MZ header pattern)"
+
+          # CreateRemoteThread — completes the injection API signature
+          $hThread = [PASPEInject]::CreateRemoteThread($hProc, [IntPtr]::Zero, 0, $addr, [IntPtr]::Zero, 4, [IntPtr]::Zero)
+          Write-Host "[PAS] CreateRemoteThread handle: $hThread (CREATE_SUSPENDED=4)"
+          if ($hThread -ne [IntPtr]::Zero) { [PASPEInject]::CloseHandle($hThread) | Out-Null }
+
+          [PASPEInject]::VirtualFreeEx($hProc, $addr, 0, 0x8000) | Out-Null
+          [PASPEInject]::CloseHandle($hProc) | Out-Null
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] PE injection API chain complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — VirtualAllocEx(RWX) + WriteProcessMemory + CreateRemoteThread into notepad.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure notepad is terminated"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] notepad.exe terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.002 cleanup complete"
+
+analyst_checklist:
+  - "API: OpenProcess + VirtualAllocEx(PAGE_EXECUTE_READWRITE) + WriteProcessMemory + CreateRemoteThread — classic PE injection chain"
+  - "MDE: DeviceEvents | where ActionType == 'CreateRemoteThreadApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'VirtualAllocExApiCall' and AdditionalFields contains 'PAGE_EXECUTE_READWRITE'"
+  - "Script block logging (4104): P/Invoke for kernel32 injection APIs"
+  - "CONTROL CHECK: RWX memory allocation in a remote process is the highest-signal PE injection indicator"
+  - "CONTROL CHECK: CreateRemoteThread pointing into newly-allocated RWX memory should always alert"

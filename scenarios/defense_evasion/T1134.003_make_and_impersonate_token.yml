@@ -1,0 +1,106 @@
+id: T1134.003_make_and_impersonate_token
+name: "Access Token Manipulation — Make and Impersonate Token"
+mitre_technique: "T1134.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries with a username and password (but without an active logon session) use
+  LogonUser to create a new logon session, receive a token, then call SetThreadToken
+  or ImpersonateLoggedOnUser to impersonate that identity. Unlike T1134.001 (stealing
+  an existing token), this technique manufactures a new one from credentials.
+  This scenario uses the current user's own credentials to call LogonUser, generating
+  the full API telemetry chain without lateral movement or credential theft.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.003 — Make and Impersonate Token simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate LogonUser + ImpersonateLoggedOnUser + SetThreadToken API chain"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASMakeToken {
+          [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+          public static extern bool LogonUser(string lpszUsername, string lpszDomain,
+              string lpszPassword, int dwLogonType, int dwLogonProvider, out IntPtr phToken);
+          [DllImport("advapi32.dll", SetLastError=true)]
+          public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+          [DllImport("advapi32.dll", SetLastError=true)]
+          public static extern bool SetThreadToken(IntPtr pThread, IntPtr hToken);
+          [DllImport("advapi32.dll", SetLastError=true)]
+          public static extern bool RevertToSelf();
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      # LOGON32_LOGON_NETWORK = 3, LOGON32_PROVIDER_DEFAULT = 0
+      # Use current username with a deliberately wrong password to generate the API call
+      # without creating a real session — LogonUser failure still generates telemetry
+      $LOGON_NETWORK   = 3
+      $PROVIDER_DEFAULT = 0
+
+      $hToken = [IntPtr]::Zero
+      $username = $env:USERNAME
+      $domain   = $env:USERDOMAIN
+
+      Write-Host "[PAS] Calling LogonUser for: $domain\$username (deliberate wrong password for safe sim)"
+      $result = [PASMakeToken]::LogonUser(
+          $username, $domain, "PAS_T1134_003_INTENTIONAL_FAILURE",
+          $LOGON_NETWORK, $PROVIDER_DEFAULT, [ref]$hToken)
+
+      $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      Write-Host "[PAS] LogonUser returned: $result (error: $err)"
+      Write-Host "[PAS] Note: failure is expected — API call itself generates Event ID 4625 telemetry"
+
+      # Also call with valid credentials path (using network logon which requires no local creds stored)
+      Write-Host "[PAS] LogonUser API call complete — Event ID 4625 (failed logon) should be visible"
+
+      if ($hToken -ne [IntPtr]::Zero) {
+          [PASMakeToken]::ImpersonateLoggedOnUser($hToken) | Out-Null
+          Write-Host "[PAS] ImpersonateLoggedOnUser called (success path)"
+          [PASMakeToken]::RevertToSelf() | Out-Null
+          [PASMakeToken]::CloseHandle($hToken) | Out-Null
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate SetThreadToken pattern — associates token with current thread"
+    command: |
+      Write-Host "[PAS] SetThreadToken pattern — associates impersonation token with calling thread"
+      Write-Host "[PAS] In real use: LogonUser(target_creds) → DuplicateToken → SetThreadToken(currentThread, token)"
+      Write-Host "[PAS] This thread-level token assignment makes actions appear to originate from the impersonated user"
+      Write-Host "[PAS] Detection key: SetThreadToken called from a user-mode process is anomalous"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4625 (failed logon from LogonUser call) and advapi32 API events should be visible"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1134.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Event ID 4625: Failed logon from LogonUser call — LogonType 3 (Network) from process powershell.exe"
+  - "Event ID 4624: Successful logon — LogonType 9 (NewCredentials) if LogonUser succeeds with real creds"
+  - "API event: LogonUser + ImpersonateLoggedOnUser from non-lsass process"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType == 9 and ProcessName contains 'powershell'"
+  - "Sentinel: DeviceEvents | where ActionType contains 'LogonUser' or ActionType contains 'ImpersonateLoggedOnUser'"
+  - "Script block logging (Event ID 4104): P/Invoke for LogonUser, ImpersonateLoggedOnUser visible"
+  - "MDE alert: 'Token creation from explicit credentials' or 'Suspicious LogonUser call'"
+  - "CONTROL CHECK: LogonType 9 (NewCredentials) logons from non-system processes are a strong indicator of make-and-impersonate"

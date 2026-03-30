@@ -1,0 +1,109 @@
+id: T1564.001_hidden_files_and_directories
+name: "Hide Artifacts — Hidden Files and Directories"
+mitre_technique: "T1564.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries set the hidden and/or system attribute on files and directories using
+  attrib.exe or [IO.File]::SetAttributes to prevent them from appearing in normal
+  directory listings. Combined with a name beginning with a dot (convention from Linux)
+  or a system attribute, these files are invisible in Explorer and default dir/ls output.
+  Detection relies on file system monitoring that captures attribute changes, not
+  just visible directory listings.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.001 — Hidden Files and Directories simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create files and set hidden/system attributes via attrib.exe"
+    command: |
+      $hiddenFile = "$env:TEMP\PAS_T1564_001_payload.exe"
+      $hiddenDir  = "$env:TEMP\PAS_T1564_001_hidden_dir"
+
+      # Create test artifacts
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $hiddenFile -Force
+      New-Item -ItemType Directory $hiddenDir -Force | Out-Null
+      Set-Content "$hiddenDir\config.dat" "PAS-T1564.001-HIDDEN-CONFIG"
+
+      # Set hidden attribute via attrib.exe
+      attrib +h +s $hiddenFile
+      attrib +h +s $hiddenDir
+      Write-Host "[PAS] attrib +h +s applied:"
+      Write-Host "  File: $hiddenFile"
+      Write-Host "  Dir:  $hiddenDir"
+
+      # Verify hidden
+      $fi = Get-Item $hiddenFile -Force
+      Write-Host "[PAS] File attributes: $($fi.Attributes)"
+      Write-Host "[PAS] Visible in 'dir' output: $(Test-Path $hiddenFile)"
+      Write-Host "[PAS] Hidden from standard listing: $($fi.Attributes -band [IO.FileAttributes]::Hidden)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Set hidden attribute via .NET — no attrib.exe process event"
+    command: |
+      $hiddenFile2 = "$env:TEMP\PAS_T1564_001_dotfile.dll"
+      Set-Content $hiddenFile2 "PAS-T1564.001-HIDDEN-DLL"
+      [IO.File]::SetAttributes($hiddenFile2,
+          [IO.FileAttributes]::Hidden -bor [IO.FileAttributes]::System)
+      Write-Host "[PAS] .NET SetAttributes hidden+system: $hiddenFile2"
+      Write-Host "[PAS] No attrib.exe process event — stealthier method"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Dot-prefix directory (Linux convention, works on Windows too)"
+    command: |
+      $dotDir = "$env:TEMP\.PAS_T1564_001_dotdir"
+      New-Item -ItemType Directory $dotDir -Force | Out-Null
+      Set-Content "$dotDir\implant.ps1" "Write-Host 'PAS-IMPLANT'"
+      Write-Host "[PAS] Dot-prefix directory: $dotDir"
+      Write-Host "[PAS] Hidden from standard Explorer view; visible with 'dir /a'"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — attrib.exe with +h +s arguments; file attribute change events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove hidden test artifacts"
+    command: |
+      attrib -h -s "$env:TEMP\PAS_T1564_001_payload.exe" 2>$null
+      attrib -h -s "$env:TEMP\PAS_T1564_001_hidden_dir"  2>$null
+      @("$env:TEMP\PAS_T1564_001_payload.exe",
+        "$env:TEMP\PAS_T1564_001_hidden_dir",
+        "$env:TEMP\PAS_T1564_001_dotfile.dll",
+        "$env:TEMP\.PAS_T1564_001_dotdir") |
+          ForEach-Object {
+              Remove-Item $_ -Recurse -Force -ErrorAction SilentlyContinue
+          }
+      Write-Host "[PAS][Cleanup] Hidden artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: attrib.exe with '+h' or '+s' arguments on executable files"
+  - "File event: file attribute change — Hidden or System flag set on .exe or .dll"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'attrib.exe' and ProcessCommandLine contains '+h'"
+  - "Sentinel: DeviceFileEvents | where ActionType == 'FileAttributesModified' and AdditionalFields contains 'Hidden'"
+  - "MDE alert: 'Hidden file attribute set on executable'"
+  - "CONTROL CHECK: attrib +h +s on .exe or .dll files in user-writable directories should alert"
+  - "CONTROL CHECK: .NET SetAttributes does not generate an attrib.exe process event — require file-level attribute monitoring"
+  - "CONTROL CHECK: Use 'dir /a /s C:\Users\' in threat hunting to surface hidden files in user profiles"

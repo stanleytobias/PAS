@@ -1,0 +1,82 @@
+id: T1564.007_vba_stomping
+name: "Hide Artifacts — VBA Stomping"
+mitre_technique: "T1564.007"
+mitre_tactic: "defense_evasion"
+description: >
+  VBA Stomping removes or replaces the VBA source code (p-code) in Office documents
+  while leaving the compiled p-code intact. Analysis tools like olevba that inspect
+  source code see only benign or empty code; the document still executes its malicious
+  payload via the compiled p-code when opened in the matching Office version.
+  This scenario creates an Office document demonstrating the stomping concept and
+  validates that sandboxing/detonation (not static source inspection) is required
+  for reliable detection. This is a marker-heavy scenario as actual stomping requires
+  binary patching of CFBF Office formats.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1564.007 — VBA Stomping: removes source code from Office VBA to defeat static analysis"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate VBA document creation with benign macro as baseline"
+    command: |
+      Write-Host "[PAS] VBA Stomping concept demonstration:"
+      Write-Host "  1. Attacker creates .doc with malicious VBA macro"
+      Write-Host "  2. Office compiles to p-code (binary bytecode)"
+      Write-Host "  3. Attacker stomps (overwrites) the source code with benign/empty code"
+      Write-Host "  4. olevba, VirusTotal macro scanners see: benign/no code"
+      Write-Host "  5. When victim opens in matching Office version: p-code executes malicious payload"
+      Write-Host "[PAS] Key: static source inspection != runtime behavior"
+
+      # Create a PS1 that simulates what the macro would do — for SIEM telemetry
+      $simulatedMacroOutput = "$env:TEMP\PAS_T1564_007_macro_sim.ps1"
+      Set-Content $simulatedMacroOutput @"
+# Simulates what a stomped VBA macro would execute at runtime
+Write-Host 'PAS-T1564.007-VBA-STOMP-SIMULATED'
+# Real stomped macro: Shell("cmd /c certutil -decode encoded.txt payload.exe")
+"@
+      Write-Host "[PAS] Simulated macro payload written: $simulatedMacroOutput"
+
+  - step: 3
+    type: marker
+    description: "Static analysis gap"
+    message: "CONTROL CHECK: Static olevba/VirusTotal scanning will MISS stomped macros — detonation required"
+
+  - step: 4
+    type: marker
+    description: "Detection approach"
+    message: "DETECTION: Defender for Office 365 Safe Attachments detonates documents — validates runtime behavior not just source"
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: verify Defender for Office 365 Safe Attachments policy covers .doc/.docm/.xlsm files"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove simulated macro file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1564_007_macro_sim.ps1" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Simulation file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.007 cleanup complete"
+
+analyst_checklist:
+  - "CONTROL CHECK: Defender for Office 365 Safe Attachments must be enabled — static scanning misses stomped VBA"
+  - "CONTROL CHECK: olevba and zipdump cannot detect stomped VBA — their 'clean' verdict is unreliable for detection"
+  - "Process event (detonation): Office spawning cmd.exe, powershell.exe, wscript.exe as child process"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName in ('winword.exe','excel.exe') and FileName in ('cmd.exe','powershell.exe','wscript.exe')"
+  - "MDE alert: 'Office application spawning suspicious process' — behavioral detection catches stomped execution"
+  - "CONTROL CHECK: ASR rule 'Block all Office applications from creating child processes' is the strongest mitigation"
+  - "CONTROL CHECK: For stomped VBA research/validation, use pcodedmp or EvilClippy tooling in isolated lab"

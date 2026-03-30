@@ -1,0 +1,107 @@
+id: T1055.013_process_doppelganging
+name: "Process Injection — Process Doppelgänging"
+mitre_technique: "T1055.013"
+mitre_tactic: "defense_evasion"
+description: >
+  Process Doppelgänging abuses NTFS Transactional File System (TxF) to create a
+  transacted file write of a malicious PE, then create a process from that transaction
+  before it is committed — so the process image never touches disk in its malicious form.
+  The process appears to load a legitimate file but executes the transacted (unwritten)
+  payload. This is one of the most evasive injection techniques as the malicious binary
+  never exists on disk in readable form.
+  This scenario generates the TxF API telemetry (CreateTransaction, CreateFileTransacted,
+  WriteFile, RtlCreateProcessParametersEx pattern) without writing a real payload.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/013/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.013 — Process Doppelgänging simulation (TxF API telemetry)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate TxF transaction creation — core Doppelgänging precursor"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASDoppel {
+          [DllImport("ktmw32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+          public static extern IntPtr CreateTransaction(IntPtr attr, IntPtr uow, uint createOpts,
+              uint isoLevel, uint isoFlags, uint timeout, System.Text.StringBuilder desc);
+          [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+          public static extern IntPtr CreateFileTransacted(string path, uint access, uint share,
+              IntPtr secAttr, uint disposition, uint flags, IntPtr templ, IntPtr transaction,
+              ref ushort miniVersion, IntPtr extendedParam);
+          [DllImport("kernel32.dll")] public static extern bool RollbackTransaction(IntPtr hTrans);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      Write-Host "[PAS] Creating NTFS transaction (TxF) — core Doppelgänging primitive"
+      $hTrans = [PASDoppel]::CreateTransaction([IntPtr]::Zero, [IntPtr]::Zero, 0, 0, 0, 0, $null)
+      Write-Host "[PAS] CreateTransaction: handle=$hTrans"
+
+      if ($hTrans -ne [IntPtr]::Zero -and $hTrans -ne [IntPtr]-1) {
+          # Open a file under the transaction
+          $txPath     = "$env:TEMP\PAS_T1055_013_txfile.exe"
+          $GENERIC_WRITE = 0x40000000
+          $CREATE_ALWAYS = 2
+          $miniVer       = [uint16]0
+          $hFile = [PASDoppel]::CreateFileTransacted(
+              $txPath, $GENERIC_WRITE, 0, [IntPtr]::Zero,
+              $CREATE_ALWAYS, 0, [IntPtr]::Zero, $hTrans, [ref]$miniVer, [IntPtr]::Zero)
+          Write-Host "[PAS] CreateFileTransacted: handle=$hFile"
+          Write-Host "[PAS] In real Doppelgänging: malicious PE would be written into this transacted handle"
+          Write-Host "[PAS] Then NtCreateSection + NtCreateProcessEx creates process from transacted image"
+          Write-Host "[PAS] Then RollbackTransaction — file never committed, no on-disk malicious PE"
+
+          # Rollback — no data committed
+          if ($hFile -ne [IntPtr]::Zero -and $hFile -ne [IntPtr]-1) {
+              [PASDoppel]::CloseHandle($hFile) | Out-Null
+          }
+          [PASDoppel]::RollbackTransaction($hTrans) | Out-Null
+          Write-Host "[PAS] RollbackTransaction — transaction rolled back, telemetry generated"
+          [PASDoppel]::CloseHandle($hTrans) | Out-Null
+      } else {
+          Write-Host "[PAS] CreateTransaction failed — TxF may not be available on this system"
+          Write-Host "[PAS] TxF is deprecated in Windows 10+ but API calls still generate telemetry"
+      }
+      Write-Host "[PAS] Process Doppelgänging TxF API chain complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CreateTransaction + CreateFileTransacted API calls from powershell.exe should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove transacted file if it exists"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1055_013_txfile.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Transacted file removed (if it persisted)"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.013 cleanup complete"
+
+analyst_checklist:
+  - "API: CreateTransaction + CreateFileTransacted from a non-system process — extremely rare in legitimate software"
+  - "API: CreateTransaction followed by RollbackTransaction with a file handle in between — Doppelgänging signature"
+  - "MDE: DeviceEvents | where ActionType == 'CreateTransactionApiCall' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType in ('CreateTransactionApiCall','CreateFileTransactedApiCall')"
+  - "MDE alert: 'Suspicious use of NTFS transaction API' or 'Process Doppelgänging attempt'"
+  - "CONTROL CHECK: TxF API usage (ktmw32.dll imports) from non-backup/non-installer processes should always alert"
+  - "CONTROL CHECK: NtCreateProcessEx called with a section object backed by a transacted file is the definitive Doppelgänging indicator — requires kernel-level EDR telemetry"

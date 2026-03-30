@@ -1,0 +1,128 @@
+id: T1112_modify_registry
+name: "Modify Registry"
+mitre_technique: "T1112"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries modify the Windows Registry to hide configuration data, store payloads,
+  establish persistence, disable security features, or blend into normal registry activity.
+  Common locations include Run keys, security policy keys, and obscure paths used to
+  store encoded payloads. This scenario exercises registry writes across multiple
+  adversary-favored locations and validates that registry modification events are
+  captured and alerted on by SIEM and EDR.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1112/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1112 — Modify Registry simulation across adversary-favored key paths"
+
+  - step: 2
+    type: exec_powershell
+    description: "Write a benign marker value to HKCU Run key — simulates persistence-adjacent registry write"
+    command: |
+      $path  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+      $name  = "PAS_T1112_RunKey"
+      $value = "C:\Windows\System32\cmd.exe /c echo PAS"
+      Set-ItemProperty -Path $path -Name $name -Value $value -Force
+      Write-Host "[PAS] Written to Run key: $path\$name = $value"
+
+  - step: 3
+    type: exec_powershell
+    description: "Write a benign marker to a common adversary data-stash path under HKCU"
+    command: |
+      $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+      $name = "PAS_T1112_DataStash"
+      $value = "dGVzdA==" # base64 'test' — simulates encoded payload storage
+      Set-ItemProperty -Path $path -Name $name -Value $value -Force
+      Write-Host "[PAS] Written encoded marker value to: $path\$name"
+
+  - step: 4
+    type: exec_powershell
+    description: "Write to HKLM security policy path — simulates defense impairment registry write"
+    command: |
+      # Writes a benign marker only — does NOT actually change policy
+      $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
+      if (-not (Test-Path $path)) {
+          New-Item -Path $path -Force | Out-Null
+      }
+      $name  = "PAS_T1112_PolicyMarker"
+      $value = 0
+      Set-ItemProperty -Path $path -Name $name -Value $value -Type DWord -Force
+      Write-Host "[PAS] Written benign marker to policy path: $path\$name"
+
+  - step: 5
+    type: exec_powershell
+    description: "Write to HKCU Classes shell key — simulates COM hijacking registry write"
+    command: |
+      $path = "HKCU:\Software\Classes\CLSID\{PAS-T1112-TEST}"
+      New-Item -Path $path -Force | Out-Null
+      New-Item -Path "$path\InprocServer32" -Force | Out-Null
+      Set-ItemProperty -Path "$path\InprocServer32" -Name "(Default)" `
+          -Value "C:\Windows\System32\cmd.exe" -Force
+      Write-Host "[PAS] Written benign CLSID entry: $path"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry write events to Run key, policy paths, and CLSID paths should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove Run key marker"
+    command: |
+      $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+      Remove-ItemProperty -Path $path -Name "PAS_T1112_RunKey" -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed Run key entry"
+
+  - step: 2
+    type: exec_powershell
+    description: "Remove data-stash marker"
+    command: |
+      $path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+      Remove-ItemProperty -Path $path -Name "PAS_T1112_DataStash" -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed data-stash marker"
+
+  - step: 3
+    type: exec_powershell
+    description: "Remove policy path marker"
+    command: |
+      $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
+      Remove-ItemProperty -Path $path -Name "PAS_T1112_PolicyMarker" -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed policy marker"
+
+  - step: 4
+    type: exec_powershell
+    description: "Remove CLSID COM hijack key"
+    command: |
+      $path = "HKCU:\Software\Classes\CLSID\{PAS-T1112-TEST}"
+      if (Test-Path $path) {
+          Remove-Item -Path $path -Recurse -Force
+          Write-Host "[PAS][Cleanup] Removed CLSID key"
+      }
+
+  - step: 5
+    type: marker
+    description: "Cleanup complete"
+    message: "T1112 cleanup complete — all registry modifications removed"
+
+analyst_checklist:
+  - "Registry event: write to HKCU\...\Run by powershell.exe — Event ID 4657 or MDE RegistryValueSet"
+  - "Registry event: write to HKLM\SOFTWARE\Policies\Microsoft\Windows Defender — policy-impairment path"
+  - "Registry event: new CLSID key under HKCU\Software\Classes\CLSID — COM hijack indicator"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'CurrentVersion\\Run' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Windows Defender' and ActionType == 'RegistryValueSet'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'CLSID' and RegistryKey startswith 'HKEY_CURRENT_USER' and RegistryValueData contains 'System32'"
+  - "MDE alert: 'Registry persistence' or 'Suspicious registry modification to security policy'"
+  - "CONTROL CHECK: Is registry auditing (Event ID 4657) enabled for sensitive paths via GPO or MDE advanced features?"
+  - "CONTROL CHECK: Confirm HKLM\SOFTWARE\Policies\Microsoft\Windows Defender modifications generate alerts"

@@ -1,0 +1,108 @@
+id: T1553.005_mark_of_the_web_bypass
+name: "Subvert Trust Controls — Mark-of-the-Web Bypass"
+mitre_technique: "T1553.005"
+mitre_tactic: "defense_evasion"
+description: >
+  Files downloaded from the internet receive a Zone.Identifier Alternate Data Stream
+  (the Mark-of-the-Web, MOTW) that causes SmartScreen and Office Protected View to
+  apply additional scrutiny. Adversaries bypass MOTW by removing the Zone.Identifier
+  ADS, delivering files inside .iso/.img containers (which don't propagate MOTW in
+  older Windows), or using specific archive formats. This scenario simulates MOTW
+  creation and removal, and validates that MOTW bypass attempts are detected.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1553/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1553.005 — Mark-of-the-Web Bypass simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a file with MOTW applied — simulates internet download"
+    command: |
+      $targetFile = "$env:TEMP\PAS_T1553_005_downloaded.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $targetFile -Force
+
+      # Apply MOTW (Zone.Identifier ADS) — simulates what browser/Outlook does
+      $zoneId  = "$targetFile`:Zone.Identifier"
+      Set-Content $zoneId "[ZoneTransfer]`nZoneId=3`nReferrerUrl=http://malicious.example.com/payload`nHostUrl=http://malicious.example.com/payload.exe"
+      Write-Host "[PAS] MOTW applied: $zoneId"
+      Write-Host "[PAS] Zone 3 = Internet zone — triggers SmartScreen on execution"
+
+      # Show the ADS
+      $zone = Get-Content $zoneId
+      Write-Host "[PAS] Zone.Identifier content:"
+      $zone | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Remove MOTW by deleting Zone.Identifier ADS"
+    command: |
+      $targetFile = "$env:TEMP\PAS_T1553_005_downloaded.exe"
+      $zoneId     = "$targetFile`:Zone.Identifier"
+
+      Write-Host "[PAS] Removing MOTW via Remove-Item on Zone.Identifier ADS:"
+      Remove-Item $zoneId -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Zone.Identifier removed — SmartScreen will no longer flag this file"
+      Write-Host "[PAS] File now appears as if it was never downloaded from the internet"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Unblock-File cmdlet — PowerShell MOTW removal"
+    command: |
+      $targetFile2 = "$env:TEMP\PAS_T1553_005_downloaded2.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $targetFile2 -Force
+      Set-Content "$targetFile2`:Zone.Identifier" "[ZoneTransfer]`nZoneId=3"
+
+      Write-Host "[PAS] Method 2: Unblock-File — removes Zone.Identifier"
+      Unblock-File -Path $targetFile2
+      $hasMotw = Test-Path "$targetFile2`:Zone.Identifier"
+      Write-Host "[PAS] MOTW present after Unblock-File: $hasMotw (should be False)"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: streams.exe -d — Sysinternals ADS deletion"
+    command: |
+      Write-Host "[PAS] Method 3 (if streams.exe available): streams.exe -d <file>"
+      Write-Host "[PAS] This removes all ADS including Zone.Identifier"
+      Write-Host "[PAS] Detection: streams.exe -d <executable> from non-admin context"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Zone.Identifier ADS deletion; Unblock-File in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test files"
+    command: |
+      @("$env:TEMP\PAS_T1553_005_downloaded.exe",
+        "$env:TEMP\PAS_T1553_005_downloaded2.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] MOTW test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1553.005 cleanup complete"
+
+analyst_checklist:
+  - "File event: Zone.Identifier ADS deleted from a downloaded executable"
+  - "Script block logging: Unblock-File cmdlet or Remove-Item on ':Zone.Identifier'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith ':Zone.Identifier' and ActionType == 'FileDeleted'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Unblock-File'"
+  - "MDE alert: 'Mark-of-the-Web removed from file' or 'Zone identifier deleted'"
+  - "CONTROL CHECK: MOTW removal from .exe/.dll/.ps1 files should alert — legitimate software rarely needs this"
+  - "CONTROL CHECK: Files delivered via .iso containers — MOTW is not propagated; alert on .iso mount + .exe execution chain"
+  - "CONTROL CHECK: Windows 11 22H2+ propagates MOTW from .zip files — verify which archive types propagate in your environment"

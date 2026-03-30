@@ -1,0 +1,108 @@
+id: T1574.010_services_file_permissions_weakness
+name: "Hijack Execution Flow — Services File Permissions Weakness"
+mitre_technique: "T1574.010"
+mitre_tactic: "defense_evasion"
+description: >
+  If the binary or its parent directory of a Windows service has weak ACLs allowing
+  non-privileged users to write or modify it, an adversary can replace the binary
+  with a malicious one. When the service restarts, their code executes with the
+  service's privilege level (often SYSTEM or LocalService).
+  This scenario identifies services with weak file ACLs on the system, creates a
+  deliberately vulnerable test service to demonstrate detection, and validates that
+  ACL-based monitoring catches the misconfiguration.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/010/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.010 — Service File Permissions Weakness simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Scan for services with world-writable or user-writable binary paths"
+    command: |
+      Write-Host "[PAS] Scanning for services with weak binary file ACLs:"
+      $vulnCount = 0
+      Get-WmiObject Win32_Service | Where-Object { $_.PathName } | ForEach-Object {
+          $path = $_.PathName -replace '"','' -replace ' /.*$',''
+          $path = $path.Trim()
+          if (Test-Path $path -ErrorAction SilentlyContinue) {
+              $acl = Get-Acl $path -ErrorAction SilentlyContinue
+              if ($acl) {
+                  $weak = $acl.Access | Where-Object {
+                      $_.FileSystemRights -match 'Write|Modify|FullControl' -and
+                      $_.IdentityReference -match 'Users|Everyone|Authenticated Users|INTERACTIVE' -and
+                      $_.AccessControlType -eq 'Allow'
+                  }
+                  if ($weak) {
+                      Write-Host "  VULNERABLE: $($_.Name)"
+                      Write-Host "    Path: $path"
+                      Write-Host "    ACE:  $($weak.IdentityReference) — $($weak.FileSystemRights)"
+                      $vulnCount++
+                  }
+              }
+          }
+      }
+      if ($vulnCount -eq 0) {
+          Write-Host "  No vulnerable service binaries found (well-ACLed system)"
+      }
+      Write-Host "[PAS] Scan complete: $vulnCount vulnerable service binary/binaries found"
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a deliberately weak-ACL test service binary to demonstrate detection"
+    command: |
+      $vulnDir = "$env:TEMP\PAS_T1574_010_WeakSvc"
+      $vulnBin = "$vulnDir\PAS_weak_service.exe"
+      New-Item -ItemType Directory $vulnDir -Force | Out-Null
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $vulnBin -Force
+
+      # Grant Everyone full control — deliberately weak
+      $acl = Get-Acl $vulnBin
+      $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+          "Everyone", "FullControl", "Allow")
+      $acl.AddAccessRule($rule)
+      Set-Acl $vulnBin $acl
+      Write-Host "[PAS] Weak-ACL service binary created: $vulnBin"
+      Write-Host "[PAS] Everyone:FullControl — any user can replace this binary"
+
+      # Register the service
+      sc.exe create "PAS_T1574_010_WeakSvc" binPath= "$vulnBin" start= demand | Out-Null
+      Write-Host "[PAS] Vulnerable service registered: PAS_T1574_010_WeakSvc"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 7045 for new service; verify ACL monitoring catches Everyone:FullControl on service binary"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test service and binary"
+    command: |
+      sc.exe delete "PAS_T1574_010_WeakSvc" | Out-Null
+      Remove-Item "$env:TEMP\PAS_T1574_010_WeakSvc" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test service and binary removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.010 cleanup complete"
+
+analyst_checklist:
+  - "MDE Vulnerability Management: 'Weak ACLs on service executable' finding"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Program Files' and ActionType == 'FileModified' and InitiatingProcessIntegrityLevel != 'High'"
+  - "CONTROL CHECK: Run icacls on all service binaries — any non-admin write access is a vulnerability"
+  - "CONTROL CHECK: Use sc sdshow <service> and AccessChk (Sysinternals) to validate service binary permissions"
+  - "CONTROL CHECK: File write monitoring on service binary directories should alert on non-SYSTEM/admin writes"
+  - "CONTROL CHECK: MDE Secure Score includes service binary permission findings — review regularly"

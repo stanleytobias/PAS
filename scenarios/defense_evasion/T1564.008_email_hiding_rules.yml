@@ -1,0 +1,92 @@
+id: T1564.008_email_hiding_rules
+name: "Hide Artifacts — Email Hiding Rules"
+mitre_technique: "T1564.008"
+mitre_tactic: "defense_evasion"
+description: >
+  After compromising an email account, adversaries create inbox rules to hide their
+  activity from the victim. Rules that move, mark-as-read, or delete emails containing
+  keywords like "security alert", "unusual sign-in", or "password reset" suppress
+  notifications about the compromise. Rules can be set via Outlook, OWA, or PowerShell
+  (New-InboxRule cmdlet against Exchange Online). This scenario simulates inbox rule
+  creation targeting security-relevant keywords and validates O365 detection coverage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.008 — Email Hiding Rules simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate New-InboxRule creation — generates Exchange/M365 audit telemetry"
+    command: |
+      Write-Host "[PAS] T1564.008 — Email Hiding Rules"
+      Write-Host "[PAS] Adversary pattern: create inbox rules to suppress security notifications"
+      Write-Host ""
+      Write-Host "[PAS] Rule 1: Move security alert emails to Deleted Items"
+      Write-Host "  New-InboxRule -Name 'PAS_HideSecAlerts' -SubjectContainsWords 'security alert','unusual sign-in','suspicious activity' -MoveToFolder 'Deleted Items'"
+      Write-Host ""
+      Write-Host "[PAS] Rule 2: Delete password reset emails"
+      Write-Host "  New-InboxRule -Name 'PAS_HidePassReset' -SubjectContainsWords 'password reset','verify your account' -DeleteMessage `$true"
+      Write-Host ""
+      Write-Host "[PAS] Rule 3: Mark-as-read and move MFA prompts"
+      Write-Host "  New-InboxRule -Name 'PAS_HideMFA' -SubjectContainsWords 'verification code','two-factor','approval required' -MarkAsRead `$true -MoveToFolder 'RSS Feeds'"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for existing suspicious inbox rules on the local Outlook profile"
+    command: |
+      Write-Host "[PAS] Checking local Outlook profile for suspicious rules:"
+      $outlookInstalled = Get-Command outlook.exe -ErrorAction SilentlyContinue
+      if ($outlookInstalled) {
+          Write-Host "[PAS] Outlook found — suspicious rules would be detectable via:"
+          Write-Host "  Get-InboxRule (Exchange Online PowerShell)"
+          Write-Host "  OfficeActivity table in Sentinel: ActionType == 'New-InboxRule'"
+      } else {
+          Write-Host "[PAS] Outlook not installed — rule detection via Exchange audit logs"
+      }
+
+      Write-Host "[PAS] Detection relies on Microsoft 365 Unified Audit Log (UAL)"
+      Write-Host "[PAS] UAL must be enabled: Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled `$true"
+
+  - step: 4
+    type: marker
+    description: "M365 audit control check"
+    message: "CONTROL CHECK: Is Unified Audit Logging enabled in your M365 tenant? Check: Get-AdminAuditLogConfig | fl UnifiedAuditLogIngestionEnabled"
+
+  - step: 5
+    type: marker
+    description: "Sentinel integration check"
+    message: "CONTROL CHECK: Is OfficeActivity table populated in Sentinel? Query: OfficeActivity | where Operation == 'New-InboxRule' | take 10"
+
+  - step: 6
+    type: sleep
+    description: "Allow any background telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel OfficeActivity table for New-InboxRule operations with deletion or move-to-deleted actions"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1564.008 cleanup complete — rules were not actually created (simulation only)"
+
+analyst_checklist:
+  - "M365 UAL: New-InboxRule operation with MoveToFolder='Deleted Items' or DeleteMessage=true"
+  - "M365 UAL: New-InboxRule with SubjectContainsWords matching security-related keywords"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'DeleteMessage'"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'Deleted Items'"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters matches regex '(?i)security|password|unusual|suspicious|verification|two-factor'"
+  - "MDE/Defender for Identity: alert on inbox rules created shortly after first-time sign-in from new location"
+  - "CONTROL CHECK: Unified Audit Log must be enabled (E3/E5) — without it, inbox rule creation is invisible"
+  - "CONTROL CHECK: Alert on ANY new inbox rule that deletes, hides, or redirects email matching security keywords"
+  - "CONTROL CHECK: Review all inbox rules for every compromised account during incident response — adversaries almost always create them"

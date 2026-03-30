@@ -1,0 +1,129 @@
+id: T1562.002_disable_windows_event_logging
+name: "Impair Defenses — Disable Windows Event Logging"
+mitre_technique: "T1562.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries disable or clear Windows Event Logs to remove evidence of their activity.
+  Methods include stopping the Windows Event Log service, using wevtutil to clear logs,
+  disabling audit policies via auditpol.exe, and patching NTDLL to suppress ETW telemetry.
+  This scenario simulates the command patterns that generate telemetry for each method
+  without permanently disabling logging in the lab.
+  Note: Requires elevation for most steps.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.002 — Disable Windows Event Logging simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Query current audit policy — baseline before simulation"
+    command: |
+      Write-Host "[PAS] Current audit policy:"
+      auditpol /get /category:* 2>&1 | Select-String "Logon|Process|Object" | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Disable process creation auditing via auditpol — generates telemetry, simulates coverage gap creation"
+    command: |
+      Write-Host "[PAS] Disabling Process Creation auditing via auditpol:"
+      auditpol /set /subcategory:"Process Creation" /success:disable /failure:disable 2>&1
+      Write-Host "[PAS] Audit policy modified — Event ID 4719 should be generated"
+      Start-Sleep -Seconds 2
+
+      Write-Host "[PAS] Restoring Process Creation auditing:"
+      auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable 2>&1
+      Write-Host "[PAS] Audit policy restored"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate log clearing via wevtutil — uses a PAS-created test channel, NOT Security or System"
+    command: |
+      # Create a benign custom event log to clear — never clear Security/System in lab
+      Write-Host "[PAS] Creating test event log for clear simulation:"
+      $logName = "PAS-T1562-TestLog"
+      New-EventLog -LogName $logName -Source "PAS" -ErrorAction SilentlyContinue
+      Write-EventLog -LogName $logName -Source "PAS" -EventId 1 -Message "PAS test event" -ErrorAction SilentlyContinue
+
+      Write-Host "[PAS] Clearing test log via wevtutil (simulates wevtutil cl Security pattern):"
+      wevtutil cl $logName 2>&1
+      Write-Host "[PAS] wevtutil clear executed on test log"
+
+      # Cleanup test log
+      Remove-EventLog -LogName $logName -ErrorAction SilentlyContinue
+
+  - step: 5
+    type: exec_powershell
+    description: "Attempt to stop Windows Event Log service — generates high-signal telemetry (should fail)"
+    command: |
+      Write-Host "[PAS] Attempting to stop Windows Event Log service (EventLog):"
+      $result = sc.exe stop EventLog 2>&1
+      Write-Host "  sc.exe stop EventLog result: $result"
+      Write-Host "[PAS] Access Denied is the expected result — service is protected"
+
+  - step: 6
+    type: exec_powershell
+    description: "Disable PowerShell script block logging via registry — simulates ETW/logging impairment"
+    command: |
+      $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+      Write-Host "[PAS] Writing registry key to disable script block logging:"
+      try {
+          if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+          Set-ItemProperty -Path $path -Name "EnableScriptBlockLogging" -Value 0 -Type DWord -Force
+          Write-Host "  WARNING: Script block logging disabled — verify this generates a SIEM alert"
+          Start-Sleep -Seconds 2
+          # Immediately restore
+          Set-ItemProperty -Path $path -Name "EnableScriptBlockLogging" -Value 1 -Type DWord -Force
+          Write-Host "  Restored: EnableScriptBlockLogging = 1"
+      } catch {
+          Write-Host "  Write blocked (expected if GPO enforced): $_"
+      }
+
+  - step: 7
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 8
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4719 (audit policy change), wevtutil.exe execution, and registry write to ScriptBlockLogging should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure audit policy and script block logging are fully restored"
+    command: |
+      # Restore process creation auditing
+      auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable 2>&1 | Out-Null
+
+      # Restore script block logging
+      $path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+      if (Test-Path $path) {
+          Set-ItemProperty -Path $path -Name "EnableScriptBlockLogging" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS][Cleanup] Audit policy and script block logging restored"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.002 cleanup complete — verify audit policy is restored before continuing"
+
+analyst_checklist:
+  - "Event ID 4719: System audit policy was changed — auditpol modification indicator"
+  - "Event ID 1102: Security audit log was cleared (not triggered in this sim — monitor in production)"
+  - "Event ID 104: System log was cleared"
+  - "Process event: wevtutil.exe with 'cl' argument spawned from powershell.exe"
+  - "Process event: auditpol.exe with /set argument from powershell.exe"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'wevtutil.exe' and ProcessCommandLine contains ' cl '"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'auditpol.exe' and ProcessCommandLine contains '/set'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'ScriptBlockLogging' and RegistryValueData == '0'"
+  - "MDE alert: 'Security log cleared' or 'Audit policy modification'"
+  - "CONTROL CHECK: Forward Event ID 1102 and 104 to SIEM — log clearing without SIEM visibility is a blind spot"
+  - "CONTROL CHECK: If step 6 succeeded without an alert — you have no detection for script block logging being disabled"

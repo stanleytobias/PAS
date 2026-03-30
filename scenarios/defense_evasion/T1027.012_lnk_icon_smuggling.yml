@@ -1,0 +1,107 @@
+id: T1027.012_lnk_icon_smuggling
+name: "Obfuscated Files or Information — LNK Icon Smuggling"
+mitre_technique: "T1027.012"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries embed commands inside Windows shortcut (.lnk) files, hiding the malicious
+  target command within the IconEnvironmentDataBlock field rather than the visible target
+  path. The shortcut appears to point to a benign location but executes a hidden command.
+  Additionally, .lnk files with convincing icons (e.g. PDF icon) are used as delivery
+  vehicles because Windows hides the .lnk extension and shows only the icon.
+  This scenario creates LNK files with hidden command payloads and demonstrates
+  how to detect the hidden command via LNK metadata inspection.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.012 — LNK Icon Smuggling simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a deceptive LNK file with hidden PowerShell command"
+    command: |
+      $lnkPath = "$env:TEMP\PAS_T1027_012_Invoice.pdf.lnk"
+      $shell   = New-Object -ComObject WScript.Shell
+      $link    = $shell.CreateShortcut($lnkPath)
+
+      # Visible target looks benign
+      $link.TargetPath     = "$env:SystemRoot\System32\cmd.exe"
+      $link.Arguments      = "/c echo PAS-T1027.012-LNK-EXECUTED > $env:TEMP\PAS_T1027_012_fired.txt"
+      $link.Description    = "Invoice Document"
+      # Use PDF icon to look like a document
+      $link.IconLocation   = "$env:SystemRoot\System32\shell32.dll,222"
+      $link.WindowStyle    = 7  # Minimized — hidden window
+      $link.Save()
+
+      Write-Host "[PAS] LNK file created: $lnkPath"
+      Write-Host "[PAS] Appears as: Invoice.pdf (Windows hides .lnk extension)"
+      Write-Host "[PAS] Actually executes: cmd.exe /c echo PAS-T1027.012..."
+      Write-Host "[PAS] Window style: minimized (hidden from user)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Execute the LNK file — simulates user double-click"
+    command: |
+      $lnkPath = "$env:TEMP\PAS_T1027_012_Invoice.pdf.lnk"
+      Write-Host "[PAS] Executing LNK file (simulates user double-click):"
+      Start-Process $lnkPath
+      Start-Sleep -Seconds 2
+      if (Test-Path "$env:TEMP\PAS_T1027_012_fired.txt") {
+          Write-Host "[PAS] LNK payload EXECUTED — cmd.exe ran hidden command"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Inspect LNK metadata — demonstrates forensic detection method"
+    command: |
+      $lnkPath = "$env:TEMP\PAS_T1027_012_Invoice.pdf.lnk"
+      $shell   = New-Object -ComObject WScript.Shell
+      $link    = $shell.CreateShortcut($lnkPath)
+
+      Write-Host "[PAS] LNK metadata inspection:"
+      Write-Host "  TargetPath:   $($link.TargetPath)"
+      Write-Host "  Arguments:    $($link.Arguments)"
+      Write-Host "  Description:  $($link.Description)"
+      Write-Host "  IconLocation: $($link.IconLocation)"
+      Write-Host "  WindowStyle:  $($link.WindowStyle) (7=minimized/hidden)"
+      Write-Host "[PAS] DETECTION: TargetPath=cmd.exe with hidden window is a LNK dropper pattern"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cmd.exe spawned from lnk file execution; process parent chain showing explorer.exe → cmd.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove LNK file and output"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_012_Invoice.pdf.lnk" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1027_012_fired.txt"        -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] LNK and output files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.012 cleanup complete"
+
+analyst_checklist:
+  - "File event: .lnk file created in TEMP or user directory with cmd.exe or powershell.exe as target"
+  - "Process event: cmd.exe spawned with WindowStyle=7 (minimized/hidden) via LNK execution"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.lnk' and FolderPath contains 'Temp'"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'explorer.exe' and FileName == 'cmd.exe' and ProcessCommandLine contains '/c'"
+  - "MDE: LNK file metadata is captured — query for .lnk files targeting cmd.exe/powershell.exe"
+  - "CONTROL CHECK: Email gateway should inspect .lnk attachments (often delivered in ZIP files)"
+  - "CONTROL CHECK: Any .lnk file with target=cmd.exe, powershell.exe, or wscript.exe and window style=hidden should alert"
+  - "CONTROL CHECK: Defender for Office 365 detonates .lnk files in ZIP attachments — verify policy covers this"

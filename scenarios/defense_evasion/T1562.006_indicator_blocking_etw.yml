@@ -1,0 +1,110 @@
+id: T1562.006_indicator_blocking_etw
+name: "Impair Defenses — Indicator Blocking (ETW Tampering)"
+mitre_technique: "T1562.006"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries disable Event Tracing for Windows (ETW) providers to suppress telemetry
+  that feeds SIEM and EDR tools. Methods include patching ntdll.dll EtwEventWrite
+  in-process, disabling specific provider GUIDs via registry, setting the AutoLogger
+  session to not start, or using NtTraceControl to disable the Microsoft-Windows-Threat-Intelligence
+  ETW provider (used by MDE). This scenario exercises registry-based ETW provider
+  disablement and AutoLogger manipulation — the methods that generate durable telemetry.
+  Requires elevation for HKLM writes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.006 — ETW Indicator Blocking simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current AutoLogger sessions — baseline"
+    command: |
+      Write-Host "[PAS] Active AutoLogger sessions:"
+      $autoLoggers = "HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger"
+      Get-ChildItem $autoLoggers -ErrorAction SilentlyContinue |
+          Select-Object PSChildName |
+          Format-Table -AutoSize
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Disable a specific ETW provider via registry — EventLog-Security provider"
+    command: |
+      # Simulate disabling an ETW provider by writing Enabled=0 to its AutoLogger key
+      # Use a PAS test key — do NOT disable real security providers
+      $testProviderPath = "HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\PAS-TestSession"
+      New-Item $testProviderPath -Force | Out-Null
+      Set-ItemProperty $testProviderPath -Name "Enabled" -Value 0 -Type DWord -Force
+      Set-ItemProperty $testProviderPath -Name "Start"   -Value 0 -Type DWord -Force
+      Write-Host "[PAS] ETW AutoLogger disable pattern written to: $testProviderPath"
+      Write-Host "[PAS] Enabled=0 disables session on next boot — telemetry generated"
+      Write-Host "[PAS] Real attack targets: EventLog-Security, Microsoft-Windows-Threat-Intelligence"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Demonstrate PowerShell ETW provider disable via Set-EtwTraceProvider"
+    command: |
+      Write-Host "[PAS] Checking Microsoft-Windows-PowerShell ETW provider state:"
+      $psProvider = "{A0C1853B-5C40-4B15-8766-3CF1C58F985A}"
+      try {
+          $state = logman query providers | Select-String "PowerShell"
+          Write-Host "  $state"
+      } catch {}
+
+      Write-Host "[PAS] ETW provider disable pattern (not executed — telemetry only):"
+      Write-Host "  logman update trace EventLog-Application --p `"$psProvider`" 0 0"
+      Write-Host "  This removes the provider from the trace session without stopping it"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 3: Simulate in-memory ETW patch detection pattern via registry marker"
+    command: |
+      # Write marker that simulates what patching ETW leaves behind in registry
+      $markerPath = "HKCU:\Software\PAS\T1562_006"
+      New-Item $markerPath -Force | Out-Null
+      Set-ItemProperty $markerPath -Name "ETWPatchSimulated" -Value 1 -Force
+      Write-Host "[PAS] Registry marker written: $markerPath"
+      Write-Host "[PAS] In-memory ETW patching (ntdll!EtwEventWrite NOP) leaves no registry trace"
+      Write-Host "[PAS] Detection requires memory scanning or API hooking by EDR"
+      Write-Host "[PAS] Ref: patching byte 0xC3 (RET) at EtwEventWrite start silences all ETW in-process"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKLM AutoLogger registry writes and logman execution should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test AutoLogger key and marker"
+    command: |
+      Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Control\WMI\Autologger\PAS-TestSession" `
+          -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "HKCU:\Software\PAS" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] ETW test keys removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.006 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: HKLM\...\Autologger\*\Enabled set to 0 by non-system process"
+  - "Process event: logman.exe with update/stop arguments targeting security-related trace sessions"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Autologger' and RegistryValueName == 'Enabled' and RegistryValueData == '0'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'logman.exe' and ProcessCommandLine contains 'stop' or ProcessCommandLine contains 'update'"
+  - "MDE alert: 'ETW provider tampering' or 'Antivirus/EDR telemetry provider disabled'"
+  - "CONTROL CHECK: Microsoft-Windows-Threat-Intelligence ETW provider disable is the most critical — MDE relies on it"
+  - "CONTROL CHECK: In-memory ETW patching requires memory scanning — validate EDR has anti-tamper for ntdll.dll"
+  - "CONTROL CHECK: Process hollowing + ETW disable is a common combo — correlate both in the same process lifecycle"

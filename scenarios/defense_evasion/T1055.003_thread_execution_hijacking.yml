@@ -1,0 +1,110 @@
+id: T1055.003_thread_execution_hijacking
+name: "Process Injection — Thread Execution Hijacking"
+mitre_technique: "T1055.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries suspend an existing thread in a target process, overwrite its execution
+  context (instruction pointer via SetThreadContext), then resume it — causing the thread
+  to execute attacker-controlled code. This avoids CreateRemoteThread and is harder to
+  detect than classic DLL injection. Key API chain:
+  OpenProcess → VirtualAllocEx → WriteProcessMemory → OpenThread →
+  SuspendThread → GetThreadContext → SetThreadContext → ResumeThread.
+  This scenario generates the full API sequence without a real payload.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1055/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1055.003 — Thread Execution Hijacking simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate SuspendThread + GetThreadContext + SetThreadContext API chain"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+      public class PASThreadHijack {
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenProcess(uint a, bool b, int pid);
+          [DllImport("kernel32.dll")] public static extern IntPtr VirtualAllocEx(IntPtr h, IntPtr a, uint s, uint t, uint p);
+          [DllImport("kernel32.dll")] public static extern bool WriteProcessMemory(IntPtr h, IntPtr a, byte[] b, uint s, out int w);
+          [DllImport("kernel32.dll")] public static extern IntPtr OpenThread(uint a, bool b, uint tid);
+          [DllImport("kernel32.dll")] public static extern uint SuspendThread(IntPtr h);
+          [DllImport("kernel32.dll")] public static extern uint ResumeThread(IntPtr h);
+          [DllImport("kernel32.dll")] public static extern bool VirtualFreeEx(IntPtr h, IntPtr a, uint s, uint t);
+          [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+      }
+"@
+      $target = Start-Process notepad.exe -PassThru
+      Start-Sleep -Milliseconds 800
+      Write-Host "[PAS] Target: notepad.exe PID $($target.Id)"
+
+      $hProc = [PASThreadHijack]::OpenProcess(0x1F0FFF, $false, $target.Id)
+      Write-Host "[PAS] OpenProcess: $hProc"
+
+      if ($hProc -ne [IntPtr]::Zero) {
+          $addr    = [PASThreadHijack]::VirtualAllocEx($hProc, [IntPtr]::Zero, 4096, 0x3000, 0x40)
+          $payload = [byte[]](0x90) * 64  # NOP sled — benign
+          $written = 0
+          [PASThreadHijack]::WriteProcessMemory($hProc, $addr, $payload, $payload.Length, [ref]$written) | Out-Null
+          Write-Host "[PAS] VirtualAllocEx + WriteProcessMemory: $written bytes written"
+
+          # Get first thread of target process
+          $proc      = [Diagnostics.Process]::GetProcessById($target.Id)
+          $firstTid  = $proc.Threads[0].Id
+          $THREAD_ALL = 0x1F03FF
+          $hThread   = [PASThreadHijack]::OpenThread($THREAD_ALL, $false, $firstTid)
+          Write-Host "[PAS] OpenThread TID $firstTid : $hThread"
+
+          if ($hThread -ne [IntPtr]::Zero) {
+              $suspCount = [PASThreadHijack]::SuspendThread($hThread)
+              Write-Host "[PAS] SuspendThread: suspend count = $suspCount — thread suspended"
+              Start-Sleep -Milliseconds 200
+              # In real attack: GetThreadContext → modify RIP/EIP → SetThreadContext
+              Write-Host "[PAS] GetThreadContext + SetThreadContext would redirect RIP here (not performed)"
+              $resumed = [PASThreadHijack]::ResumeThread($hThread)
+              Write-Host "[PAS] ResumeThread: prior suspend count = $resumed"
+              [PASThreadHijack]::CloseHandle($hThread) | Out-Null
+          }
+          [PASThreadHijack]::VirtualFreeEx($hProc, $addr, 0, 0x8000) | Out-Null
+          [PASThreadHijack]::CloseHandle($hProc) | Out-Null
+      }
+      $target | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Thread hijacking API chain complete"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — OpenThread + SuspendThread + ResumeThread against notepad.exe from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Terminate notepad"
+    command: |
+      Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] notepad.exe terminated"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1055.003 cleanup complete"
+
+analyst_checklist:
+  - "API: OpenThread + SuspendThread + (implied SetThreadContext) + ResumeThread from powershell.exe into notepad.exe"
+  - "MDE: DeviceEvents | where ActionType in ('SuspendThreadApiCall','OpenThreadApiCall') and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'SuspendThreadApiCall' and InitiatingProcessFileName != 'lsass.exe'"
+  - "CONTROL CHECK: SuspendThread on a thread owned by another process is low-frequency and high-fidelity indicator"
+  - "CONTROL CHECK: Combination of VirtualAllocEx + SuspendThread in same process pair within short window should auto-alert"

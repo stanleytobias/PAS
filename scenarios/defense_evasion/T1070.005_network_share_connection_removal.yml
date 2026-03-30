@@ -1,0 +1,90 @@
+id: T1070.005_network_share_connection_removal
+name: "Indicator Removal — Network Share Connection Removal"
+mitre_technique: "T1070.005"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries remove SMB/network share connections used during lateral movement or
+  data staging to clean up evidence of remote access. Commands include
+  net use * /delete, Remove-SmbMapping, and wmic path win32_networkconnection delete.
+  This scenario creates a loopback SMB connection to a local share, then removes it
+  using each cleanup method — generating the full removal telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.005 — Network Share Connection Removal simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a local test share and map it — simulates post-lateral-movement connection"
+    command: |
+      $shareName = "PAS_T1070_005_Share"
+      $shareDir  = "$env:TEMP\PAS_T1070_005_ShareDir"
+      New-Item -ItemType Directory $shareDir -Force | Out-Null
+      # Create the share
+      New-SmbShare -Name $shareName -Path $shareDir -FullAccess "Everyone" `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Share created: \\localhost\$shareName -> $shareDir"
+
+      # Map it as a drive
+      net use Z: "\\localhost\$shareName" /persistent:no 2>&1 | Out-Null
+      Write-Host "[PAS] Drive mapped: Z: -> \\localhost\$shareName"
+      net use | Select-String "PAS\|Z:" | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Remove mapping via net use /delete"
+    command: |
+      Write-Host "[PAS] Method 1: net use Z: /delete"
+      net use Z: /delete /y 2>&1
+      Write-Host "[PAS] net use /delete executed"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Remove-SmbMapping PowerShell cmdlet"
+    command: |
+      # Re-map for second removal
+      net use Y: "\\localhost\PAS_T1070_005_Share" /persistent:no 2>&1 | Out-Null
+      Write-Host "[PAS] Method 2: Remove-SmbMapping"
+      Remove-SmbMapping -LocalPath "Y:" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Remove-SmbMapping executed"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe with 'use /delete' and Remove-SmbMapping in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test share and directory"
+    command: |
+      net use * /delete /y 2>&1 | Out-Null
+      Remove-SmbShare -Name "PAS_T1070_005_Share" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1070_005_ShareDir" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Share, mapping, and directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1070.005 cleanup complete"
+
+analyst_checklist:
+  - "Process event: net.exe with 'use' and '/delete' arguments"
+  - "Script block logging (Event ID 4104): Remove-SmbMapping cmdlet visible"
+  - "Network event: SMB connection to localhost established then torn down"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'use' and ProcessCommandLine contains 'delete'"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 445 and ActionType == 'ConnectionFailed' — rapid connect/disconnect pattern"
+  - "CONTROL CHECK: net use /delete immediately after net use (short dwell time) is a cleanup indicator"
+  - "CONTROL CHECK: Monitor for admin share mappings (\\*\ADMIN$, \\*\C$) and their removal within the same session"

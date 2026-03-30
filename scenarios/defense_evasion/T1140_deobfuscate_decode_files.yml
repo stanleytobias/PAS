@@ -1,0 +1,114 @@
+id: T1140_deobfuscate_decode_files
+name: "Deobfuscate/Decode Files or Information"
+mitre_technique: "T1140"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries obfuscate payloads or commands (base64, XOR, certutil decode, expand,
+  compressed blobs) and decode them at runtime to evade static detection. Common methods
+  include PowerShell base64 encoded commands, certutil -decode, and expand.exe.
+  This scenario executes all major decode patterns using benign content to generate
+  the telemetry each method produces. Detection relies on command-line pattern matching
+  and script block logging capturing decoded content.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1140/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1140 — Deobfuscate/Decode simulation (benign payload — telemetry generation only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Decode a base64-encoded PowerShell command — most common adversary decode method"
+    command: |
+      # Encode benign command and decode/execute — mirrors real adversary IEX pattern
+      $benign  = "Write-Host 'PAS-T1140-BASE64-DECODED'"
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($benign))
+      Write-Host "[PAS] Encoded payload: $encoded"
+      powershell.exe -NoProfile -EncodedCommand $encoded
+
+  - step: 3
+    type: exec_powershell
+    description: "Decode using certutil -decode — common LOLBin decode method"
+    command: |
+      $encodedFile = "$env:TEMP\PAS_T1140_encoded.txt"
+      $decodedFile = "$env:TEMP\PAS_T1140_decoded.txt"
+
+      # Write base64-encoded benign content
+      $content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("PAS-T1140-CERTUTIL-DECODED"))
+      Set-Content -Path $encodedFile -Value $content
+
+      certutil -decode $encodedFile $decodedFile 2>&1 | Out-Null
+      Write-Host "[PAS] certutil decoded: $encodedFile -> $decodedFile"
+      if (Test-Path $decodedFile) { Get-Content $decodedFile }
+
+  - step: 4
+    type: exec_powershell
+    description: "Inline base64 + IEX decode pattern — high-signal PowerShell obfuscation indicator"
+    command: |
+      # [System.Convert]::FromBase64String + IEX pattern — extremely common in real payloads
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Write-Host 'PAS-T1140-IEX-PATTERN'"))
+      $decoded = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($encoded))
+      Write-Host "[PAS] Decoded string ready for IEX (not executing further): $decoded"
+      # Intentionally NOT using IEX to avoid executing arbitrary code in lab
+      # Real adversaries would use: IEX $decoded or Invoke-Expression $decoded
+
+  - step: 5
+    type: exec_powershell
+    description: "Expand compressed payload using expand.exe — alternate LOLBin decode"
+    command: |
+      $srcFile = "$env:TEMP\PAS_T1140_source.txt"
+      $expFile = "$env:TEMP\PAS_T1140_expanded.txt"
+      Set-Content $srcFile "PAS-T1140-EXPAND-SOURCE"
+      # expand.exe used by adversaries to extract cab-packed payloads
+      & "$env:SystemRoot\System32\expand.exe" $srcFile $expFile 2>&1 | Out-Null
+      Write-Host "[PAS] expand.exe executed: $srcFile -> $expFile"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — powershell.exe -EncodedCommand, certutil.exe -decode, expand.exe should all be visible in process events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove temp files created during decode simulation"
+    command: |
+      $artifacts = @(
+          "$env:TEMP\PAS_T1140_encoded.txt",
+          "$env:TEMP\PAS_T1140_decoded.txt",
+          "$env:TEMP\PAS_T1140_source.txt",
+          "$env:TEMP\PAS_T1140_expanded.txt"
+      )
+      foreach ($f in $artifacts) {
+          if (Test-Path $f) {
+              Remove-Item $f -Force
+              Write-Host "[PAS][Cleanup] Removed $f"
+          }
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1140 cleanup complete — all temp decode artifacts removed"
+
+analyst_checklist:
+  - "Process event: powershell.exe with -EncodedCommand argument — Event ID 4688 / DeviceProcessEvents"
+  - "Process event: certutil.exe with -decode argument spawned from powershell.exe"
+  - "Process event: expand.exe spawned from powershell.exe"
+  - "Script block logging (Event ID 4104): base64 decode + FromBase64String pattern visible in decoded block"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains '-EncodedCommand' or ProcessCommandLine contains '-enc '"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains '-decode'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'expand.exe' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Obfuscated PowerShell command' or 'Certutil used for decode'"
+  - "CONTROL CHECK: Script block logging must be enabled — without it, -EncodedCommand payloads are opaque"
+  - "CONTROL CHECK: AMSI must be active — validate AMSI is not bypassed before this test produces clean telemetry"

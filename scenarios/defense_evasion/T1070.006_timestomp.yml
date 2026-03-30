@@ -1,0 +1,117 @@
+id: T1070.006_timestomp
+name: "Indicator Removal — Timestomp"
+mitre_technique: "T1070.006"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries modify file timestamps (Created, Modified, Accessed, MFT Changed)
+  to blend malicious files with legitimate ones or to confuse forensic timelines.
+  A common pattern is copying a legitimate file's timestamp to a malicious one so
+  it appears to have existed long before the intrusion. Windows .NET API
+  [IO.File]::SetCreationTime / SetLastWriteTime / SetLastAccessTime provide
+  easy programmatic access. Detection relies on MFT $STANDARD_INFORMATION vs
+  $FILE_NAME timestamp discrepancy ($FILE_NAME cannot be modified from userland).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.006 — Timestomp simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a test file and record its original timestamps"
+    command: |
+      $target = "$env:TEMP\PAS_T1070_006_stomped.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $target -Force
+
+      Write-Host "[PAS] Original timestamps of test file:"
+      $fi = Get-Item $target
+      Write-Host "  CreationTime:     $($fi.CreationTime)"
+      Write-Host "  LastWriteTime:    $($fi.LastWriteTime)"
+      Write-Host "  LastAccessTime:   $($fi.LastAccessTime)"
+
+      # Store originals for restoration
+      @{
+          Creation   = $fi.CreationTime.ToString("o")
+          Write      = $fi.LastWriteTime.ToString("o")
+          Access     = $fi.LastAccessTime.ToString("o")
+      } | ConvertTo-Json | Out-File "$env:TEMP\PAS_T1070_006_timestamps.json"
+
+  - step: 3
+    type: exec_powershell
+    description: "Timestomp the file — set timestamps to match a legitimate old system file"
+    command: |
+      $target     = "$env:TEMP\PAS_T1070_006_stomped.exe"
+      $legitimate = "$env:SystemRoot\System32\notepad.exe"
+      $ref        = Get-Item $legitimate
+
+      Write-Host "[PAS] Copying timestamps from $legitimate:"
+      Write-Host "  Source CreationTime:   $($ref.CreationTime)"
+      Write-Host "  Source LastWriteTime:  $($ref.LastWriteTime)"
+
+      # Apply timestamps from legitimate binary to our test file
+      [IO.File]::SetCreationTime($target,   $ref.CreationTime)
+      [IO.File]::SetLastWriteTime($target,  $ref.LastWriteTime)
+      [IO.File]::SetLastAccessTime($target, $ref.LastAccessTime)
+
+      Write-Host "[PAS] Timestamps applied. New timestamps of stomped file:"
+      $stomped = Get-Item $target
+      Write-Host "  CreationTime:   $($stomped.CreationTime)"
+      Write-Host "  LastWriteTime:  $($stomped.LastWriteTime)"
+      Write-Host "  LastAccessTime: $($stomped.LastAccessTime)"
+      Write-Host "[PAS] File appears to be from $($stomped.LastWriteTime.Year) — same era as notepad.exe"
+
+  - step: 4
+    type: exec_powershell
+    description: "Demonstrate $STANDARD_INFORMATION vs $FILE_NAME discrepancy — forensic detection"
+    command: |
+      $target = "$env:TEMP\PAS_T1070_006_stomped.exe"
+      Write-Host "[PAS] Timestomp forensic detection:"
+      Write-Host "  $STANDARD_INFORMATION timestamps (visible, modifiable from userland): STOMPED"
+      Write-Host "  `$FILE_NAME timestamps (in MFT, NOT modifiable from userland): reflect TRUE creation time"
+      Write-Host "  Forensic tools (Autopsy, MFTECmd) compare these two sets — discrepancy = timestomp"
+      Write-Host "  MDE does not expose `$FILE_NAME timestamps directly — requires disk image or MFT export"
+
+      # Show that the $SI timestamps are now old but file was just created (MFT $FN would differ)
+      $fi = Get-Item $target
+      Write-Host "  $SI CreationTime says: $($fi.CreationTime.Year) (stomped)"
+      Write-Host "  Actual file age: created seconds ago — `$FN would show today's date"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging should capture SetCreationTime/SetLastWriteTime API calls"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove stomped test file and timestamp backup"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1070_006_stomped.exe"   -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1070_006_timestamps.json" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Stomped file and timestamp backup removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1070.006 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): [IO.File]::SetCreationTime / SetLastWriteTime / SetLastAccessTime visible"
+  - "File event: file modification where new timestamp is significantly older than file creation date"
+  - "Sentinel: DeviceEvents | where ActionType == 'FileTimestampChanged' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'File timestamp modification' or 'Timestomping detected'"
+  - "FORENSIC: MFT $STANDARD_INFORMATION vs $FILE_NAME timestamp discrepancy — requires MFTECmd or forensic tool"
+  - "CONTROL CHECK: MDE may detect SetLastWriteTime/SetCreationTime API calls on executables — validate in DeviceEvents"
+  - "CONTROL CHECK: Files in TEMP with timestamps predating Windows installation date are impossible — auto-flag these"
+  - "CONTROL CHECK: Timestomp is always used in conjunction with other techniques — correlate with file drops and process execution"

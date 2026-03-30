@@ -1,0 +1,92 @@
+id: T1070.007_clear_network_connection_history
+name: "Indicator Removal — Clear Network Connection History and Configurations"
+mitre_technique: "T1070.007"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries remove evidence of network connections made during an intrusion.
+  On Windows, this includes clearing the ARP cache (arp -d *), flushing DNS cache
+  (Clear-DnsClientCache / ipconfig /flushdns), deleting RDP Most Recently Used (MRU)
+  registry entries, and removing network connection artifacts from the registry.
+  These actions remove forensic indicators linking the attacker's host to targets
+  that were accessed during lateral movement.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1070/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1070.007 — Clear Network Connection History simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Flush DNS client cache — removes DNS lookup history"
+    command: |
+      Write-Host "[PAS] DNS cache before flush (sample):"
+      Get-DnsClientCache | Select-Object -First 5 | Format-Table -AutoSize
+      Clear-DnsClientCache
+      Write-Host "[PAS] Clear-DnsClientCache executed — DNS lookup history removed"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Clear ARP cache — removes IP-to-MAC mappings from recent connections"
+    command: |
+      Write-Host "[PAS] ARP cache before clear:"
+      arp -a 2>&1 | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
+      arp -d * 2>&1 | Out-Null
+      Write-Host "[PAS] arp -d * executed — ARP cache cleared"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Delete RDP MRU registry entries — removes recently-connected RDP hosts"
+    command: |
+      $rdpMru = "HKCU:\Software\Microsoft\Terminal Server Client\Default"
+      Write-Host "[PAS] RDP MRU entries before clear:"
+      Get-ItemProperty $rdpMru -ErrorAction SilentlyContinue |
+          Select-Object MRU* | Format-List
+
+      # Write a fake MRU entry to demonstrate deletion telemetry
+      Set-ItemProperty $rdpMru -Name "MRU0" -Value "PAS-T1070-007-TestHost" `
+          -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Test MRU entry added: MRU0=PAS-T1070-007-TestHost"
+
+      # Now delete it — simulates adversary clearing RDP history
+      Remove-ItemProperty $rdpMru -Name "MRU0" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS] RDP MRU0 entry deleted"
+
+  - step: 5
+    type: exec_powershell
+    description: "Method 4: ipconfig /flushdns via cmd — alternate DNS clear pattern"
+    command: |
+      Start-Process cmd.exe -ArgumentList "/c ipconfig /flushdns" -Wait -NoNewWindow
+      Write-Host "[PAS] ipconfig /flushdns executed via cmd.exe"
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Clear-DnsClientCache, arp -d, ipconfig /flushdns, and registry delete of RDP MRU"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1070.007 cleanup complete — DNS and ARP caches repopulate automatically; RDP MRU was a test entry"
+
+analyst_checklist:
+  - "Process event: arp.exe with '-d' argument spawned from powershell.exe"
+  - "Process event: ipconfig.exe with '/flushdns' from cmd.exe"
+  - "Script block logging (Event ID 4104): Clear-DnsClientCache cmdlet"
+  - "Registry event: HKCU\...\Terminal Server Client\Default\MRU* key deleted"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'arp.exe' and ProcessCommandLine contains '-d'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ipconfig.exe' and ProcessCommandLine contains 'flushdns'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Terminal Server Client' and ActionType == 'RegistryValueDeleted'"
+  - "CONTROL CHECK: DNS flush + ARP clear + RDP MRU delete in rapid succession is a lateral movement cleanup signature"
+  - "CONTROL CHECK: RDP MRU deletion should alert as it is removing evidence of remote access history"

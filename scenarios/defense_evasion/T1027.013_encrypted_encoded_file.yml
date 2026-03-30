@@ -1,0 +1,107 @@
+id: T1027.013_encrypted_encoded_file
+name: "Obfuscated Files or Information — Encrypted/Encoded File"
+mitre_technique: "T1027.013"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries encrypt or encode payload files to defeat static analysis and AV scanning.
+  The payload is only decrypted at runtime — typically via a small loader stub that
+  performs XOR decryption, AES decryption, or base64 decoding before executing.
+  Common patterns: XOR with a single-byte key, AES-CBC with hardcoded key, RC4.
+  This scenario implements XOR and AES encryption of a benign payload blob, then
+  decrypts and executes it in memory — generating the full decode-then-execute telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/013/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.013 — Encrypted/Encoded File simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: XOR-encrypted payload — decode and execute at runtime"
+    command: |
+      Write-Host "[PAS] Method 1: XOR encryption with single-byte key"
+      $xorKey  = 0x42
+      $payload = [Text.Encoding]::UTF8.GetBytes("Write-Host 'PAS-T1027.013-XOR-DECRYPTED'")
+
+      # Encrypt
+      $encrypted = $payload | ForEach-Object { $_ -bxor $xorKey }
+      Write-Host "[PAS] Encrypted payload (first 10 bytes): $($encrypted | Select-Object -First 10)"
+
+      # Decrypt and execute (runtime decode)
+      $decrypted = [byte[]]($encrypted | ForEach-Object { $_ -bxor $xorKey })
+      $decoded   = [Text.Encoding]::UTF8.GetString($decrypted)
+      Write-Host "[PAS] XOR decrypted at runtime: $decoded"
+      Invoke-Expression $decoded
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: AES-CBC encrypted payload stored on disk — decrypt and execute"
+    command: |
+      $encPath = "$env:TEMP\PAS_T1027_013_payload.enc"
+
+      # AES encrypt a benign payload to disk
+      $plaintext = [Text.Encoding]::UTF8.GetBytes("Write-Host 'PAS-T1027.013-AES-DECRYPTED'")
+      $key = [byte[]](0x50,0x41,0x53,0x31,0x32,0x33,0x34,0x35,
+                      0x36,0x37,0x38,0x39,0x30,0x41,0x42,0x43,
+                      0x44,0x45,0x46,0x47,0x48,0x49,0x4A,0x4B,
+                      0x4C,0x4D,0x4E,0x4F,0x50,0x51,0x52,0x53)
+      $iv  = [byte[]](0x00) * 16
+
+      $aes           = [Security.Cryptography.Aes]::Create()
+      $aes.Key       = $key
+      $aes.IV        = $iv
+      $aes.Mode      = [Security.Cryptography.CipherMode]::CBC
+      $aes.Padding   = [Security.Cryptography.PaddingMode]::PKCS7
+      $encryptor     = $aes.CreateEncryptor()
+      $cipherBytes   = $encryptor.TransformFinalBlock($plaintext, 0, $plaintext.Length)
+      [IO.File]::WriteAllBytes($encPath, $cipherBytes)
+      Write-Host "[PAS] AES-encrypted payload written to disk: $encPath"
+      Write-Host "[PAS] On-disk file contains only ciphertext — static AV cannot extract payload"
+
+      # Runtime decrypt and execute
+      $cipher    = [IO.File]::ReadAllBytes($encPath)
+      $decryptor = $aes.CreateDecryptor()
+      $decrypted = $decryptor.TransformFinalBlock($cipher, 0, $cipher.Length)
+      $plainCmd  = [Text.Encoding]::UTF8.GetString($decrypted)
+      Write-Host "[PAS] AES decrypted at runtime: $plainCmd"
+      Invoke-Expression $plainCmd
+      $aes.Dispose()
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging shows decrypted payload; .enc file created in TEMP; AES/XOR + IEX pattern"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove encrypted payload file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1027_013_payload.enc" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Encrypted payload file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.013 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (Event ID 4104): CRITICAL — captures decrypted payload regardless of encryption method"
+  - "File event: .enc or unusual extension file created in TEMP"
+  - "Script block logging: [Security.Cryptography.Aes] or XOR decryption loop followed by Invoke-Expression"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'CreateDecryptor'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.enc' or FileName endswith '.bin' and FolderPath contains 'Temp'"
+  - "MDE alert: 'Encrypted payload decrypted and executed in memory'"
+  - "CONTROL CHECK: Script block logging is the only reliable detection — without it, encrypted payloads are fully opaque"
+  - "CONTROL CHECK: AMSI catches decrypted content before execution — validate AMSI is active and patching-resistant"

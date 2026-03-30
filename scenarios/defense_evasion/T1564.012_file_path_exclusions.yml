@@ -1,0 +1,131 @@
+id: T1564.012_file_path_exclusions
+name: "Hide Artifacts — File/Path Exclusions"
+mitre_technique: "T1564.012"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries drop payloads into paths that are excluded from AV/EDR scanning —
+  either by exploiting known default exclusions (e.g. some AV products exclude
+  C:\Windows\Temp or specific application directories) or by adding new exclusions.
+  This overlaps with T1562.001 (adding exclusions) but focuses on exploiting
+  pre-existing exclusions. Common default exclusions include SQL Server data paths,
+  antivirus scan exclusions added by software installers, and developer tool paths.
+  This scenario enumerates existing Defender exclusions and drops a test file
+  into each to validate whether the path is truly unmonitored.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1564/012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1564.012 — File/Path Exclusions simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate existing Defender exclusion paths"
+    command: |
+      Write-Host "[PAS] Current Windows Defender exclusion paths:"
+      try {
+          $prefs = Get-MpPreference
+          if ($prefs.ExclusionPath) {
+              $prefs.ExclusionPath | ForEach-Object {
+                  Write-Host "  EXCLUDED PATH: $_"
+                  Write-Host "  *** Adversary could drop payload here undetected ***"
+              }
+          } else {
+              Write-Host "  No path exclusions configured"
+          }
+          if ($prefs.ExclusionProcess) {
+              Write-Host "[PAS] Excluded processes:"
+              $prefs.ExclusionProcess | ForEach-Object { Write-Host "  $_ (actions by this process are not scanned)" }
+          }
+          if ($prefs.ExclusionExtension) {
+              Write-Host "[PAS] Excluded extensions:"
+              $prefs.ExclusionExtension | ForEach-Object { Write-Host "  *.$_" }
+          }
+      } catch {
+          Write-Host "  Unable to read MpPreference: $_"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Drop a test payload into each discovered exclusion path"
+    command: |
+      try {
+          $exclusions = (Get-MpPreference).ExclusionPath
+          if ($exclusions) {
+              foreach ($excPath in $exclusions) {
+                  if (Test-Path $excPath) {
+                      $testFile = Join-Path $excPath "PAS_T1564_012_test.exe"
+                      Copy-Item "$env:SystemRoot\System32\cmd.exe" $testFile -Force `
+                          -ErrorAction SilentlyContinue
+                      Write-Host "[PAS] Test binary dropped in exclusion path: $testFile"
+                      Write-Host "[PAS] Verify: does your EDR generate an alert for this file?"
+                  }
+              }
+          } else {
+              Write-Host "[PAS] No exclusions found — dropping test file in common default exclusion paths:"
+              $commonExclusions = @(
+                  "C:\Windows\Temp",
+                  "C:\ProgramData\Microsoft\Windows Defender\Exclusions"
+              )
+              foreach ($p in $commonExclusions) {
+                  if (Test-Path $p) {
+                      $testFile = Join-Path $p "PAS_T1564_012_test.exe"
+                      Copy-Item "$env:SystemRoot\System32\cmd.exe" $testFile -Force `
+                          -ErrorAction SilentlyContinue
+                      Write-Host "[PAS] Test file dropped: $testFile"
+                  }
+              }
+          }
+      } catch {
+          Write-Host "[PAS] Error during exclusion enumeration: $_"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — did dropping a .exe into exclusion paths generate file creation events?"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove all PAS test files from exclusion paths"
+    command: |
+      $searchPaths = @("C:\Windows\Temp","C:\ProgramData")
+      try {
+          $excPaths = (Get-MpPreference).ExclusionPath
+          if ($excPaths) { $searchPaths += $excPaths }
+      } catch {}
+
+      foreach ($p in $searchPaths) {
+          $testFile = Join-Path $p "PAS_T1564_012_test.exe"
+          if (Test-Path $testFile) {
+              Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+              Write-Host "[PAS][Cleanup] Removed: $testFile"
+          }
+      }
+      Write-Host "[PAS][Cleanup] Exclusion path test files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1564.012 cleanup complete"
+
+analyst_checklist:
+  - "CRITICAL: If dropping an .exe into exclusion paths generated NO file event — you have a blind spot"
+  - "CONTROL CHECK: Run Get-MpPreference and audit all ExclusionPath entries — each is a potential staging area"
+  - "CONTROL CHECK: MDE Advanced Hunting should generate alerts regardless of Defender AV exclusions — they are different data planes"
+  - "Sentinel: DeviceFileEvents | where FolderPath in (known_exclusion_paths) and FileName endswith '.exe'"
+  - "Sentinel: DeviceFileEvents | where InitiatingProcessFileName == 'powershell.exe' and FolderPath contains 'Windows\\Temp'"
+  - "MDE alert: File creation in AV exclusion path — MDE should still alert even if AV does not scan"
+  - "CONTROL CHECK: Review software-installed exclusions — many products (SQL, Exchange, AV vendors) add broad exclusions during installation"
+  - "CONTROL CHECK: Exclusion paths should be audited quarterly and non-essential ones removed"

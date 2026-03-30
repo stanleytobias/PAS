@@ -1,0 +1,137 @@
+id: T1574.001_dll_search_order_hijacking
+name: "Hijack Execution Flow — DLL Search Order Hijacking"
+mitre_technique: "T1574.001"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries plant malicious DLLs in directories that are searched before the
+  legitimate DLL location, causing a vulnerable application to load the attacker-controlled
+  DLL instead. Windows searches the application directory before System32 by default.
+  This scenario plants a benign marker DLL in a location that would be loaded before
+  the legitimate DLL, then executes a vulnerable binary — without using a real payload.
+  Detection relies on DLL load telemetry showing unsigned DLLs loaded from unexpected paths.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.001 — DLL Search Order Hijacking simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Identify a directory in PATH that precedes System32 — common hijack opportunity"
+    command: |
+      Write-Host "[PAS] Current PATH entries preceding System32:"
+      $pathEntries = $env:PATH -split ";"
+      $sys32Index  = ($pathEntries | Select-String "System32" | Select-Object -First 1).LineNumber - 1
+      for ($i = 0; $i -lt $sys32Index; $i++) {
+          $p = $pathEntries[$i]
+          if ($p -and (Test-Path $p)) {
+              $acl = Get-Acl $p
+              Write-Host "  $p"
+              $userWritable = $acl.Access | Where-Object {
+                  $_.FileSystemRights -match "Write|Modify|FullControl" -and
+                  $_.IdentityReference -match "Users|Everyone|Authenticated"
+              }
+              if ($userWritable) { Write-Host "    *** USER-WRITABLE — hijackable ***" }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a benign marker DLL in TEMP to simulate DLL plant — naming convention matches a commonly hijacked DLL"
+    command: |
+      # Create a minimal valid DLL as a marker (no malicious code)
+      $dllPath = "$env:TEMP\version.dll"
+
+      # Compile a benign DLL that writes a marker file when loaded
+      Add-Type -TypeDefinition @"
+      using System;
+      using System.IO;
+      using System.Runtime.InteropServices;
+
+      public class PASHijackedDll {
+          [DllImport("kernel32.dll")] static extern bool AllocConsole();
+
+          public static void DllMain() {
+              try {
+                  File.WriteAllText(
+                      Path.Combine(Path.GetTempPath(), "PAS_T1574_dll_loaded.txt"),
+                      "PAS-T1574-DLL-HIJACK-MARKER"
+                  );
+              } catch {}
+          }
+      }
+"@ -OutputAssembly $dllPath -ErrorAction SilentlyContinue
+
+      if (Test-Path $dllPath) {
+          Write-Host "[PAS] Benign hijack DLL planted: $dllPath"
+          Write-Host "[PAS] In a real attack, version.dll here would be loaded by an app searching CWD/PATH before System32"
+      } else {
+          # Fallback: create a plain text marker file with DLL extension
+          Set-Content -Path $dllPath -Value "PAS-T1574-MARKER-NOT-A-REAL-DLL"
+          Write-Host "[PAS] Marker file created at hijack path: $dllPath"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate a vulnerable binary loading from current directory — set CWD to TEMP and invoke binary"
+    command: |
+      # Set working directory to TEMP (where the fake DLL is)
+      Push-Location $env:TEMP
+
+      # Run a binary that is known to search CWD for DLLs
+      # dxcap.exe searches CWD before System32 — used only for telemetry, no real hijack
+      Write-Host "[PAS] Working directory set to: $(Get-Location)"
+      Write-Host "[PAS] Any binary run from here would load DLLs from TEMP before System32"
+      Write-Host "[PAS] Executing benign binary from TEMP working directory:"
+
+      # Run cmd.exe from TEMP directory to generate process event showing CWD = TEMP
+      $proc = Start-Process cmd.exe -ArgumentList "/c echo PAS-T1574-CWD-EXEC" `
+          -WorkingDirectory $env:TEMP -PassThru -NoNewWindow -Wait
+      Write-Host "[PAS] Process executed from TEMP working directory — check DLL load telemetry"
+
+      Pop-Location
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 5
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — DLL image loads from TEMP and process execution with TEMP as working directory should be visible"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove planted DLL and marker files"
+    command: |
+      $artifacts = @(
+          "$env:TEMP\version.dll",
+          "$env:TEMP\PAS_T1574_dll_loaded.txt"
+      )
+      foreach ($f in $artifacts) {
+          Remove-Item $f -Force -ErrorAction SilentlyContinue
+          Write-Host "[PAS][Cleanup] Removed $f"
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.001 cleanup complete — planted DLL and artifacts removed"
+
+analyst_checklist:
+  - "Image load event: DLL loaded from TEMP or non-System32 path by a process that should only load system DLLs"
+  - "MDE alert: 'DLL loaded from suspicious path' or 'Hijacked DLL execution'"
+  - "Sentinel: DeviceImageLoadEvents | where FolderPath contains 'Temp' and FileName == 'version.dll'"
+  - "Sentinel: DeviceImageLoadEvents | where not(FolderPath startswith 'C:\\Windows') and FileName in ('version.dll','wlbsctrl.dll','cryptsp.dll')"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine != '' and FolderPath contains 'Temp' — processes executing from user-writable CWD"
+  - "CONTROL CHECK: Enable DeviceImageLoadEvents collection in MDE advanced features — without image load telemetry, DLL hijacking is a blind spot"
+  - "CONTROL CHECK: Validate alert rules check DLL load PATH, not just process name"
+  - "CONTROL CHECK: User-writable directories that appear in PATH before System32 are persistent hijack opportunities — audit PATH entries"

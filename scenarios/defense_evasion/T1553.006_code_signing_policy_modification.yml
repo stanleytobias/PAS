@@ -1,0 +1,103 @@
+id: T1553.006_code_signing_policy_modification
+name: "Subvert Trust Controls — Code Signing Policy Modification"
+mitre_technique: "T1553.006"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries modify code signing enforcement policies to allow unsigned or self-signed
+  code to execute. On Windows, this includes enabling test signing mode via bcdedit
+  (/set testsigning on), which allows unsigned kernel drivers to load. For PowerShell,
+  setting the execution policy to Bypass or Unrestricted removes script signing
+  requirements. Device Guard and WDAC policies can also be weakened.
+  This scenario exercises both the bcdedit test signing and PowerShell execution
+  policy modification patterns. Requires elevation for bcdedit.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1553/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1553.006 — Code Signing Policy Modification simulation (elevation required for bcdedit)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Enable test signing mode via bcdedit — allows unsigned drivers"
+    command: |
+      Write-Host "[PAS] Current secure boot / test signing state:"
+      bcdedit /enum current 2>&1 | Select-String "testsigning|nointegritychecks|loadoptions" |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Enabling test signing mode:"
+      bcdedit /set testsigning on 2>&1
+      Write-Host "[PAS] Test signing enabled — unsigned kernel drivers can now load"
+      Write-Host "[PAS] Watermark 'Test Mode' appears in bottom-right corner on reboot"
+      Write-Host "[PAS] Immediately disabling:"
+      bcdedit /set testsigning off 2>&1
+      Write-Host "[PAS] Test signing disabled"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Set PowerShell execution policy to Bypass — removes script signing"
+    command: |
+      Write-Host "[PAS] Current PowerShell execution policies:"
+      Get-ExecutionPolicy -List | Format-Table -AutoSize
+
+      Write-Host "[PAS] Setting LocalMachine policy to Bypass:"
+      Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope LocalMachine -Force `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] LocalMachine policy set to Bypass — any .ps1 runs unsigned"
+      Write-Host "[PAS] Restoring to RemoteSigned:"
+      Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] LocalMachine policy restored to RemoteSigned"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 3: Per-process execution policy bypass — session-scope, no registry change"
+    command: |
+      Write-Host "[PAS] Method 3: Per-process bypass — no registry modification:"
+      Write-Host "[PAS] Command: powershell.exe -ExecutionPolicy Bypass -File malicious.ps1"
+      Start-Process powershell.exe `
+          -ArgumentList "-ExecutionPolicy Bypass -NoProfile -Command `"Write-Host 'PAS-T1553.006-BYPASS'`"" `
+          -Wait -NoNewWindow
+      Write-Host "[PAS] -ExecutionPolicy Bypass executed (per-process — no policy change)"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — bcdedit with testsigning; Set-ExecutionPolicy to Bypass; powershell.exe -ExecutionPolicy Bypass"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure execution policy is restored and test signing is off"
+    command: |
+      Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force `
+          -ErrorAction SilentlyContinue
+      bcdedit /set testsigning off 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Execution policy and test signing confirmed restored"
+      Get-ExecutionPolicy -List | Format-Table -AutoSize
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1553.006 cleanup complete"
+
+analyst_checklist:
+  - "Process event: bcdedit.exe with '/set testsigning on' arguments"
+  - "Process event: powershell.exe with -ExecutionPolicy Bypass argument"
+  - "Registry event: HKLM\SOFTWARE\Microsoft\PowerShell\1\ShellIds\Microsoft.PowerShell\ExecutionPolicy changed to Bypass"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'bcdedit.exe' and ProcessCommandLine contains 'testsigning'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'powershell.exe' and ProcessCommandLine matches regex @'(?i)-exec(utionpolicy)?\\s+bypass'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'ExecutionPolicy' and RegistryValueData == 'Bypass'"
+  - "MDE alert: 'PowerShell execution policy bypass' or 'Test signing mode enabled'"
+  - "CONTROL CHECK: bcdedit testsigning should alert — almost never legitimate in production environments"
+  - "CONTROL CHECK: -ExecutionPolicy Bypass in PowerShell command line is one of the most common malware indicators"

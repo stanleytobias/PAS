@@ -1,0 +1,116 @@
+id: T1574.009_path_interception_unquoted_path
+name: "Hijack Execution Flow — Path Interception by Unquoted Path"
+mitre_technique: "T1574.009"
+mitre_tactic: "defense_evasion"
+description: >
+  When a Windows service binary path contains spaces and is not enclosed in quotes,
+  Windows parses the path ambiguously. For a path like
+  C:\Program Files\My App\service.exe, Windows first tries to execute
+  C:\Program.exe, then C:\Program Files\My.exe, then the full path.
+  An adversary who can write to C:\ or C:\Program Files\ can drop a binary
+  (Program.exe or My.exe) that will execute with SYSTEM privileges when the service starts.
+  This scenario identifies unquoted service paths on the system and demonstrates
+  the vulnerable path segments an adversary could exploit.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1574/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1574.009 — Unquoted Service Path Interception simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate all services with unquoted paths containing spaces"
+    command: |
+      Write-Host "[PAS] Scanning for unquoted service paths:"
+      $vulnServices = Get-WmiObject Win32_Service |
+          Where-Object {
+              $_.PathName -and
+              $_.PathName -notmatch '^"' -and
+              $_.PathName -match ' ' -and
+              $_.PathName -notmatch '^[A-Z]:\\Windows\\'
+          } |
+          Select-Object Name, StartMode, State, PathName
+
+      if ($vulnServices) {
+          Write-Host "  Found $($vulnServices.Count) potentially vulnerable service(s):"
+          foreach ($svc in $vulnServices) {
+              Write-Host "  ---"
+              Write-Host "  Name:     $($svc.Name)"
+              Write-Host "  State:    $($svc.State)"
+              Write-Host "  Path:     $($svc.PathName)"
+
+              # Calculate exploitable path segments
+              $parts = $svc.PathName -split ' '
+              $accum = ""
+              for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                  $accum = if ($accum) { "$accum $($parts[$i])" } else { $parts[$i] }
+                  $candidate = "$accum.exe"
+                  $dir       = Split-Path $candidate -Parent
+                  if (Test-Path $dir -ErrorAction SilentlyContinue) {
+                      Write-Host "  Hijackable candidate: $candidate (parent dir exists)"
+                  }
+              }
+          }
+      } else {
+          Write-Host "  No vulnerable unquoted paths found (well-configured system)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a vulnerable test service with an unquoted path to demonstrate detection"
+    command: |
+      $svcName = "PAS_T1574_009_UnquotedSvc"
+      $svcPath = "C:\Program Files\PAS Test Service\PAS_service.exe"
+
+      # Create the directory and a benign binary
+      $svcDir = "C:\Program Files\PAS Test Service"
+      New-Item -ItemType Directory $svcDir -Force | Out-Null
+      Copy-Item "$env:SystemRoot\System32\cmd.exe" "$svcDir\PAS_service.exe" -Force
+
+      # Create service with UNQUOTED path (intentionally vulnerable)
+      sc.exe create $svcName binPath= "$svcPath" start= demand | Out-Null
+      Write-Host "[PAS] Created vulnerable service: $svcName"
+      Write-Host "[PAS] Unquoted path: $svcPath"
+      Write-Host "[PAS] Windows would try C:\Program.exe before the real binary"
+
+      # Show the hijackable candidate
+      Write-Host "[PAS] Hijackable path: C:\Program.exe (if attacker can write to C:\)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — new service with unquoted binary path should be visible in Event ID 7045"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test service and directory"
+    command: |
+      sc.exe delete "PAS_T1574_009_UnquotedSvc" | Out-Null
+      Remove-Item "C:\Program Files\PAS Test Service" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test service and directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1574.009 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 7045: New service installed — inspect ImagePath for spaces without surrounding quotes"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Services' and RegistryValueName == 'ImagePath' and RegistryValueData matches regex @'[^\"]+\\s[^\"]+\\.exe'"
+  - "Sentinel: SecurityEvent | where EventID == 7045 | where ServiceFileName !startswith '\"' and ServiceFileName contains ' '"
+  - "MDE: Vulnerability management will flag unquoted service paths as a misconfiguration"
+  - "CONTROL CHECK: Run: wmic service get name,pathname | findstr /i /v 'C:\\Windows' | findstr /i /v '\"' — any results are vulnerable"
+  - "CONTROL CHECK: All service binary paths must be quoted — GPO or config baseline should enforce this"
+  - "CONTROL CHECK: Alert on any .exe created at C:\, C:\Program.exe, C:\Program Files\[vendor].exe paths"

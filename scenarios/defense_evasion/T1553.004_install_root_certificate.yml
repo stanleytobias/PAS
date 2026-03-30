@@ -1,0 +1,115 @@
+id: T1553.004_install_root_certificate
+name: "Subvert Trust Controls — Install Root Certificate"
+mitre_technique: "T1553.004"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries install a rogue root certificate into the Windows certificate store to
+  make their self-signed certificates appear trusted. This enables HTTPS interception
+  (MitM), code signing with self-generated certificates that Windows trusts, and
+  bypassing SSL warnings. Installation via certutil -addstore or the PowerShell
+  Import-Certificate cmdlet requires elevation for the Machine store but works
+  without elevation for the Current User store.
+  This scenario generates the full certificate installation telemetry using a
+  self-generated test certificate, then immediately removes it.
+  Requires elevation for HKLM store.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1553/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1553.004 — Install Root Certificate simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Generate a self-signed root certificate for testing"
+    command: |
+      $certPath = "$env:TEMP\PAS_T1553_004_root.cer"
+
+      # Create a self-signed cert
+      $cert = New-SelfSignedCertificate `
+          -Subject "CN=PAS-T1553-004-TestRoot, O=PAS Detection Test" `
+          -CertStoreLocation "Cert:\CurrentUser\My" `
+          -KeyUsage CertSign, CRLSign `
+          -KeyExportPolicy Exportable `
+          -NotAfter (Get-Date).AddDays(1) `
+          -ErrorAction Stop
+
+      # Export to file
+      Export-Certificate -Cert $cert -FilePath $certPath -Type CERT | Out-Null
+      Write-Host "[PAS] Self-signed root cert created: $certPath"
+      Write-Host "[PAS] Thumbprint: $($cert.Thumbprint)"
+      Write-Host "[PAS] Subject: $($cert.Subject)"
+      $cert.Thumbprint | Out-File "$env:TEMP\PAS_T1553_004_thumbprint.txt"
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Install to CurrentUser root store via PowerShell"
+    command: |
+      $certPath = "$env:TEMP\PAS_T1553_004_root.cer"
+      Write-Host "[PAS] Method 1: Import-Certificate to CurrentUser\Root (no elevation needed)"
+      Import-Certificate -FilePath $certPath -CertStoreLocation "Cert:\CurrentUser\Root" `
+          -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Certificate installed to CurrentUser\Root — now trusted by this user"
+      Write-Host "[PAS] Any HTTPS cert signed by this CA will appear valid to this user"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Install via certutil -addstore — common adversary method"
+    command: |
+      $certPath = "$env:TEMP\PAS_T1553_004_root.cer"
+      Write-Host "[PAS] Method 2: certutil -addstore -user Root (CurrentUser store)"
+      certutil -addstore -user Root $certPath 2>&1 | Out-Null
+      Write-Host "[PAS] certutil -addstore executed — process event generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — certutil.exe with -addstore argument; certificate store write events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test certificate from all stores"
+    command: |
+      $thumbprint = Get-Content "$env:TEMP\PAS_T1553_004_thumbprint.txt" `
+          -ErrorAction SilentlyContinue
+
+      if ($thumbprint) {
+          # Remove from CurrentUser stores
+          @("Cert:\CurrentUser\My","Cert:\CurrentUser\Root") | ForEach-Object {
+              $store = $_
+              Get-ChildItem $store -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Thumbprint -eq $thumbprint.Trim() } |
+                  Remove-Item -Force -ErrorAction SilentlyContinue
+              Write-Host "[PAS][Cleanup] Removed cert from $store"
+          }
+      }
+      @("$env:TEMP\PAS_T1553_004_root.cer",
+        "$env:TEMP\PAS_T1553_004_thumbprint.txt") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Test cert files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1553.004 cleanup complete — verify cert is removed: Get-ChildItem Cert:\CurrentUser\Root | Where Subject -like '*PAS*'"
+
+analyst_checklist:
+  - "Process event: certutil.exe with -addstore argument — high-priority indicator"
+  - "Certificate event: new root CA certificate installed in LocalMachine or CurrentUser Root store"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains '-addstore'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains 'Root'"
+  - "MDE alert: 'Root certificate installed' or 'certutil adding certificate to root store'"
+  - "CONTROL CHECK: certutil -addstore targeting Root store should always alert — rarely legitimate in managed environments"
+  - "CONTROL CHECK: Monitor Cert:\LocalMachine\Root for unexpected additions — run quarterly baseline comparison"
+  - "CONTROL CHECK: Any new root CA not from Microsoft, your org's PKI, or approved vendors is suspicious"

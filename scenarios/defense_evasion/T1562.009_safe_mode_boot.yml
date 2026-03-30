@@ -1,0 +1,112 @@
+id: T1562.009_safe_mode_boot
+name: "Impair Defenses — Safe Mode Boot"
+mitre_technique: "T1562.009"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries configure Windows to boot into Safe Mode on the next restart, then
+  register a service or Run key that executes their payload in Safe Mode — where
+  third-party EDR and AV drivers typically do not load. This is used heavily by
+  ransomware operators to disable endpoint defenses before encryption.
+  The technique requires bcdedit to set safeboot and sc config to ensure their
+  service starts in Safe Mode (by adding it to the SafeBoot registry keys).
+  This scenario exercises the full bcdedit + SafeBoot registry pattern and
+  immediately reverses the boot configuration.
+  Requires elevation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/009/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1562.009 — Safe Mode Boot simulation (elevation required — DO NOT REBOOT DURING TEST)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Record current boot configuration baseline"
+    command: |
+      Write-Host "[PAS] Current boot configuration:"
+      bcdedit /enum current 2>&1 | Select-String "safeboot|identifier|description" |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 1: Set safeboot minimal via bcdedit — telemetry generation without reboot"
+    command: |
+      Write-Host "[PAS] Setting safeboot:minimal via bcdedit:"
+      bcdedit /set safeboot minimal 2>&1
+      Write-Host "[PAS] WARNING: System is now configured to boot into Safe Mode on next restart"
+      Write-Host "[PAS] Immediately reversing — do NOT reboot before cleanup runs"
+
+  - step: 4
+    type: exec_powershell
+    description: "Method 2: Register a service in SafeBoot registry — ensures payload survives into Safe Mode"
+    command: |
+      # Services must be listed under SafeBoot\Minimal or SafeBoot\Network to start in Safe Mode
+      $safePath = "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\PAS_T1562_009_SafeSvc"
+      New-Item $safePath -Force | Out-Null
+      Set-ItemProperty $safePath -Name "(Default)" -Value "Service" -Force
+      Write-Host "[PAS] SafeBoot\Minimal registry entry added: PAS_T1562_009_SafeSvc"
+      Write-Host "[PAS] In real ransomware: the malicious service name is registered here"
+      Write-Host "[PAS] On Safe Mode boot, this service starts while EDR/AV does not"
+
+  - step: 5
+    type: exec_powershell
+    description: "Immediately reverse the safeboot bcdedit setting"
+    command: |
+      Write-Host "[PAS] Reverting safeboot configuration:"
+      bcdedit /deletevalue safeboot 2>&1
+      Write-Host "[PAS] safeboot value deleted — system will boot normally"
+      Write-Host "[PAS] Verify with: bcdedit /enum current | findstr safeboot"
+      bcdedit /enum current 2>&1 | Select-String "safeboot" |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 6
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 7
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — bcdedit.exe execution with /set safeboot and SafeBoot registry key creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Actively reverse safeboot and remove SafeBoot registry entry"
+    command: |
+      # Unconditionally attempt to remove safeboot — safe to run even if not set
+      bcdedit /deletevalue safeboot 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] bcdedit /deletevalue safeboot executed"
+
+      $safePath = "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\PAS_T1562_009_SafeSvc"
+      if (Test-Path $safePath) {
+          Remove-Item $safePath -Recurse -Force
+          Write-Host "[PAS][Cleanup] SafeBoot registry entry removed"
+      }
+      # Verify safeboot is gone
+      $check = bcdedit /enum current 2>&1 | Select-String "safeboot"
+      if ($check) {
+          Write-Host "[PAS][Cleanup] CRITICAL WARNING: safeboot STILL SET — run 'bcdedit /deletevalue safeboot' manually before rebooting"
+      } else {
+          Write-Host "[PAS][Cleanup] Confirmed: safeboot not set — system will boot normally"
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1562.009 cleanup complete — verify system will boot normally before any restart"
+
+analyst_checklist:
+  - "Process event: bcdedit.exe with '/set safeboot' arguments — immediate high-priority alert"
+  - "Registry event: HKLM\SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal\* key created"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'bcdedit.exe' and ProcessCommandLine contains 'safeboot'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'SafeBoot' and ActionType == 'RegistryKeyCreated'"
+  - "MDE alert: 'Safe mode boot configured' or 'bcdedit safeboot modification'"
+  - "CONTROL CHECK: bcdedit.exe execution should ALWAYS alert — it has almost no legitimate admin use in managed environments"
+  - "CONTROL CHECK: SafeBoot\Minimal registry writes by non-SYSTEM processes are a ransomware pre-encryption indicator"
+  - "CONTROL CHECK: This is a T+0 alert — response team must act before the system is rebooted"

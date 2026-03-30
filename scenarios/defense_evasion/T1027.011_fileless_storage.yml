@@ -1,0 +1,121 @@
+id: T1027.011_fileless_storage
+name: "Obfuscated Files or Information — Fileless Storage"
+mitre_technique: "T1027.011"
+mitre_tactic: "defense_evasion"
+description: >
+  Adversaries store payloads or configuration in non-file locations to evade file-based
+  detection — primarily the Windows Registry and WMI repository. A payload stored as a
+  registry value or WMI ActiveScriptConsumer has no corresponding file on disk, defeating
+  file hash scanning, file integrity monitoring, and directory monitoring.
+  This scenario stores a benign encoded payload in both the registry and WMI, then reads
+  and executes it — exercising the complete fileless storage and retrieval pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/011/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1027.011 — Fileless Storage simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Method 1: Store encoded payload in registry — read back and execute"
+    command: |
+      $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+      $regName = "PAS_T1027_011_Payload"
+
+      # Encode a benign payload
+      $payload = "Write-Host 'PAS-T1027.011-REGISTRY-FILELESS'"
+      $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+
+      Set-ItemProperty $regPath -Name $regName -Value $encoded -Force
+      Write-Host "[PAS] Encoded payload stored in registry: $regPath\$regName"
+      Write-Host "[PAS] Value (truncated): $($encoded.Substring(0,40))..."
+
+      # Read back and execute — simulates fileless loader
+      $stored  = (Get-ItemProperty $regPath -Name $regName).$regName
+      $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($stored))
+      Write-Host "[PAS] Retrieved and decoded from registry"
+      Invoke-Expression $decoded
+
+  - step: 3
+    type: exec_powershell
+    description: "Method 2: Store payload in WMI namespace property"
+    command: |
+      Write-Host "[PAS] Method 2: WMI namespace property storage"
+      $wmiNamespace = "root\cimv2"
+      $className    = "PAS_T1027_011_Store"
+
+      # Create a WMI class to hold the payload
+      try {
+          $class = New-Object System.Management.ManagementClass(
+              $wmiNamespace, [String]::Empty, $null)
+          $class["__CLASS"] = $className
+          $class.Qualifiers.Add("Static", $true)
+          $class.Properties.Add("Payload", `
+              [System.Management.CimType]::String, $false)
+          $class.Put() | Out-Null
+
+          # Store encoded payload as WMI property
+          $payload = "Write-Host 'PAS-T1027.011-WMI-FILELESS'"
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($payload))
+          $instance = $class.CreateInstance()
+          $instance["Payload"] = $encoded
+          $instance.Put() | Out-Null
+          Write-Host "[PAS] Payload stored in WMI class: $wmiNamespace:$className"
+
+          # Read back
+          $stored  = (Get-WmiObject -Namespace $wmiNamespace -Class $className).Payload
+          $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($stored))
+          Write-Host "[PAS] Retrieved from WMI and decoded"
+          Invoke-Expression $decoded
+      } catch {
+          Write-Host "[PAS] WMI storage failed (may require elevation): $_"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry write to Explorer\Advanced with base64 value; WMI class creation; IEX from registry-retrieved value"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove registry payload and WMI class"
+    command: |
+      Remove-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" `
+          -Name "PAS_T1027_011_Payload" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Registry payload removed"
+
+      try {
+          $class = Get-WmiObject -Namespace "root\cimv2" -Class "PAS_T1027_011_Store" `
+              -ErrorAction SilentlyContinue
+          if ($class) { $class | Remove-WmiObject }
+          Write-Host "[PAS][Cleanup] WMI class removed"
+      } catch {
+          Write-Host "[PAS][Cleanup] WMI class not found or already removed"
+      }
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1027.011 cleanup complete"
+
+analyst_checklist:
+  - "Registry event: base64 string written to HKCU\...\Explorer\Advanced by powershell.exe"
+  - "WMI event: new WMI class created in root\cimv2 by powershell.exe"
+  - "Script block logging (4104): Get-ItemProperty → FromBase64String → Invoke-Expression chain"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueData matches regex @'^[A-Za-z0-9+/]{50,}={0,2}$' — base64 values in registry"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiClassCreation' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Registry-based payload storage' or 'WMI used for fileless persistence'"
+  - "CONTROL CHECK: Base64-encoded values longer than 100 chars in HKCU run/software keys should alert"
+  - "CONTROL CHECK: WMI class creation by non-system processes is rare and should always be investigated"
