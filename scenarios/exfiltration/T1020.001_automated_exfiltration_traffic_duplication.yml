@@ -1,0 +1,67 @@
+id: T1020.001_automated_exfiltration_traffic_duplication
+name: "Automated Exfiltration — Traffic Duplication"
+mitre_technique: "T1020.001"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries leverage traffic mirroring features on network devices (switches,
+  routers, cloud VNets) to automatically duplicate all network traffic to an
+  adversary-controlled destination. In cloud environments, Azure vNet TAP or
+  AWS Traffic Mirroring can redirect all traffic flowing through a network
+  interface to a capture endpoint. Unlike host-based exfiltration, traffic
+  duplication is invisible to endpoint detection and captures all plaintext
+  traffic in transit. Detection requires network device audit log monitoring.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1020/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1020.001 — Traffic Duplication: adversary configures network device or cloud vNet mirror to copy all traffic to attacker-controlled endpoint"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for Azure Network Watcher packet capture or vNet TAP configuration"
+    command: |
+      Write-Host "[PAS] Traffic duplication exposure check:"
+      Write-Host "[PAS] Azure vNet TAP — mirrors all vNIC traffic to a collection endpoint"
+      Write-Host "[PAS] Real attack: az network vnet tap create --resource-group ... --name PAS_tap"
+      Write-Host ""
+      $az = Get-Command az -ErrorAction SilentlyContinue
+      if ($az) {
+          Write-Host "[PAS] Azure CLI available — real check:"
+          Write-Host "  az network vnet tap list (enumerate existing TAP configurations)"
+          Write-Host "  az network watcher packet-capture list (enumerate packet captures)"
+      }
+
+  - step: 3
+    type: marker
+    description: "vNet TAP audit check"
+    message: "CONTROL CHECK: Azure — run 'az network vnet tap list --all-subscriptions'. Any vNet TAP not provisioned by network team is a critical finding. vNet TAP silently captures ALL traffic."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — Microsoft.Network/virtualNetworkTaps/write operations from unexpected principals"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1020.001 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Azure Activity Log: virtualNetworkTaps/write or packetCaptures/write by non-network-admin principal"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'virtualNetworkTaps'"
+  - "AWS CloudTrail: CreateTrafficMirrorSession or CreateTrafficMirrorTarget events"
+  - "CONTROL CHECK: Azure Policy — deny vNet TAP creation by non-approved roles"
+  - "CONTROL CHECK: Network device CLI access — restrict and audit who can configure port mirroring on managed switches"
+  - "CONTROL CHECK: TLS everywhere — traffic mirroring only captures encrypted blobs without the keys"

@@ -1,0 +1,103 @@
+id: T1052.001_exfiltration_over_usb
+name: "Exfiltration Over Physical Medium — Exfiltration over USB"
+mitre_technique: "T1052.001"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries specifically use USB flash drives or USB-connected storage devices
+  to exfiltrate data. USB exfiltration is particularly effective in environments
+  with strict network egress controls but permissive USB policies. Malware may
+  automate USB exfiltration by monitoring for USB insertion events and immediately
+  copying staged data to any connected drive. Detection requires USB device
+  monitoring (PnP events), file copy auditing on removable drive paths, and
+  endpoint DLP policies for removable storage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1052/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1052.001 — USB Exfiltration simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register WMI event for USB insertion — automated exfil trigger"
+    command: |
+      Write-Host "[PAS] Automated USB exfil trigger registration:"
+      Write-Host "[PAS] Real attack: WMI event subscription fires on Win32_VolumeChangeEvent -> DriveType=2"
+      Write-Host "[PAS] Pattern: powershell -c robocopy C:\staged %DriveLetter%:\exfil /E /Z"
+
+      # Simulate the WMI query that detects USB insertion
+      $wmiQuery = "SELECT * FROM Win32_VolumeChangeEvent WHERE EventType = 2"
+      Write-Host "[PAS] WMI monitor query: $wmiQuery"
+      Write-Host "[PAS] EventType 2 = USB/removable volume arrived"
+
+      # Check for currently connected USB drives
+      $usbDrives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=2" `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] USB drives currently connected: $($usbDrives.Count)"
+      $usbDrives | ForEach-Object {
+          Write-Host "  USB: $($_.DeviceID) [$($_.VolumeName)] $([Math]::Round($_.FreeSpace/1GB,1))GB free"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate USB exfil — copy staged data to USB drive sim"
+    command: |
+      $usbSim   = "$env:TEMP\PAS_T1052_001_USB"
+      $stageDir = "$env:TEMP\PAS_T1052_001_stage"
+      New-Item -ItemType Directory $usbSim   -Force | Out-Null
+      New-Item -ItemType Directory $stageDir  -Force | Out-Null
+
+      # Create staged data
+      "PAS-T1052.001-USB-EXFIL-PAYLOAD" | Set-Content "$stageDir\exfil_data.zip"
+
+      # Simulate copy to USB
+      Write-Host "[PAS] USB exfiltration copy:"
+      Copy-Item "$stageDir\exfil_data.zip" $usbSim -Force
+      Write-Host "[PAS] File copied to USB: exfil_data.zip"
+
+      # Simulate robocopy pattern
+      $proc = Start-Process robocopy.exe `
+          -ArgumentList "$stageDir $usbSim /E /Z /LOG:$env:TEMP\PAS_T1052_001_robocopy.log" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] robocopy exfil process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — USB device insertion events, robocopy to removable drive, file copy events to D/E/F drive letters"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove USB exfil simulation artifacts"
+    command: |
+      @("$env:TEMP\PAS_T1052_001_USB",
+        "$env:TEMP\PAS_T1052_001_stage",
+        "$env:TEMP\PAS_T1052_001_robocopy.log") |
+          ForEach-Object { Remove-Item $_ -Recurse -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] USB exfil simulation artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1052.001 cleanup complete"
+
+analyst_checklist:
+  - "Device event: Event ID 6416 — USB storage device inserted"
+  - "Process event: robocopy.exe or xcopy.exe targeting removable drive path immediately after USB insertion"
+  - "File event: bulk file creation on removable drive path"
+  - "Sentinel: SecurityEvent | where EventID == 6416 | join DeviceFileEvents on DeviceName | where FolderPath startswith 'D:'"
+  - "MDE alert: 'USB data exfiltration — bulk copy to removable media'"
+  - "CONTROL CHECK: MDE Device Control policy — block or restrict USB storage; require IT approval"
+  - "CONTROL CHECK: BitLocker To Go enforcement — data written to USB must be encrypted"
+  - "CONTROL CHECK: Alert on robocopy/xcopy to removable drive paths — rarely legitimate without prior change ticket"

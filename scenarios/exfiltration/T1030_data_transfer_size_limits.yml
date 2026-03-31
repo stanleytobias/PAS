@@ -1,0 +1,107 @@
+id: T1030_data_transfer_size_limits
+name: "Data Transfer Size Limits"
+mitre_technique: "T1030"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data in fixed-size chunks or limit individual packet/request
+  sizes to avoid triggering network DLP thresholds and anomaly detection rules that
+  alert on large single transfers. Instead of sending a 500MB archive in one request,
+  an adversary splits it into 1MB chunks sent over minutes or hours, each below the
+  alerting threshold. Combined with scheduled transfer (T1029), this produces a
+  low-and-slow exfiltration pattern that is significantly harder to detect.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1030/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1030 — Data Transfer Size Limits simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create test data and exfiltrate in fixed-size chunks"
+    command: |
+      # Create a test payload to chunk
+      $dataPath = "$env:TEMP\PAS_T1030_payload.bin"
+      $chunkDir = "$env:TEMP\PAS_T1030_chunks"
+      New-Item -ItemType Directory $chunkDir -Force | Out-Null
+
+      # Write 50KB of simulated collected data
+      $data = [byte[]](1..51200 | ForEach-Object { Get-Random -Max 256 })
+      [IO.File]::WriteAllBytes($dataPath, $data)
+      Write-Host "[PAS] Test payload: $([Math]::Round($data.Length/1KB,1)) KB"
+
+      # Split into 10KB chunks (below hypothetical 15KB DLP threshold)
+      $chunkSize = 10240
+      $chunks    = [Math]::Ceiling($data.Length / $chunkSize)
+      for ($i = 0; $i -lt $chunks; $i++) {
+          $start  = $i * $chunkSize
+          $length = [Math]::Min($chunkSize, $data.Length - $start)
+          $chunk  = $data[$start..($start + $length - 1)]
+          [IO.File]::WriteAllBytes("$chunkDir\chunk_$i.bin", $chunk)
+      }
+      Write-Host "[PAS] Split into $chunks chunks of ~10KB each (below 15KB DLP threshold)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Transmit each chunk with delay — low-and-slow pattern"
+    command: |
+      $chunkDir = "$env:TEMP\PAS_T1030_chunks"
+      $sent = 0
+      foreach ($chunk in Get-ChildItem $chunkDir -Filter "*.bin" | Sort-Object Name) {
+          $chunkData = [IO.File]::ReadAllBytes($chunk.FullName)
+          $encoded   = [Convert]::ToBase64String($chunkData)
+          try {
+              $req = [System.Net.WebRequest]::Create("http://127.0.0.1:8080/chunk")
+              $req.Method = "POST"
+              $req.ContentType = "application/octet-stream"
+              $req.Headers.Add("X-Chunk-Index", "$sent")
+              $req.Headers.Add("X-Total-Chunks", "$(($chunkDir | Get-ChildItem).Count)")
+              $req.Timeout = 500
+              $body = [Text.Encoding]::UTF8.GetBytes($encoded)
+              $req.ContentLength = $body.Length
+              $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Chunk $sent sent ($($chunkData.Length) bytes)"
+          $sent++
+          Start-Sleep -Milliseconds 300
+      }
+      Write-Host "[PAS] Chunked exfiltration complete: $sent chunks, ~10KB each"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — repeated small HTTP POSTs with sequential chunk headers, cumulative volume exceeds threshold"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove chunked exfiltration artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1030_payload.bin" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1030_chunks" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Chunked exfiltration artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1030 cleanup complete"
+
+analyst_checklist:
+  - "Network event: many small HTTP POSTs to same destination within a short window — cumulative volume alerting"
+  - "DLP: per-request size limits evade single-transfer DLP; cumulative session volume detection is required"
+  - "Sentinel: DeviceNetworkEvents | where ActionType == 'ConnectionSuccess' | summarize TotalBytes=sum(SentBytes) by RemoteIP, InitiatingProcessFileName, bin(TimeGenerated,10m) | where TotalBytes > 10000000"
+  - "MDE alert: 'Data exfiltration via chunked transfers'"
+  - "CONTROL CHECK: DLP policies must track cumulative session volume, not just per-request size"
+  - "CONTROL CHECK: Egress proxy — inspect Content-Type and header patterns; sequential X-Chunk-Index is a clear indicator"
+  - "CONTROL CHECK: Baseline normal per-process outbound volume; alert on anomalous sustained transfer"

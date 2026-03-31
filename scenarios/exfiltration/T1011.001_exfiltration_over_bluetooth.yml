@@ -1,0 +1,88 @@
+id: T1011.001_exfiltration_over_bluetooth
+name: "Exfiltration Over Other Network Medium — Exfiltration Over Bluetooth"
+mitre_technique: "T1011.001"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data over Bluetooth to a device in physical proximity,
+  bypassing all network-based DLP and egress controls. This requires physical access
+  or a previously paired device nearby. Methods include Bluetooth OBEX file transfer,
+  Bluetooth PAN (Personal Area Network) creating a secondary IP network, and
+  Bluetooth Serial Port Profile. Detection requires monitoring Bluetooth adapter
+  activity and pairing events — most network security tools are blind to Bluetooth.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1011/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1011.001 — Bluetooth Exfiltration simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Bluetooth adapters and paired devices"
+    command: |
+      Write-Host "[PAS] Bluetooth enumeration:"
+      # Check for Bluetooth adapter
+      $btAdapter = Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue |
+          Where-Object { $_.Status -eq 'OK' }
+      if ($btAdapter) {
+          Write-Host "  Bluetooth adapter: $($btAdapter.FriendlyName)"
+          Write-Host "  [RISK] Bluetooth present — exfiltration channel available"
+      } else {
+          Write-Host "  No Bluetooth adapter detected"
+      }
+
+      # Enumerate paired devices via registry
+      Write-Host "[PAS] Paired Bluetooth devices:"
+      $btRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+      if (Test-Path $btRegPath) {
+          Get-ChildItem $btRegPath -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                  $name = (Get-ItemProperty $_.PSPath -Name "Name" `
+                      -ErrorAction SilentlyContinue).Name
+                  if ($name) { Write-Host "  Paired: $([Text.Encoding]::ASCII.GetString($name).TrimEnd("`0"))" }
+              }
+      } else {
+          Write-Host "  No paired devices found in registry"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Bluetooth OBEX file transfer initiation"
+    command: |
+      Write-Host "[PAS] Bluetooth OBEX exfil pattern:"
+      Write-Host "[PAS] Real: use 32feet.NET or Windows BT API to OBEX-push file to paired device"
+      Write-Host "[PAS] Simulating WMI Bluetooth device enumeration:"
+      Get-WmiObject -Query "SELECT * FROM Win32_PnPEntity WHERE Description LIKE '%Bluetooth%'" `
+          -ErrorAction SilentlyContinue | Select-Object -First 3 |
+          ForEach-Object { Write-Host "  BT device: $($_.Name)" }
+      Write-Host "[PAS] Bluetooth exfil is invisible to network-based DLP"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Bluetooth device pairing events, OBEX file transfer, BT PAN adapter activation"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1011.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Device event: Bluetooth device paired (Event ID 8001 in Bluetooth log) — new pairing outside IT process"
+  - "File event: OBEX file transfer — Windows logs in Bluetooth operational event log"
+  - "Sentinel: DeviceEvents | where ActionType contains 'Bluetooth' and ActionType contains 'Pair'"
+  - "MDE alert: 'Bluetooth data transfer detected'"
+  - "CONTROL CHECK: Disable Bluetooth via Intune/GPO on corporate devices unless required"
+  - "CONTROL CHECK: If Bluetooth needed — restrict pairing to IT-managed devices only via MDM policy"
+  - "CONTROL CHECK: Physical security — Bluetooth exfil requires attacker within ~10m of device"

