@@ -1,0 +1,89 @@
+id: T1485_data_destruction
+name: "Data Destruction"
+mitre_technique: "T1485"
+mitre_tactic: "impact"
+description: >
+  Adversaries overwrite or securely delete files to make data irrecoverable,
+  denying victims access to their own systems and data. Unlike simple file deletion
+  (which leaves data recoverable), secure deletion overwrites file content before
+  removing directory entries. Methods: cipher /w (built-in Windows secure wipe),
+  format /p (multipass), custom overwrite loops, and third-party tools. Ransomware
+  actors use data destruction as leverage alongside encryption. This simulation
+  targets only PAS-created staging files in TEMP — never system files.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1485/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1485 — Data Destruction simulation (PAS staging directory ONLY — never system files)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create staging data and simulate secure deletion"
+    command: |
+      $destroyDir = "$env:TEMP\PAS_T1485_destroy_stage"
+      New-Item -ItemType Directory $destroyDir -Force | Out-Null
+
+      # Create test files representing data to be destroyed
+      1..5 | ForEach-Object {
+          "PAS-T1485-DATA-TO-DESTROY-$_-$(Get-Random)" |
+              Set-Content "$destroyDir\document_$_.docx"
+      }
+      Write-Host "[PAS] Staging data created: $((Get-ChildItem $destroyDir).Count) files in $destroyDir"
+
+      Write-Host "[PAS] Secure file deletion via cipher /w (overwrites free space):"
+      Write-Host "[PAS] NOTE: cipher /w operates on free space, not live files — safe to run"
+      $proc = Start-Process cipher.exe -ArgumentList "/w:$destroyDir" `
+          -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 1500
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] cipher.exe /w process event generated"
+
+      Write-Host "[PAS] File overwrite pattern (adversary-style):"
+      foreach ($f in Get-ChildItem $destroyDir) {
+          $bytes = [byte[]](1..$f.Length | ForEach-Object { 0x00 })
+          [IO.File]::WriteAllBytes($f.FullName, $bytes)
+          Remove-Item $f.FullName -Force
+          Write-Host "[PAS] Overwritten and deleted: $($f.Name)"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cipher.exe /w execution, bulk file deletion/overwrite events, high-volume FileDeleted actions"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove destruction staging directory"
+    command: |
+      Get-Process cipher -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1485_destroy_stage" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Destruction staging directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1485 cleanup complete"
+
+analyst_checklist:
+  - "Process event: cipher.exe with /w flag — secure wipe operation"
+  - "File event: high-volume FileDeleted or FileModified (overwrite to zeros) in short window"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cipher.exe' and ProcessCommandLine contains '/w'"
+  - "Sentinel: DeviceFileEvents | where ActionType == 'FileDeleted' | summarize count() by DeviceName, bin(TimeGenerated,1m) | where count_ > 50"
+  - "MDE alert: 'Bulk file deletion — potential destructive attack'"
+  - "CONTROL CHECK: Immutable cloud backup (Azure Backup with soft delete) — cannot be deleted even with admin credentials"
+  - "CONTROL CHECK: File integrity monitoring on critical directories — alert on bulk modification events"

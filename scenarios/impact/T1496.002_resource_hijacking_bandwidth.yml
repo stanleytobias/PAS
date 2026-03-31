@@ -1,0 +1,92 @@
+id: T1496.002_resource_hijacking_bandwidth
+name: "Resource Hijacking — Bandwidth Hijacking"
+mitre_technique: "T1496.002"
+mitre_tactic: "impact"
+description: >
+  Adversaries abuse compromised systems' network bandwidth for their own purposes —
+  participating in DDoS botnets, relaying traffic through proxy networks, seeding
+  torrents, or running covert proxy services. Unlike compute hijacking (cryptomining),
+  bandwidth hijacking consumes network capacity rather than CPU, potentially
+  saturating corporate internet links and disrupting legitimate operations.
+  Detection relies on identifying sustained high-volume outbound traffic from
+  endpoints during off-hours or to unusual destination IP ranges.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1496/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1496.002 — Bandwidth Hijacking simulation (loopback only, bounded)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate sustained bandwidth consumption — loopback transfer loop"
+    command: |
+      Write-Host "[PAS] Bandwidth hijacking pattern (loopback, 3s, then stops):"
+      $payload  = [byte[]](1..65536 | ForEach-Object { 0x41 })
+      $sent     = 0
+      $stop     = [System.Threading.CancellationTokenSource]::new()
+      $deadline = (Get-Date).AddSeconds(3)
+
+      while ((Get-Date) -lt $deadline) {
+          try {
+              $req = [System.Net.WebRequest]::Create("http://127.0.0.1/bandwidth_sink")
+              $req.Method = "POST"
+              $req.ContentType = "application/octet-stream"
+              $req.Timeout = 200
+              $req.ContentLength = $payload.Length
+              $s = $req.GetRequestStream()
+              $s.Write($payload, 0, $payload.Length)
+              $s.Close()
+              $req.GetResponse() | Out-Null
+              $sent += $payload.Length
+          } catch {}
+      }
+      Write-Host "[PAS] Bandwidth hijack simulation: $([Math]::Round($sent/1MB,2)) MB sent in 3s to loopback"
+      Write-Host "[PAS] Real attack: sustained to external C2/botnet relay — saturates uplink"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for bandwidth hijacking network indicators"
+    command: |
+      Write-Host "[PAS] Bandwidth hijacking network indicators:"
+      Write-Host "  Sustained high outbound to unfamiliar IP blocks"
+      Write-Host "  Traffic during off-hours (2-4am) — botnet activity pattern"
+      Write-Host "  SOCKS/HTTP proxy service listening on non-standard port"
+
+      # Check for unexpected listening ports (proxy service indicator)
+      Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+          Where-Object { $_.LocalPort -in @(1080,8080,8888,9050,3128) } |
+          ForEach-Object {
+              $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+              Write-Host "  [PROXY PORT] $($_.LocalPort) -> $($proc?.Name) (PID $($_.OwningProcess))"
+          }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sustained high outbound bytes from single process, unexpected proxy ports listening, off-hours bandwidth spike"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1496.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network: sustained outbound >10 Mbps from single endpoint to external IP"
+  - "Network: process with unexpected listening SOCKS/HTTP proxy port"
+  - "Sentinel: DeviceNetworkEvents | summarize TotalBytes=sum(SentBytes) by DeviceName, InitiatingProcessFileName, bin(TimeGenerated,5m) | where TotalBytes > 50000000"
+  - "Sentinel: DeviceNetworkEvents | where LocalPort in (1080,8080,8888,9050,3128) and ActionType == 'ListeningConnectionCreated'"
+  - "MDE alert: 'Suspicious network bandwidth usage — potential botnet activity'"
+  - "CONTROL CHECK: Egress bandwidth baseline per endpoint — alert on >2x normal outbound volume"
+  - "CONTROL CHECK: Block SOCKS5 proxy ports at perimeter firewall"

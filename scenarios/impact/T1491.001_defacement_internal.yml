@@ -1,0 +1,100 @@
+id: T1491.001_defacement_internal
+name: "Defacement — Internal Defacement"
+mitre_technique: "T1491.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries deface internal systems to intimidate users, signal presence, or
+  pressure victims into compliance. Methods: replace desktop wallpaper with ransom
+  or threat imagery, modify IIS/Apache default pages on internal web servers,
+  alter intranet portal content, and change system login banners. Internal
+  defacement typically occurs after the primary objective is achieved and is
+  designed to maximise psychological impact on the victim organisation.
+  This simulation changes only the PAS test environment wallpaper (reversible)
+  and writes to an isolated IIS test page path.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1491/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1491.001 — Internal Defacement simulation (wallpaper + IIS marker only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate desktop wallpaper defacement — ransomware ransom note style"
+    command: |
+      Write-Host "[PAS] Desktop wallpaper defacement pattern:"
+
+      # Record original wallpaper path
+      $wallpaperKey = "HKCU:\Control Panel\Desktop"
+      $originalWallpaper = (Get-ItemProperty $wallpaperKey -ErrorAction SilentlyContinue).Wallpaper
+      Write-Host "[PAS] Original wallpaper: $($originalWallpaper ?? '(not set)')"
+
+      # Create a simple defacement marker image path (do NOT change actual wallpaper)
+      $defacePath = "$env:TEMP\PAS_T1491_001_ransom_note.bmp"
+      Set-Content $defacePath "PAS-T1491.001-DEFACEMENT-MARKER"
+      Write-Host "[PAS] Defacement image staged: $defacePath"
+
+      Write-Host "[PAS] Real attack: SystemParametersInfo SPI_SETDESKWALLPAPER API"
+      Write-Host "[PAS] Generating registry wallpaper key access telemetry:"
+      $current = Get-ItemProperty $wallpaperKey -Name Wallpaper -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Registry read: HKCU\\Control Panel\\Desktop\\Wallpaper"
+      Write-Host "[PAS] Simulation records pattern without changing active wallpaper"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate IIS default page defacement"
+    command: |
+      Write-Host "[PAS] IIS default page defacement pattern:"
+      $iisDefault = "C:\inetpub\wwwroot\iisstart.htm"
+      if (Test-Path $iisDefault) {
+          Write-Host "[PAS] IIS found: $iisDefault"
+          $originalContent = Get-Content $iisDefault -Raw -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Real attack: replace content with ransom/threat message"
+          Write-Host "[PAS] File size: $((Get-Item $iisDefault).Length) bytes"
+      } else {
+          Write-Host "[PAS] IIS not installed — defacement target documented"
+          $defaceStage = "$env:TEMP\PAS_T1491_001_iis_sim.htm"
+          Set-Content $defaceStage "<html><body>PAS-DEFACEMENT-SIMULATION</body></html>"
+          Write-Host "[PAS] IIS defacement marker: $defaceStage"
+      }
+      Write-Host "[PAS] Login banner modification pattern:"
+      Write-Host "[PAS] HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"
+      Write-Host "[PAS] legalnoticetext = 'YOUR FILES HAVE BEEN ENCRYPTED'"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SystemParametersInfo wallpaper change API, iisstart.htm modification, legalnoticetext registry write"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove defacement simulation artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1491_001_ransom_note.bmp" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1491_001_iis_sim.htm"     -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Defacement artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1491.001 cleanup complete"
+
+analyst_checklist:
+  - "API: SystemParametersInfo SPI_SETDESKWALLPAPER from unexpected process"
+  - "File event: iisstart.htm or index.html modified on web server"
+  - "Registry: legalnoticetext value changed under System Policies"
+  - "Sentinel: DeviceFileEvents | where FileName in ('iisstart.htm','index.html') and ActionType == 'FileModified'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryValueName == 'legalnoticetext'"
+  - "MDE alert: 'Desktop wallpaper changed by unexpected process — ransomware indicator'"
+  - "CONTROL CHECK: IIS default pages should have file integrity monitoring — any change outside deployment is an incident"

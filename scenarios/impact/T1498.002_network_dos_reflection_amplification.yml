@@ -1,0 +1,78 @@
+id: T1498.002_network_dos_reflection_amplification
+name: "Network Denial of Service — Reflection Amplification"
+mitre_technique: "T1498.002"
+mitre_tactic: "impact"
+description: >
+  Adversaries send small requests with a spoofed source IP (the victim's address)
+  to third-party reflector servers (DNS, NTP, memcached, SSDP), which send large
+  responses to the victim — amplifying the attacker's bandwidth by 10x–50000x.
+  DNS amplification: 40-byte ANY query generates 4000-byte response (100x amplification).
+  NTP monlist: 8-byte request generates 48KB response (6000x amplification).
+  IP spoofing is required — this cannot be simulated on a Windows host without
+  raw socket access and is a marker-only scenario. Detection requires netflow
+  analysis and BCP38 ingress filtering controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1498/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context — SAFETY"
+    message: "T1498.002 — Reflection Amplification: requires IP spoofing from attacker infrastructure. Marker-only — no Windows host simulation possible."
+
+  - step: 2
+    type: exec_powershell
+    description: "Document reflection amplification attack surface"
+    command: |
+      Write-Host "[PAS] Reflection amplification attack patterns:"
+      $amplifiers = @(
+          @{Protocol="DNS";       Port=53;   Request="8 bytes"; Response="4KB";  Factor="500x"},
+          @{Protocol="NTP";       Port=123;  Request="8 bytes"; Response="48KB"; Factor="6000x"},
+          @{Protocol="memcached"; Port=11211;Request="15 bytes";Response="1MB";  Factor="50000x"},
+          @{Protocol="SSDP";      Port=1900; Request="110 bytes";Response="1KB"; Factor="30x"}
+      )
+      $amplifiers | ForEach-Object {
+          Write-Host "  $($_.Protocol) (port $($_.Port)): $($_.Factor) amplification ($($_.Request) -> $($_.Response))"
+      }
+
+      Write-Host "[PAS] Check if any open resolvers / NTP servers run on this host:"
+      @(53, 123, 11211, 1900) | ForEach-Object {
+          try {
+              $udp = New-Object System.Net.Sockets.UdpClient
+              $udp.Connect("127.0.0.1", $_)
+              Write-Host "  Port $_ UDP: probed on loopback"
+              $udp.Close()
+          } catch {}
+      }
+
+  - step: 3
+    type: marker
+    description: "Open resolver / NTP monlist check"
+    message: "CONTROL CHECK: Disable DNS recursion on external-facing DNS servers. Disable NTP monlist command (restrict monitor). Block UDP port 11211 (memcached) at perimeter. BCP38 ingress filtering prevents IP spoofing from your network being used in reflection attacks."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: NetFlow — unexplained large UDP responses inbound from DNS/NTP servers to single internal IP"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1498.002 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "NetFlow: high volume UDP traffic from port 53/123 to single internal destination — amplification victim"
+  - "Azure DDoS: Protection Standard detects and mitigates reflection amplification automatically"
+  - "Sentinel: CommonSecurityLog | where DestinationPort in (53,123) and ReceivedBytes > 10000 | summarize by SourceIP"
+  - "CONTROL CHECK: BCP38 ingress filtering on ISP edge — prevents spoofed source IPs from leaving your network"
+  - "CONTROL CHECK: Open resolver remediation — internal DNS should not respond to external ANY queries"
+  - "CONTROL CHECK: NTP restrict monitor — prevents monlist amplification from your NTP servers"

@@ -1,0 +1,84 @@
+id: T1499.001_endpoint_dos_os_exhaustion
+name: "Endpoint Denial of Service — OS Exhaustion Flood"
+mitre_technique: "T1499.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries exhaust operating system resources — handles, threads, memory,
+  or CPU — to degrade or crash a target system. Methods: fork bomb (rapid child
+  process creation exhausting process table), handle exhaustion (opening millions
+  of handles), memory exhaustion (allocating all available RAM), and CPU
+  exhaustion (infinite compute loops across all cores). This simulation creates
+  a bounded thread exhaustion pattern that runs for exactly 2 seconds and
+  terminates — generating the telemetry without causing real system instability.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1499/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1499.001 — OS Exhaustion simulation (STRICTLY BOUNDED: 2 second limit, 20 threads max)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Bounded thread exhaustion — generates resource spike telemetry"
+    command: |
+      Write-Host "[PAS] Bounded OS resource exhaustion (2s / 20 threads max):"
+      $threads = [System.Collections.Generic.List[System.Threading.Thread]]::new()
+      $stop    = [System.Threading.CancellationTokenSource]::new()
+
+      # Spawn 20 busy threads — strictly bounded
+      1..20 | ForEach-Object {
+          $t = [System.Threading.Thread]::new({
+              while (-not $stop.Token.IsCancellationRequested) {
+                  [System.Threading.Thread]::SpinWait(1000)
+              }
+          })
+          $t.IsBackground = $true
+          $t.Start()
+          $threads.Add($t)
+      }
+      Write-Host "[PAS] $($threads.Count) threads started — CPU spike for 2 seconds"
+      Start-Sleep -Seconds 2
+      $stop.Cancel()
+      $threads | ForEach-Object { $_.Join(500) }
+      $stop.Dispose()
+      Write-Host "[PAS] All threads terminated — OS exhaustion telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Handle exhaustion pattern documentation"
+    command: |
+      Write-Host "[PAS] Handle exhaustion pattern:"
+      Write-Host "[PAS] Real attack: rapid CreateFile/CreateEvent in loop -> handle table fills"
+      Write-Host "[PAS] ProcessHandleCount spike is detectable in performance counters"
+      $proc = Get-Process -Id $PID
+      Write-Host "[PAS] Current process handles: $($proc.HandleCount)"
+      Write-Host "[PAS] System max handle count: ~16 million per process"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CPU spike to 100% from scripting process, handle count anomaly, MDE performance alert"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts — threads auto-terminated"
+    message: "T1499.001 cleanup complete — all threads terminated in simulation"
+
+analyst_checklist:
+  - "Performance: CPU sustained at 100% from scripting process (powershell.exe, cmd.exe)"
+  - "MDE: DevicePerformanceEvents | where CpuUsage > 90 and InitiatingProcessFileName in ('powershell.exe','cmd.exe')"
+  - "Process: rapid child process creation (fork bomb signature)"
+  - "Sentinel: DeviceProcessEvents | summarize count() by InitiatingProcessId, bin(TimeGenerated,10s) | where count_ > 100"
+  - "CONTROL CHECK: CPU/memory resource limits on workstations via Windows Resource Monitor policies"
+  - "CONTROL CHECK: Process creation rate limiting — alert on >50 process creations/second from single parent"

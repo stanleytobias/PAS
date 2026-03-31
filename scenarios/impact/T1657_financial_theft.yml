@@ -1,0 +1,78 @@
+id: T1657_financial_theft
+name: "Financial Theft"
+mitre_technique: "T1657"
+mitre_tactic: "impact"
+description: >
+  Adversaries steal monetary resources through extortion (ransomware demands),
+  social engineering (Business Email Compromise — BEC), technical theft
+  (unauthorized wire transfers via compromised banking portals), cryptocurrency
+  theft (wallet private key exfiltration), and fraud (pig butchering, fake invoices).
+  BEC is the highest-dollar-impact cybercrime category — adversaries compromise
+  executive email accounts and redirect wire transfers. This is a marker-only
+  scenario: financial theft is a social/procedural attack, not a Windows host
+  simulation. Detection focus is on the email and financial control indicators.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1657/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1657 — Financial Theft: adversary uses BEC, ransomware demands, or wire fraud to steal money. Marker-only — no Windows host simulation."
+
+  - step: 2
+    type: exec_powershell
+    description: "Document financial theft indicators and BEC email patterns"
+    command: |
+      Write-Host "[PAS] Financial theft technique overview:"
+      Write-Host "[PAS] BEC (Business Email Compromise) pattern:"
+      Write-Host "  1. Compromise executive email (phishing / credential theft)"
+      Write-Host "  2. Monitor inbox for pending wire transfer requests"
+      Write-Host "  3. Modify vendor bank account details in reply"
+      Write-Host "  4. Transfer redirected to adversary account"
+      Write-Host ""
+      Write-Host "[PAS] Ransomware extortion pattern:"
+      Write-Host "  1. Encrypt files (T1486) + threaten data leak"
+      Write-Host "  2. Drop ransom note with crypto wallet address"
+      Write-Host "  3. Demand payment in Bitcoin/Monero"
+      Write-Host ""
+      Write-Host "[PAS] Crypto wallet theft pattern:"
+      Write-Host "  1. Enumerate wallet files (T1552.001 cross-ref)"
+      Write-Host "  2. Exfiltrate private keys"
+      Write-Host "  3. Transfer cryptocurrency to adversary wallet"
+      Write-Host ""
+      Write-Host "[PAS] Detection relies on email and financial system controls — not endpoint EDR"
+
+  - step: 3
+    type: marker
+    description: "Financial control check"
+    message: "CONTROL CHECK: Dual-approval for wire transfers above threshold. Verify bank account changes via out-of-band phone call — never by email alone. Callback verification to known number for any payment instruction change."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: M365 Defender — compromised mailbox rules forwarding to external, suspicious login then email rule creation"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1657 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "M365 audit: inbox rule created to forward/delete emails matching 'wire','invoice','payment'"
+  - "Entra ID: executive mailbox accessed from unexpected IP/country"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'ForwardTo'"
+  - "Sentinel: SigninLogs | where UserPrincipalName in (executive_list) and LocationDetails.countryOrRegion != home_country"
+  - "Defender for Office 365: 'Suspicious inbox manipulation rule' alert"
+  - "CONTROL CHECK: MFA on all executive accounts — BEC requires email access; MFA blocks credential-only compromise"
+  - "CONTROL CHECK: Out-of-band verification for all payment instruction changes — no exceptions"
+  - "CONTROL CHECK: Privileged email account monitoring — alert on any inbox rule creation by C-suite accounts"

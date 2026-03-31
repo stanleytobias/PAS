@@ -1,0 +1,75 @@
+id: T1485.001_data_destruction_lifecycle_triggered_deletion
+name: "Data Destruction — Lifecycle-Triggered Deletion"
+mitre_technique: "T1485.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries configure cloud storage lifecycle policies to automatically delete
+  all objects after a very short retention period (1 day), causing data to be
+  permanently destroyed without direct file-by-file deletion commands. In Azure,
+  Blob Storage lifecycle management policies can set expiry rules on entire
+  containers. In AWS, S3 lifecycle policies can expire all objects. The deletion
+  happens automatically via the cloud control plane — no interactive session
+  required after the policy is applied, making attribution harder.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1485/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1485.001 — Lifecycle-Triggered Deletion simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Azure Blob lifecycle policy set to 1-day expiry"
+    command: |
+      Write-Host "[PAS] Lifecycle-triggered deletion pattern:"
+      Write-Host "[PAS] Real: az storage account management-policy create"
+      Write-Host "       --account-name <account>"
+      Write-Host "       --policy '{ rules:[{ definition:{ actions:{ baseBlob:{ delete:{ daysAfterModificationGreaterThan:1 }}}}, filters:{ blobTypes:[blockBlob]}, enabled:true, name:destroy, type:Lifecycle}]}'"
+      Write-Host "[PAS] Effect: ALL blobs deleted after 1 day automatically"
+      Write-Host ""
+
+      # Simulate the ARM API call (loopback)
+      $policy = @"
+{"rules":[{"definition":{"actions":{"baseBlob":{"delete":{"daysAfterModificationGreaterThan":1}}}},"filters":{"blobTypes":["blockBlob"]},"enabled":true,"name":"PAS_destroy","type":"Lifecycle"}]}
+"@
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/storageAccounts/victim_storage/managementPolicies/default?api-version=2021-09-01")
+          $req.Method = "PUT"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes($policy)
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] managementPolicies/default PUT to loopback generated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — managementPolicies/write on storage accounts by unexpected principal"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1485.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Activity Log: Microsoft.Storage/storageAccounts/managementPolicies/write from unexpected principal"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'managementPolicies/write'"
+  - "CONTROL CHECK: Azure Storage immutability (WORM) — time-based retention policy prevents any deletion including lifecycle rules"
+  - "CONTROL CHECK: Restrict managementPolicies/write via RBAC — only Storage Account Contributor or above"
+  - "CONTROL CHECK: Azure Policy — deny lifecycle policies with daysAfterModificationGreaterThan < 30"

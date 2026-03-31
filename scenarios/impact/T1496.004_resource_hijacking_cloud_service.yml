@@ -1,0 +1,98 @@
+id: T1496.004_resource_hijacking_cloud_service
+name: "Resource Hijacking — Cloud Service Hijacking"
+mitre_technique: "T1496.004"
+mitre_tactic: "impact"
+description: >
+  Adversaries abuse compromised cloud SaaS applications to consume resources for
+  their own benefit. Examples: using a compromised Azure subscription to spin up
+  GPU VMs for cryptomining, abusing OpenAI API keys for LLM queries at victim's
+  cost, exploiting GitHub Actions minutes for cryptomining, and using Microsoft
+  Fabric or Azure Batch for compute-intensive workloads. Cloud service hijacking
+  is detected through cost anomaly monitoring and resource usage alerts — the
+  victim notices an unexplained cloud bill.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1496/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1496.004 — Cloud Service Hijacking simulation (loopback API patterns only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate cloud VM spin-up for cryptomining — ARM API pattern"
+    command: |
+      Write-Host "[PAS] Cloud service hijacking — cryptomining VM deployment pattern:"
+      Write-Host "[PAS] Real: az vm create --resource-group HijackRG --name miner-vm"
+      Write-Host "         --image UbuntuLTS --size Standard_NC6 --no-wait"
+      Write-Host "         (NC6 = GPU VM for GPU mining)"
+      Write-Host ""
+
+      # Simulate ARM API call (loopback)
+      $vmBody = @"
+{"location":"eastus","properties":{"hardwareProfile":{"vmSize":"Standard_NC6"},
+"storageProfile":{"imageReference":{"publisher":"Canonical","offer":"UbuntuServer",
+"sku":"18.04-LTS","version":"latest"}}}}
+"@
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/subscriptions/{sub}/resourceGroups/HijackRG/providers/Microsoft.Compute/virtualMachines/miner-vm?api-version=2022-03-01")
+          $req.Method = "PUT"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes($vmBody)
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] VM creation PUT to loopback generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Azure Batch job abuse and OpenAI API key abuse patterns"
+    command: |
+      Write-Host "[PAS] Azure Batch cryptomining pattern:"
+      Write-Host "[PAS] Real: az batch account create + az batch job create + az batch task create"
+      Write-Host "       (100 tasks x 8 cores = 800 cores mining XMR at victim's cost)"
+      Write-Host ""
+      Write-Host "[PAS] OpenAI API key hijacking:"
+      Write-Host "[PAS] Real: use stolen API key for bulk LLM inference"
+      Write-Host "       Cost: ~$0.03/1K tokens x millions of queries = significant bill"
+
+      # Check for cloud API keys in env
+      @("OPENAI_API_KEY","AZURE_OPENAI_KEY","ANTHROPIC_API_KEY") | ForEach-Object {
+          if ([System.Environment]::GetEnvironmentVariable($_)) {
+              Write-Host "  [RISK] $_ exposed in environment"
+          }
+      }
+      Write-Host "[PAS] Cloud API keys should be in Key Vault, not environment variables"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — VM creation in unexpected resource groups, Batch job creation, cost spike alert"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1496.004 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Activity Log: VirtualMachines/write in new/unexpected resource group by unexpected principal"
+  - "Azure Cost Management: spending spike alert — configure budget alert at 110% of baseline"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'virtualMachines/write' and ResourceGroup not in (approved_rgs)"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'batchAccounts' and TimeGenerated between (22h..6h)"
+  - "CONTROL CHECK: Azure Cost Management budget alerts — alert at 110% of monthly baseline, block at 150%"
+  - "CONTROL CHECK: Azure Policy — restrict allowed VM sizes (deny NC/ND GPU series unless approved)"
+  - "CONTROL CHECK: API key rotation every 90 days — limits blast radius of stolen key"

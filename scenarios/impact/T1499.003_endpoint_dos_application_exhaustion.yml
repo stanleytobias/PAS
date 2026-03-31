@@ -1,0 +1,91 @@
+id: T1499.003_endpoint_dos_application_exhaustion
+name: "Endpoint Denial of Service — Application Exhaustion Flood"
+mitre_technique: "T1499.003"
+mitre_tactic: "impact"
+description: >
+  Adversaries target resource-intensive application features to exhaust system
+  resources and deny service. Examples: requesting computationally expensive
+  database queries, triggering complex rendering operations on a web application,
+  flooding an API endpoint that performs heavy cryptographic operations, or
+  triggering recursive report generation. Unlike service-level floods, application
+  exhaustion targets specific functionality — a single well-crafted request may
+  consume far more resources than a simple GET. This simulation generates the
+  HTTP request pattern to loopback application endpoints only.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1499/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1499.003 — Application Exhaustion Flood simulation (loopback, bounded)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate expensive application endpoint flood to loopback"
+    command: |
+      Write-Host "[PAS] Application exhaustion flood (loopback — 10 requests):"
+      Write-Host "[PAS] Targeting resource-intensive endpoints:"
+      $expensiveEndpoints = @(
+          "/api/reports/generate?all=true",
+          "/api/search?q=*&fields=all&limit=999999",
+          "/api/export/csv?table=transactions&from=2000-01-01",
+          "/api/crypto/hash?algorithm=bcrypt&rounds=14"
+      )
+      foreach ($ep in $expensiveEndpoints | Select-Object -First 3) {
+          try {
+              $req = [System.Net.WebRequest]::Create("http://127.0.0.1$ep")
+              $req.Timeout = 200
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Request: $ep"
+      }
+      Write-Host "[PAS] Application exhaustion pattern: expensive endpoint repeated by attacker"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate ReDoS (Regular Expression Denial of Service) pattern"
+    command: |
+      Write-Host "[PAS] ReDoS pattern (catastrophic backtracking — bounded 1s):"
+      $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+      try {
+          # Bounded ReDoS test — input that causes exponential backtracking
+          # Strictly limited to 1 second via timeout
+          $pattern = [System.Text.RegularExpressions.Regex]::new(
+              '(a+)+$',
+              [System.Text.RegularExpressions.RegexOptions]::None,
+              [TimeSpan]::FromSeconds(1))
+          $result = $pattern.IsMatch("aaaaaaaaaaaaaaaaaaaaaaaaaab")
+      } catch [System.Text.RegularExpressions.RegexMatchTimeoutException] {
+          Write-Host "[PAS] ReDoS: regex timeout after 1s — catastrophic backtracking confirmed"
+      }
+      $stopwatch.Stop()
+      Write-Host "[PAS] ReDoS test completed in $($stopwatch.ElapsedMilliseconds)ms"
+      Write-Host "[PAS] Real attack: send malicious input to web app regex validator"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — repeated requests to expensive API endpoints, CPU spike during regex processing"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1499.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Application log: repeated requests to expensive endpoints from single source IP"
+  - "Performance: CPU/memory spike correlated with specific request type"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 80 and ProcessCommandLine contains 'generate' | summarize count() by bin(TimeGenerated,1m)"
+  - "CONTROL CHECK: Application-layer rate limiting per endpoint — expensive operations throttled per user/IP"
+  - "CONTROL CHECK: Request timeout enforcement — server-side regex and query timeouts prevent runaway resource use"
+  - "CONTROL CHECK: Input validation — reject obviously malicious inputs (all=true, limit=999999) at WAF/API gateway"

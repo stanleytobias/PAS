@@ -1,0 +1,112 @@
+id: T1490_inhibit_system_recovery
+name: "Inhibit System Recovery"
+mitre_technique: "T1490"
+mitre_tactic: "impact"
+description: >
+  Adversaries delete or disable recovery mechanisms before deploying ransomware or
+  destructive payloads to prevent victims from recovering without paying. Methods:
+  vssadmin delete shadows (removes Volume Shadow Copies), bcdedit /set recoveryenabled No
+  (disables Windows Recovery Environment), wbadmin delete catalog (removes backup
+  catalog), disabling Windows Backup service, and deleting restore points.
+  This simulation uses bcdedit to document the command pattern and tests the
+  vssadmin list shadows enumeration — the actual delete is NOT executed.
+  The bcdedit change IS safely reversed in cleanup.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1490/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1490 — Inhibit System Recovery simulation (bcdedit change is REVERSED in cleanup)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate shadow copies — ransomware pre-step"
+    command: |
+      Write-Host "[PAS] Shadow copy inventory (pre-deletion reconnaissance):"
+      $shadows = vssadmin list shadows 2>&1
+      $count = ($shadows | Select-String "Shadow Copy ID").Count
+      Write-Host "[PAS] Existing shadow copies: $count"
+      Write-Host "[PAS] Real ransomware: vssadmin delete shadows /all /quiet"
+      Write-Host "[PAS] Simulation: does NOT delete — count only"
+
+      Write-Host "[PAS] Restore point enumeration:"
+      Get-ComputerRestorePoint -ErrorAction SilentlyContinue |
+          Select-Object -First 3 |
+          ForEach-Object { Write-Host "  RP: $($_.Description) [$($_.CreationTime)]" }
+
+  - step: 3
+    type: exec_powershell
+    description: "bcdedit recovery disable — generates process telemetry"
+    command: |
+      Write-Host "[PAS] bcdedit recovery disable pattern:"
+      # Record current recovery state before change
+      $currentRecovery = bcdedit /enum {default} 2>&1 |
+          Select-String "recoveryenabled" | Select-Object -First 1
+      Write-Host "[PAS] Current recoveryenabled: $($currentRecovery?.Line.Trim() ?? 'not set (default=Yes)')"
+
+      # Apply the change (WILL BE REVERSED IN CLEANUP)
+      $proc = Start-Process bcdedit.exe `
+          -ArgumentList "/set {default} recoveryenabled No" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] bcdedit /set recoveryenabled No — exit code: $($proc?.ExitCode)"
+      Write-Host "[PAS] CRITICAL: This change IS reversed in cleanup"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate wbadmin catalog delete and backup service disable patterns"
+    command: |
+      Write-Host "[PAS] Additional recovery inhibition patterns (documented — NOT executed):"
+      Write-Host "  wbadmin delete catalog -quiet  [backup catalog deletion]"
+      Write-Host "  net stop VSS                   [VSS service stop]"
+      Write-Host "  sc config VSS start= disabled  [VSS service disable]"
+      Write-Host "  net stop SDRSVC               [Windows Backup service]"
+
+      Write-Host "[PAS] Generating process event telemetry:"
+      $proc = Start-Process wbadmin.exe -ArgumentList "get versions" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wbadmin.exe process event generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — vssadmin delete shadows, bcdedit recoveryenabled No, wbadmin delete catalog — all critical ransomware precursors"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "CRITICAL: Restore bcdedit recoveryenabled to Yes"
+    command: |
+      $proc = Start-Process bcdedit.exe `
+          -ArgumentList "/set {default} recoveryenabled Yes" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] bcdedit /set recoveryenabled Yes — exit: $($proc?.ExitCode)"
+
+      # Verify restoration
+      $restored = bcdedit /enum {default} 2>&1 | Select-String "recoveryenabled"
+      Write-Host "[PAS][Cleanup] Recovery state: $($restored?.Line.Trim() ?? 'default (Yes)')"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1490 cleanup complete — bcdedit recovery restored to Yes"
+
+analyst_checklist:
+  - "Process event: vssadmin.exe with 'delete shadows' arguments — critical ransomware pre-stage"
+  - "Process event: bcdedit.exe with 'recoveryenabled No' — recovery disable"
+  - "Process event: wbadmin.exe with 'delete catalog' — backup removal"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'vssadmin.exe' and ProcessCommandLine contains 'delete'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'bcdedit.exe' and ProcessCommandLine contains 'recoveryenabled'"
+  - "MDE alert: 'Shadow copies deleted — ransomware pre-stage' — highest severity built-in alert"
+  - "CONTROL CHECK: Azure Backup soft delete — cannot be disabled by ransomware even with admin credentials"
+  - "CONTROL CHECK: Immutable backup policy — time-based WORM on backup vault; 14-day minimum retention"
+  - "CONTROL CHECK: Alert on vssadmin delete shadows immediately — this is a zero-tolerance indicator"

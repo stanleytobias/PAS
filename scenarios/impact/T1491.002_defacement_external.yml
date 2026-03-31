@@ -1,0 +1,71 @@
+id: T1491.002_defacement_external
+name: "Defacement — External Defacement"
+mitre_technique: "T1491.002"
+mitre_tactic: "impact"
+description: >
+  Adversaries modify externally facing websites or public-facing systems to deliver
+  messaging, intimidate, or claim credit for an intrusion. External defacement
+  targets public web servers, CDN-served content, DNS records (pointing to
+  adversary-controlled pages), and social media accounts. Detection relies on
+  external monitoring of web content integrity, DNS record change alerts, and
+  web application firewall logs. This is a marker-only scenario because external
+  web server manipulation has no Windows host simulation — detection focus is on
+  monitoring controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1491/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1491.002 — External Defacement: adversary replaces public website content or hijacks DNS to display threat messaging"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check external web presence and DNS configuration"
+    command: |
+      Write-Host "[PAS] External defacement attack surface check:"
+      Write-Host "[PAS] External defacement vectors:"
+      @("1. Web server file modification (index.html replaced via compromised FTP/SSH/admin)",
+        "2. CMS compromise (WordPress/Joomla admin panel access)",
+        "3. DNS hijacking (A record redirected to adversary IP)",
+        "4. CDN poisoning (cache manipulation to serve adversary content)",
+        "5. SSL stripping + content injection via AiTM proxy") |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] DNS record change probe (loopback):"
+      try { [System.Net.Dns]::GetHostAddresses("www.$env:USERDNSDOMAIN") | Out-Null } catch {}
+      Write-Host "[PAS] DNS lookup for public web presence generated"
+
+  - step: 3
+    type: marker
+    description: "External monitoring control check"
+    message: "CONTROL CHECK: External web monitoring — synthetic monitoring should alert within minutes if homepage content changes. Tools: Azure Front Door health probes, Pingdom, Uptime Robot with content hash checks."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: External web monitoring alerts, DNS change notification (Azure DNS activity log), CDN purge events"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1491.002 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Azure DNS activity log: recordsets/write from unexpected principal or time"
+  - "Azure CDN: purge operation preceding content change"
+  - "External monitoring: web content hash mismatch on public URL"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'dnszones' and OperationNameValue contains 'write'"
+  - "CONTROL CHECK: DNS change notifications — alert on any A/CNAME record change for public domains"
+  - "CONTROL CHECK: Web Application Firewall (WAF) — monitor file upload/modification events on web servers"
+  - "CONTROL CHECK: Content integrity monitoring — hash-check public web pages every 5 minutes"

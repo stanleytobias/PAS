@@ -1,0 +1,102 @@
+id: T1565.002_data_manipulation_transmitted
+name: "Data Manipulation — Transmitted Data Manipulation"
+mitre_technique: "T1565.002"
+mitre_tactic: "impact"
+description: >
+  Adversaries alter data while it is in transit between systems — modifying
+  network traffic to change values before they reach their destination. This
+  requires an adversary-in-the-middle position (ARP poisoning, DNS spoofing,
+  rogue proxy). Examples: modifying HTTP responses to inject content, altering
+  financial transaction amounts in unencrypted API calls, and modifying LDAP
+  query results. TLS encryption prevents most transmitted data manipulation —
+  unencrypted protocols remain vulnerable. This simulation generates the
+  network interception telemetry pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1565/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1565.002 — Transmitted Data Manipulation simulation (loopback proxy pattern)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate proxy interception and response manipulation pattern"
+    command: |
+      Write-Host "[PAS] Transmitted data manipulation technique:"
+      Write-Host "[PAS] Requires: AiTM position (T1557) — ARP poisoning or rogue proxy"
+      Write-Host "[PAS] Goal: modify values in unencrypted traffic before destination receives"
+      Write-Host ""
+      Write-Host "[PAS] HTTP manipulation pattern:"
+      Write-Host "  Client -> Proxy (adversary) -> Server"
+      Write-Host "  Adversary intercepts response: { amount: 1000 }"
+      Write-Host "  Adversary modifies to: { amount: 1 }  (before forwarding to client)"
+      Write-Host ""
+
+      # Set system proxy to loopback (simulate rogue proxy installation)
+      $proxyKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+      $origProxy  = (Get-ItemProperty $proxyKey -ErrorAction SilentlyContinue).ProxyServer
+      $origEnable = (Get-ItemProperty $proxyKey -ErrorAction SilentlyContinue).ProxyEnable
+      Set-ItemProperty $proxyKey -Name ProxyServer  -Value "127.0.0.1:8080"
+      Set-ItemProperty $proxyKey -Name ProxyEnable  -Value 1
+      Write-Host "[PAS] System proxy set to loopback:8080 (rogue proxy pattern)"
+      Write-Host "[PAS] All HTTP traffic now routed through adversary proxy"
+
+      # Simulate an HTTP request through the proxy
+      try {
+          $req = [System.Net.WebRequest]::Create("http://intranet.corp.local/api/transfer")
+          $req.Proxy = New-Object System.Net.WebProxy("http://127.0.0.1:8080")
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] HTTP request via rogue proxy generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Restore proxy settings"
+    command: |
+      $proxyKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+      if ($origProxy) {
+          Set-ItemProperty $proxyKey -Name ProxyServer -Value $origProxy
+      } else {
+          Remove-ItemProperty $proxyKey -Name ProxyServer -ErrorAction SilentlyContinue
+      }
+      Set-ItemProperty $proxyKey -Name ProxyEnable -Value ($origEnable ?? 0)
+      Write-Host "[PAS] Proxy settings restored"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — proxy configuration change in registry, HTTP traffic routed to unexpected proxy"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure proxy settings are fully restored"
+    command: |
+      $proxyKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+      Set-ItemProperty $proxyKey -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
+      Remove-ItemProperty $proxyKey -Name ProxyServer -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Proxy settings confirmed cleared"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1565.002 cleanup complete"
+
+analyst_checklist:
+  - "Registry: HKCU proxy settings changed to unexpected value"
+  - "Network: HTTP traffic to known internal servers routed through unexpected proxy IP"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Internet Settings' and RegistryValueName == 'ProxyServer'"
+  - "CONTROL CHECK: TLS everywhere — encrypted traffic cannot be manipulated without certificate"
+  - "CONTROL CHECK: Certificate pinning for internal applications — prevents rogue CA certificate injection"
+  - "CONTROL CHECK: SMB signing — prevents relay/manipulation of SMB data in transit"

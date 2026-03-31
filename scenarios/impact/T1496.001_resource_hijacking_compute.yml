@@ -1,0 +1,98 @@
+id: T1496.001_resource_hijacking_compute
+name: "Resource Hijacking — Compute Hijacking"
+mitre_technique: "T1496.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries abuse compromised systems to mine cryptocurrency, offloading the
+  computational cost to the victim while the adversary profits. Cryptominers
+  consume 100% CPU/GPU for extended periods, degrading system performance and
+  increasing electricity costs. Miners typically disguise themselves as legitimate
+  processes (svchost, conhost), use legitimate mining pools over HTTPS to blend
+  with normal traffic, and persist via scheduled tasks or services.
+  This simulation runs a bounded 5-second CPU spike to generate the performance
+  and process telemetry that detection rules target.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1496/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1496.001 — Compute Hijacking (cryptomining) simulation (5 second bounded CPU spike)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate cryptominer CPU pattern — bounded 5 second limit"
+    command: |
+      Write-Host "[PAS] Cryptominer CPU pattern simulation (5s, 4 threads, then stops):"
+      $stop = [System.Threading.CancellationTokenSource]::new()
+      $threads = 1..4 | ForEach-Object {
+          $t = [System.Threading.Thread]::new({
+              while (-not $stop.Token.IsCancellationRequested) {
+                  # Simulate hash computation work
+                  [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                      [Text.Encoding]::UTF8.GetBytes([Guid]::NewGuid().ToString())) | Out-Null
+              }
+          })
+          $t.IsBackground = $true
+          $t.Start()
+          $t
+      }
+      $beforeCpu = (Get-Process -Id $PID).CPU
+      Start-Sleep -Seconds 5
+      $stop.Cancel()
+      $threads | ForEach-Object { $_.Join(1000) }
+      $afterCpu  = (Get-Process -Id $PID).CPU
+      $stop.Dispose()
+      Write-Host "[PAS] CPU mining simulation complete — 4 threads x 5s"
+      Write-Host "[PAS] CPU consumed: $([Math]::Round($afterCpu - $beforeCpu, 2))s"
+      Write-Host "[PAS] Real miner: sustained 100% CPU indefinitely via XMRig/PhoenixMiner"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for known cryptominer indicators"
+    command: |
+      Write-Host "[PAS] Cryptominer process/network indicators:"
+      $miners = @("xmrig","xmrig-cuda","xmrig-amd","PhoenixMiner","lolMiner",
+                  "nanominer","t-rex","nbminer","claymore")
+      $running = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+      foreach ($m in $miners) {
+          if ($running -contains $m) { Write-Host "  [MINER DETECTED] $m running" }
+      }
+
+      Write-Host "[PAS] Mining pool connection check (loopback):"
+      $miningPools = @("pool.supportxmr.com","xmr.pool.minergate.com",
+                       "mine.xmrig.com","moneroocean.stream")
+      foreach ($pool in $miningPools | Select-Object -First 2) {
+          try { [System.Net.Dns]::GetHostAddresses($pool) | Out-Null } catch {}
+          Write-Host "[PAS] Mining pool DNS probe: $pool"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sustained CPU >90% from non-system process, DNS to known mining pool domains, stratum+tcp outbound"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts — threads self-terminated"
+    message: "T1496.001 cleanup complete — mining threads terminated"
+
+analyst_checklist:
+  - "Performance: CPU sustained >80% from non-system process for >5 minutes"
+  - "Network: DNS query or TCP to known mining pool domains/IPs (port 3333, 4444, 14444 — stratum protocol)"
+  - "Sentinel: DevicePerformanceEvents | where CpuUsage > 80 and InitiatingProcessFileName not in ('System','Idle')"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort in (3333,4444,14444) and ActionType == 'ConnectionSuccess'"
+  - "MDE alert: 'Cryptocurrency mining activity detected'"
+  - "CONTROL CHECK: DNS filtering — block known mining pool domains at DNS resolver"
+  - "CONTROL CHECK: Egress firewall — block stratum protocol ports (3333, 4444, 14444) outbound"
+  - "CONTROL CHECK: CPU usage baseline alerting — endpoint sustained at >80% for >5 min triggers investigation"

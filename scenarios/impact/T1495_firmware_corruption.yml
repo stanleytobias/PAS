@@ -1,0 +1,77 @@
+id: T1495_firmware_corruption
+name: "Firmware Corruption"
+mitre_technique: "T1495"
+mitre_tactic: "impact"
+description: >
+  Adversaries overwrite or corrupt firmware on system components — BIOS/UEFI,
+  hard drive firmware, network card firmware, or GPU firmware — to render devices
+  permanently inoperable or to install persistent implants that survive OS reinstall.
+  Known examples: LoJax (UEFI implant), MoonBounce, BlackLotus. Firmware corruption
+  requires physical access or software with low-level hardware access (kernel driver).
+  This is a marker-only scenario: BIOS/firmware modification cannot be safely
+  simulated. Detection relies on UEFI Secure Boot integrity and firmware integrity
+  measurement tools.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1495/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context — SAFETY"
+    message: "T1495 — Firmware Corruption: adversary overwrites BIOS/UEFI to brick or backdoor hardware. Marker-only — irreversible; cannot be simulated safely."
+
+  - step: 2
+    type: exec_powershell
+    description: "Document firmware attack surface and check Secure Boot status"
+    command: |
+      Write-Host "[PAS] Firmware corruption attack surface:"
+      Write-Host "[PAS] Known firmware-targeting malware:"
+      @("LoJax (2018)      — first in-the-wild UEFI rootkit",
+        "MoonBounce (2022)  — UEFI flash SPI implant",
+        "BlackLotus (2023)  — UEFI bootkit bypassing Secure Boot",
+        "CosmicStrand       — UEFI implant in motherboard firmware") |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Secure Boot status check:"
+      $sb = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
+      Write-Host "  Secure Boot: $($sb?.ToString() ?? 'Unable to query (Legacy BIOS or insufficient privilege)')"
+
+      Write-Host "[PAS] UEFI firmware integrity check:"
+      $tpm = Get-WmiObject -Namespace root\CIMv2\Security\MicrosoftTpm `
+          -Class Win32_Tpm -ErrorAction SilentlyContinue
+      Write-Host "  TPM present: $($null -ne $tpm)"
+      Write-Host "  TPM version: $($tpm?.SpecVersion ?? 'N/A')"
+      Write-Host "[PAS] UEFI+TPM+Secure Boot = Measured Boot — detects firmware modification"
+
+  - step: 3
+    type: marker
+    description: "Firmware integrity control check"
+    message: "CONTROL CHECK: Enable Secure Boot, TPM 2.0, and Measured Boot on all endpoints. Windows Defender Credential Guard and HVCI require these — they also detect firmware modification. Use Microsoft Pluton or UEFI Secure Boot DB updates to block known bootkit signatures."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: Secure Boot violation events, UEFI boot measurement mismatch in TPM event log, Windows Security Center Secure Boot status"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1495 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Secure Boot violation: Event ID 1796 in Microsoft-Windows-Security-Auditing (Secure Boot DB mismatch)"
+  - "MDE: 'Secure Boot violation detected' — built-in UEFI integrity monitoring"
+  - "TPM: measured boot log deviation from known-good baseline"
+  - "Sentinel: SecurityEvent | where EventID == 1796"
+  - "CONTROL CHECK: Secure Boot must be Enabled + Active — any Disabled state is a critical finding"
+  - "CONTROL CHECK: UEFI firmware update policy — only signed updates from OEM; disable unverified flash paths"
+  - "CONTROL CHECK: HVCI (Hypervisor-Protected Code Integrity) — prevents unsigned kernel code, limits firmware attack surface"

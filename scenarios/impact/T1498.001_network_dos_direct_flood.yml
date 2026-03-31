@@ -1,0 +1,74 @@
+id: T1498.001_network_dos_direct_flood
+name: "Network Denial of Service — Direct Network Flood"
+mitre_technique: "T1498.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries send high-volume network traffic directly at a target to exhaust
+  its network bandwidth or processing capacity. Methods: UDP flood (stateless,
+  high packet rate), ICMP flood (ping flood), TCP SYN flood (half-open connections
+  exhaust server state tables). Direct floods originate from attacker-controlled
+  hosts or botnets. This simulation sends bounded ICMP and UDP traffic to the
+  loopback interface only — generating network telemetry without any real impact
+  on network infrastructure.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1498/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1498.001 — Direct Network Flood simulation (loopback only, bounded 10 packets)"
+
+  - step: 2
+    type: exec_powershell
+    description: "ICMP ping flood — loopback, 10 packets only"
+    command: |
+      Write-Host "[PAS] ICMP flood pattern (loopback, 10 packets):"
+      $proc = Start-Process ping.exe `
+          -ArgumentList "-n 10 -l 1024 127.0.0.1" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] ping -n 10 -l 1024 127.0.0.1 — ICMP flood telemetry generated"
+      Write-Host "[PAS] Real attack: -n 999999 or continuous -t from botnet nodes"
+
+  - step: 3
+    type: exec_powershell
+    description: "UDP flood pattern — loopback, bounded"
+    command: |
+      Write-Host "[PAS] UDP flood pattern (loopback, 10 datagrams):"
+      $udpClient = New-Object System.Net.Sockets.UdpClient
+      $payload   = [byte[]](1..1024 | ForEach-Object { 0x41 })
+      $ep        = New-Object System.Net.IPEndPoint([Net.IPAddress]::Loopback, 9999)
+      1..10 | ForEach-Object {
+          try { $udpClient.Send($payload, $payload.Length, $ep) | Out-Null } catch {}
+      }
+      $udpClient.Close()
+      Write-Host "[PAS] 10 x 1KB UDP datagrams sent to loopback:9999"
+      Write-Host "[PAS] Real flood: millions of packets/second from botnet"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — high ICMP/UDP packet rate from single source, ping.exe -t from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1498.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: high ICMP/UDP packet rate from single internal host"
+  - "Process event: ping.exe with -t (continuous) or very high -n count"
+  - "Sentinel: DeviceNetworkEvents | where Protocol == 'Icmp' | summarize PacketCount=count() by DeviceName, bin(TimeGenerated,1m) | where PacketCount > 1000"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ping.exe' and ProcessCommandLine contains '-t'"
+  - "CONTROL CHECK: Azure DDoS Protection Standard — auto-mitigates volumetric floods at network edge"
+  - "CONTROL CHECK: Rate limiting on host firewall — block ICMP flood from single source after threshold"
+  - "CONTROL CHECK: Network monitoring — alert on internal host generating >10K packets/second (potential DDoS pivot)"

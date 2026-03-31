@@ -1,0 +1,100 @@
+id: T1489_service_stop
+name: "Service Stop"
+mitre_technique: "T1489"
+mitre_tactic: "impact"
+description: >
+  Adversaries stop or disable services to disrupt operations, inhibit defenses,
+  or prepare for destructive payloads. Ransomware actors stop database services
+  (SQL Server, Exchange, backup agents) before encrypting files to avoid locked-file
+  errors. Security teams stop AV/EDR services to reduce visibility. This simulation
+  creates and stops only a PAS-created test service — it does not touch any
+  real operational services. The pattern generates the sc.exe, net stop, and
+  Stop-Service telemetry that detection rules target.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1489/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1489 — Service Stop simulation (PAS TEST SERVICE ONLY — no real services stopped)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a test service, then stop it — generates Event 7036"
+    command: |
+      Write-Host "[PAS] Service stop simulation using PAS test service only:"
+      $svcName = "PAS_T1489_TestSvc"
+
+      # Create disposable test service
+      sc.exe create $svcName binPath= "cmd.exe /c echo PAS" start= demand 2>&1 | Out-Null
+      sc.exe start  $svcName 2>&1 | Out-Null
+      Start-Sleep -Milliseconds 500
+
+      Write-Host "[PAS] Test service created and started: $svcName"
+
+      # Stop via sc.exe (common adversary method)
+      $proc = Start-Process sc.exe -ArgumentList "stop $svcName" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] sc.exe stop $svcName — Event 7036 generated"
+
+      # Stop via net stop (alternate method)
+      $proc2 = Start-Process net.exe -ArgumentList "stop $svcName" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] net stop $svcName — process event generated"
+
+      # Disable via sc config (persistence prevention — stop on reboot)
+      sc.exe config $svcName start= disabled 2>&1 | Out-Null
+      Write-Host "[PAS] sc.exe config start=disabled — Event 7040 generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Document ransomware service termination pattern"
+    command: |
+      Write-Host "[PAS] Ransomware pre-encryption service stop targets (documented only):"
+      $ransomTargets = @(
+          "MSSQLSERVER","SQLSERVERAGENT",   # SQL Server — files locked during encryption
+          "MSExchangeIS","MSExchangeMTA",    # Exchange — mailbox DBs
+          "VeeamBackupSvc","BackupExecAgentAccelerator",  # Backup agents
+          "WinDefend","Sense","MsSense",     # Windows Defender / MDE
+          "SQLWriter","SDRSVC"               # VSS writers — prevent shadow copies
+      )
+      Write-Host "  Adversary targets these services before encryption:"
+      $ransomTargets | ForEach-Object { Write-Host "  net stop $_ /y" }
+      Write-Host "[PAS] Detection: bulk service stops in rapid succession = ransomware pre-stage"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 7036 (service state changed), Event 7040 (service disabled), bulk service stops in <60s"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test service"
+    command: |
+      sc.exe stop   PAS_T1489_TestSvc 2>&1 | Out-Null
+      sc.exe delete PAS_T1489_TestSvc 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Test service deleted"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1489 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 7036: service entered stopped state — especially for AV/backup/database services"
+  - "Event ID 7040: service start type changed to disabled"
+  - "Sentinel: SecurityEvent | where EventID == 7036 and ServiceName in ('WinDefend','MSSQLServer','VeeamBackupSvc')"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('sc.exe','net.exe') and ProcessCommandLine contains 'stop' | summarize count() by DeviceName, bin(TimeGenerated,1m) | where count_ > 5"
+  - "MDE alert: 'Tampering with Windows Defender' and 'Multiple services stopped — ransomware precursor'"
+  - "CONTROL CHECK: MDE Tamper Protection — WinDefend and Sense cannot be stopped even by admin"
+  - "CONTROL CHECK: Alert on >3 service stops in 60 seconds from same process — ransomware signature"

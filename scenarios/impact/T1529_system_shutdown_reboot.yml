@@ -1,0 +1,101 @@
+id: T1529_system_shutdown_reboot
+name: "System Shutdown/Reboot"
+mitre_technique: "T1529"
+mitre_tactic: "impact"
+description: >
+  Adversaries force system shutdown or reboot to interrupt availability, apply
+  malicious boot-time changes (MBR modification, bcdedit changes), or cause
+  denial of service. Methods: shutdown /s /t 0 (immediate), shutdown /r (reboot),
+  Stop-Computer, wmic os call Reboot, and Restart-Computer. Adversaries also
+  trigger shutdown as the final step after deploying ransomware to force users
+  off systems before recovery is attempted. This simulation schedules a 300-second
+  (5-minute) delayed shutdown and immediately cancels it — generating the telemetry
+  without any real system impact.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1529/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1529 — System Shutdown simulation (300s delay scheduled then IMMEDIATELY CANCELLED)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Schedule delayed shutdown then abort — generates telemetry without impact"
+    command: |
+      Write-Host "[PAS] Shutdown simulation — 300s delay, immediately cancelled:"
+
+      # Schedule shutdown with 300s delay
+      $proc = Start-Process shutdown.exe `
+          -ArgumentList "/s /t 300 /c PAS-T1529-SHUTDOWN-SIM" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] shutdown.exe /s /t 300 — Event 1074 scheduled"
+      Write-Host "[PAS] Shutdown in 5 minutes registered in Windows shutdown framework"
+
+      # Immediately abort (critical — prevents actual shutdown)
+      Start-Sleep -Milliseconds 500
+      $abort = Start-Process shutdown.exe -ArgumentList "/a" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] shutdown.exe /a — shutdown ABORTED (Event 1076)"
+      Write-Host "[PAS] No actual shutdown will occur"
+
+  - step: 3
+    type: exec_powershell
+    description: "Document additional shutdown methods — telemetry patterns"
+    command: |
+      Write-Host "[PAS] Additional shutdown telemetry patterns:"
+
+      Write-Host "[PAS] wmic os call Shutdown (WMI method):"
+      $proc3 = Start-Process wmic.exe `
+          -ArgumentList "os where Primary=TRUE call help" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wmic os process event generated"
+
+      Write-Host "[PAS] PowerShell Stop-Computer pattern:"
+      Write-Host "[PAS] Real: Stop-Computer -Force"
+      Write-Host "[PAS] Real: Restart-Computer -Force"
+      Write-Host "[PAS] Both generate Event 1074 with process name PowerShell"
+
+      Write-Host "[PAS] Azure VM shutdown via ARM API:"
+      Write-Host "[PAS] Real: az vm deallocate -g rg -n vm (stops and deallocates)"
+      Write-Host "[PAS] Real: POST .../virtualMachines/vm/powerOff?api-version=2022-03-01"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 1074 (shutdown initiated) with unusual process/user, shutdown.exe from scripting context"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure any pending shutdown is aborted"
+    command: |
+      # Double-abort to ensure no shutdown is pending
+      Start-Process shutdown.exe -ArgumentList "/a" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS][Cleanup] Shutdown abort confirmed — system will not shut down"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1529 cleanup complete — shutdown aborted, no system impact"
+
+analyst_checklist:
+  - "Event ID 1074: system shutdown initiated — process name and user are key indicators"
+  - "Event ID 1076: shutdown aborted (defenders cancelled it)"
+  - "Process event: shutdown.exe with /s or /r arguments from scripting process"
+  - "Sentinel: SecurityEvent | where EventID == 1074 and ProcessName not in ('explorer.exe','shutdown.exe')"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'shutdown.exe' and InitiatingProcessFileName in ('powershell.exe','cmd.exe')"
+  - "MDE alert: 'Unexpected system shutdown initiated by script'"
+  - "Azure Activity Log: virtualMachines/deallocate or powerOff from unexpected principal"
+  - "CONTROL CHECK: Restrict shutdown rights via GPO — standard users should not be able to shutdown servers"
+  - "CONTROL CHECK: Azure VM lock — resource lock prevents deallocate/delete even with Owner rights"

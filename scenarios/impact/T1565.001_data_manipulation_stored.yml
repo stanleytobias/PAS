@@ -1,0 +1,95 @@
+id: T1565.001_data_manipulation_stored
+name: "Data Manipulation — Stored Data Manipulation"
+mitre_technique: "T1565.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries insert, delete, or modify data at rest to influence outcomes or
+  cover activity. Targets: database records (modifying financial figures, audit
+  logs, transaction records), configuration files (changing application settings),
+  and log files (removing evidence of intrusion). Unlike data destruction, the
+  goal is plausible deniability or business outcome manipulation — the data
+  still exists but contains adversary-controlled values. This simulation modifies
+  only PAS-created test files in an isolated staging directory.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1565/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1565.001 — Stored Data Manipulation simulation (staging files only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create and manipulate simulated stored data — config and log files"
+    command: |
+      $stageDir = "$env:TEMP\PAS_T1565_001_stage"
+      New-Item -ItemType Directory $stageDir -Force | Out-Null
+
+      # Simulate database/config record
+      $configFile = "$stageDir\app_config.json"
+      @"
+{
+  "maxTransactionLimit": 10000,
+  "auditEnabled": true,
+  "adminEmail": "security@corp.local",
+  "version": "2.1.4"
+}
+"@ | Set-Content $configFile
+      Write-Host "[PAS] Original config: $(Get-Content $configFile -Raw | ConvertFrom-Json | Select-Object maxTransactionLimit, auditEnabled)"
+
+      # Adversary manipulation: raise limit + disable audit
+      $config = Get-Content $configFile -Raw | ConvertFrom-Json
+      $config.maxTransactionLimit = 9999999
+      $config.auditEnabled = $false
+      $config | ConvertTo-Json | Set-Content $configFile
+      Write-Host "[PAS] Manipulated config: maxTransactionLimit=$($config.maxTransactionLimit) auditEnabled=$($config.auditEnabled)"
+
+      # Simulate log tampering — remove incriminating entries
+      $logFile = "$stageDir\security.log"
+      @"
+2026-01-01T08:00:00Z INFO  User admin logged in from 10.0.0.1
+2026-01-01T08:05:00Z AUDIT Wire transfer initiated: `$50000 to account 9876543
+2026-01-01T08:06:00Z INFO  User admin logged out
+"@ | Set-Content $logFile
+      Write-Host "[PAS] Log before manipulation:"
+      Get-Content $logFile | ForEach-Object { Write-Host "  $_" }
+
+      $cleanLog = Get-Content $logFile | Where-Object { $_ -notmatch "Wire transfer" }
+      $cleanLog | Set-Content $logFile
+      Write-Host "[PAS] Log after manipulation (Wire transfer entry removed):"
+      Get-Content $logFile | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — config file modification outside deployment window, log file line count reduction, file integrity alerts"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove stored data manipulation staging"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1565_001_stage" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Stored data manipulation staging removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1565.001 cleanup complete"
+
+analyst_checklist:
+  - "File integrity: config file hash mismatch outside scheduled deployment window"
+  - "File event: log file modification (line count decrease = log tampering)"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.json' and ActionType == 'FileModified' and FolderPath contains 'config'"
+  - "CONTROL CHECK: File integrity monitoring (FIM) on config and log directories — alert on any unexpected change"
+  - "CONTROL CHECK: Forward logs to immutable SIEM immediately — local log tampering doesn't affect SIEM copy"
+  - "CONTROL CHECK: Database audit trails in append-only storage — adversary cannot delete committed audit records"

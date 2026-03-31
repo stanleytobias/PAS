@@ -1,0 +1,78 @@
+id: T1496.003_resource_hijacking_sms_pumping
+name: "Resource Hijacking — SMS Pumping"
+mitre_technique: "T1496.003"
+mitre_tactic: "impact"
+description: >
+  Adversaries exploit victim SMS messaging infrastructure to generate large volumes
+  of SMS messages to phone numbers they control — earning payments from telco
+  providers based on message volume. This requires access to a victim's SMS-sending
+  capability (compromised marketing platform, SMS API key, or messaging service).
+  SMS pumping fraud costs businesses millions annually. This is a marker-only
+  scenario — SMS pumping is a telecom/SaaS abuse pattern with no meaningful
+  Windows host simulation. Detection relies on SMS API usage monitoring and
+  rate limiting controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1496/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1496.003 — SMS Pumping: adversary abuses victim SMS API to generate telco traffic for financial gain. Marker-only — no Windows host simulation."
+
+  - step: 2
+    type: exec_powershell
+    description: "Document SMS pumping attack pattern and indicators"
+    command: |
+      Write-Host "[PAS] SMS pumping attack pattern:"
+      Write-Host "  1. Obtain SMS API key (credential theft, T1552 / T1528)"
+      Write-Host "  2. Enumerate valid phone number ranges in target telco's premium service"
+      Write-Host "  3. Script bulk SMS sends to those numbers via victim's API"
+      Write-Host "  4. Telco pays adversary-controlled numbers for received traffic"
+      Write-Host "  5. Victim's SMS bill explodes — attack detected via cost spike"
+      Write-Host ""
+      Write-Host "[PAS] Common SMS API providers targeted:"
+      @("Twilio","Vonage (Nexmo)","AWS SNS","Azure Communication Services",
+        "MessageBird","SendGrid (Twilio)") |
+          ForEach-Object { Write-Host "  $_" }
+
+      # Check for SMS API credentials in environment
+      Write-Host "[PAS] SMS API key exposure check:"
+      @("TWILIO_AUTH_TOKEN","TWILIO_ACCOUNT_SID","VONAGE_API_KEY",
+        "AWS_SNS_REGION","AZURE_COMMUNICATION_KEY") | ForEach-Object {
+          $val = [System.Environment]::GetEnvironmentVariable($_)
+          if ($val) { Write-Host "  [RISK] $_ found in environment!" }
+      }
+
+  - step: 3
+    type: marker
+    description: "SMS rate limit control check"
+    message: "CONTROL CHECK: SMS API rate limits — configure hard caps on messages/hour per API key. Alert on usage >3x baseline. Rotate API keys quarterly. Use Twilio Verify instead of raw SMS for OTP — built-in fraud detection."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: SMS platform audit logs — bulk sends to unfamiliar country codes, API usage spike, cost anomaly alert"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1496.003 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "SMS platform: messages-per-hour spike >3x baseline from single API key"
+  - "SMS platform: messages to unusual country codes not in customer base"
+  - "Cost alert: billing anomaly on SMS provider dashboard — set budget alerts"
+  - "Sentinel: custom connector for SMS API logs | where MessageCount > threshold by ApiKeyId"
+  - "CONTROL CHECK: SMS API keys stored in Key Vault — never in environment variables or code"
+  - "CONTROL CHECK: SMS rate limiting by destination country code — block sends to countries not in customer base"
+  - "CONTROL CHECK: Cost anomaly alerting on all cloud/SaaS services — SMS pumping is detectable by cost spike"

@@ -1,0 +1,98 @@
+id: T1565.003_data_manipulation_runtime
+name: "Data Manipulation — Runtime Data Manipulation"
+mitre_technique: "T1565.003"
+mitre_tactic: "impact"
+description: >
+  Adversaries modify data as it is accessed or displayed in memory — altering
+  process memory, registry values, or API return values to change what an
+  application presents to users without modifying files on disk. Examples:
+  patching a running process's memory to change displayed balances, modifying
+  registry configuration values read at runtime, and hooking API calls to
+  intercept and alter return values. This manipulation is particularly insidious
+  because file-based integrity checks do not detect in-memory alterations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1565/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1565.003 — Runtime Data Manipulation simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate registry value runtime manipulation"
+    command: |
+      Write-Host "[PAS] Runtime registry value manipulation:"
+      $testKey  = "HKCU:\Software\PAS\T1565_003_RuntimeTest"
+      New-Item -Path $testKey -Force | Out-Null
+      Set-ItemProperty $testKey -Name "MaxBalance"  -Value 10000
+      Set-ItemProperty $testKey -Name "AccountTier" -Value "Standard"
+      Write-Host "[PAS] Initial values: MaxBalance=10000, AccountTier=Standard"
+
+      # Simulate adversary runtime modification
+      Set-ItemProperty $testKey -Name "MaxBalance"  -Value 99999999
+      Set-ItemProperty $testKey -Name "AccountTier" -Value "Premium"
+      Write-Host "[PAS] Runtime-manipulated values: MaxBalance=99999999, AccountTier=Premium"
+      Write-Host "[PAS] Application reads registry at runtime — sees manipulated values"
+      Write-Host "[PAS] File-based integrity check would not detect this"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate in-process memory value modification pattern"
+    command: |
+      Write-Host "[PAS] In-process memory manipulation pattern:"
+      Write-Host "[PAS] Real: WriteProcessMemory to change displayed value in running app"
+      Write-Host "[PAS] Example: bank app shows balance=500, adversary patches memory to display 50000"
+      Write-Host ""
+
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASRuntimeManip {
+          [DllImport("kernel32.dll",SetLastError=true)]
+          public static extern bool WriteProcessMemory(
+              IntPtr hProcess, IntPtr lpBaseAddress,
+              byte[] lpBuffer, int dwSize, out int lpNumberOfBytesWritten);
+          [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentProcess();
+      }
+"@
+      # Demonstrate the API call pattern — writing to our own process (safe, no impact)
+      $self = [PASRuntimeManip]::GetCurrentProcess()
+      Write-Host "[PAS] WriteProcessMemory API available — runtime manipulation pattern documented"
+      Write-Host "[PAS] Real attack requires targeting another process with VirtualProtect + WriteProcessMemory"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry value changes outside deployment window, WriteProcessMemory API calls on target processes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove runtime manipulation test registry key"
+    command: |
+      Remove-Item "HKCU:\Software\PAS\T1565_003_RuntimeTest" -Recurse -Force `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Runtime manipulation test registry key removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1565.003 cleanup complete"
+
+analyst_checklist:
+  - "Registry: key value changed at runtime outside scheduled change window"
+  - "API: WriteProcessMemory called on target application process from unexpected source"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'PAS' and ActionType == 'RegistryValueSet'"
+  - "MDE: DeviceEvents | where ActionType == 'WriteProcessMemory' and InitiatingProcessFileName != TargetProcessFileName"
+  - "CONTROL CHECK: Application configuration from Key Vault with access logging — runtime manipulation leaves audit trail"
+  - "CONTROL CHECK: Process Protect (PPL) for sensitive applications — prevents WriteProcessMemory from unprivileged processes"

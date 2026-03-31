@@ -1,0 +1,80 @@
+id: T1561.001_disk_wipe_content
+name: "Disk Wipe — Disk Content Wipe"
+mitre_technique: "T1561.001"
+mitre_tactic: "impact"
+description: >
+  Adversaries overwrite disk content to render data irrecoverable and disrupt
+  system availability. Unlike file-by-file deletion, disk content wiping operates
+  at the raw sector level, destroying all data including file system metadata.
+  Tools: cipher /w (Windows built-in free-space wipe), erasing specific volumes
+  with format /p, and custom raw write tools. This simulation targets only an
+  isolated TEMP subdirectory using cipher /w — never targeting system drives,
+  user documents, or any operational storage.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1561/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1561.001 — Disk Content Wipe simulation (TEMP staging dir ONLY — never system drive)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate disk content wipe on isolated staging directory"
+    command: |
+      $wipeDir = "$env:TEMP\PAS_T1561_001_wipe_stage"
+      New-Item -ItemType Directory $wipeDir -Force | Out-Null
+      1..3 | ForEach-Object { "PAS-WIPE-DATA-$_" | Set-Content "$wipeDir\file_$_.dat" }
+      Write-Host "[PAS] Staging data created: $((Get-ChildItem $wipeDir).Count) files"
+
+      Write-Host "[PAS] cipher /w — overwrites free space in staging directory:"
+      Write-Host "[PAS] NOTE: cipher /w overwrites free space, not live files — safe to run bounded"
+      $proc = Start-Process cipher.exe -ArgumentList "/w:$wipeDir" `
+          -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 800
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] cipher.exe /w process event generated — disk wipe telemetry"
+
+      Write-Host "[PAS] format /p (multipass wipe) pattern:"
+      Write-Host "[PAS] Real: format D: /p:3 — 3-pass zero-write on volume D:"
+      Write-Host "[PAS] Simulation documents pattern only — not executed"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — cipher.exe /w, format.exe /p, raw disk write handles opened on volumes"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove wipe staging directory and kill cipher"
+    command: |
+      Get-Process cipher -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1561_001_wipe_stage" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Wipe staging removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1561.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: cipher.exe with /w flag on volume path"
+  - "Process event: format.exe with /p flag — multipass wipe"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cipher.exe' and ProcessCommandLine contains '/w'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'format.exe' and ProcessCommandLine contains '/p'"
+  - "MDE alert: 'Disk content wipe — destructive attack pattern'"
+  - "CONTROL CHECK: Immutable Azure Backup — survives disk wipe; adversary cannot reach cloud backup"
+  - "CONTROL CHECK: Offline backups — tape or air-gapped backup not reachable from compromised network"

@@ -1,0 +1,114 @@
+id: T1486_data_encrypted_for_impact
+name: "Data Encrypted for Impact"
+mitre_technique: "T1486"
+mitre_tactic: "impact"
+description: >
+  Adversaries encrypt files on victim systems and withhold the decryption key,
+  rendering data inaccessible and demanding ransom for recovery. Ransomware
+  typically enumerates all drives, encrypts files with a per-victim asymmetric
+  key scheme, drops a ransom note, and may delete shadow copies to prevent
+  recovery. This simulation encrypts only PAS-created staging files in an
+  isolated TEMP directory — never system files, user documents, or any operational
+  data. The encryption key is retained and all files are restored in cleanup.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1486/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context — SAFETY"
+    message: "Starting T1486 — Ransomware/Data Encryption simulation (ISOLATED STAGING DIR ONLY)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create staging data and encrypt with AES — isolated to TEMP staging dir"
+    command: |
+      $ransomDir = "$env:TEMP\PAS_T1486_ransom_stage"
+      New-Item -ItemType Directory $ransomDir -Force | Out-Null
+
+      # Create simulated victim files
+      1..5 | ForEach-Object {
+          "PAS-T1486-VICTIM-FILE-$_-Content" |
+              Set-Content "$ransomDir\important_doc_$_.txt"
+      }
+      Write-Host "[PAS] Victim files created in isolated stage: $((Get-ChildItem $ransomDir).Count) files"
+
+      # Generate per-session AES key (ransomware pattern)
+      $aes = [System.Security.Cryptography.Aes]::Create()
+      $aes.GenerateKey(); $aes.GenerateIV()
+      $keyB64 = [Convert]::ToBase64String($aes.Key)
+      $ivB64  = [Convert]::ToBase64String($aes.IV)
+
+      # Encrypt each file (staging only)
+      foreach ($file in Get-ChildItem $ransomDir -Filter "*.txt") {
+          $plain     = [IO.File]::ReadAllBytes($file.FullName)
+          $enc       = $aes.CreateEncryptor()
+          $ms        = New-Object IO.MemoryStream
+          $cs        = New-Object Security.Cryptography.CryptoStream($ms,$enc,
+              [Security.Cryptography.CryptoStreamMode]::Write)
+          $cs.Write($plain,0,$plain.Length); $cs.FlushFinalBlock()
+          $encrypted = $ms.ToArray(); $aes.Dispose(); $aes = $aes
+          [IO.File]::WriteAllBytes($file.FullName + ".PAS_LOCKED", $encrypted)
+          Remove-Item $file.FullName -Force
+          Write-Host "[PAS] Encrypted: $($file.Name) -> $($file.Name).PAS_LOCKED"
+      }
+      $aes.Dispose()
+
+      # Drop ransom note
+      Set-Content "$ransomDir\README_PAS_RESTORE.txt" @"
+PAS-T1486 SIMULATION RANSOM NOTE
+---------------------------------
+This is a PAS detection engineering simulation only.
+Key (retained for cleanup): $keyB64
+IV: $ivB64
+REAL ransomware would NOT include the key here.
+"@
+      Write-Host "[PAS] Ransom note dropped: README_PAS_RESTORE.txt"
+      Write-Host "[PAS] Encryption complete — $((Get-ChildItem $ransomDir -Filter '*.PAS_LOCKED').Count) files encrypted"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate ransomware pre-encryption steps — shadow delete, recovery disable"
+    command: |
+      Write-Host "[PAS] Ransomware pre-encryption pattern (documented only — NOT executed):"
+      Write-Host "  vssadmin delete shadows /all /quiet    [shadow copy deletion]"
+      Write-Host "  bcdedit /set {default} recoveryenabled No  [recovery disable]"
+      Write-Host "  wbadmin delete catalog -quiet          [backup catalog delete]"
+      Write-Host "[PAS] These are covered separately in T1490 (Inhibit System Recovery)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — bulk file rename to encrypted extension, AES CryptoAPI calls on many files, ransom note creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove ransomware staging directory entirely"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1486_ransom_stage" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Ransomware staging directory removed — no encrypted files remain"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1486 cleanup complete"
+
+analyst_checklist:
+  - "File event: bulk rename adding unknown extension (.locked, .encrypted, .PAID) in rapid succession"
+  - "File event: README / DECRYPT / RESTORE .txt file created in multiple directories"
+  - "CryptoAPI: BCryptEncrypt called on large numbers of files by unexpected process"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.locked' or FileName endswith '.encrypted' | summarize count() by DeviceName, bin(TimeGenerated,1m) | where count_ > 20"
+  - "Sentinel: DeviceFileEvents | where FileName contains 'README' and FileName contains 'RESTORE' and ActionType == 'FileCreated'"
+  - "MDE alert: 'Ransomware behavior detected' — built-in behavioral detection"
+  - "CONTROL CHECK: Controlled folder access (ASR) — blocks unauthorized processes from writing to user document folders"
+  - "CONTROL CHECK: Immutable backup — Azure Backup soft delete + WORM; cannot be deleted by ransomware"
+  - "CONTROL CHECK: Attack surface reduction rules: 'Block process creations originating from PSExec and WMI commands'"

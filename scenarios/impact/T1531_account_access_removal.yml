@@ -1,0 +1,104 @@
+id: T1531_account_access_removal
+name: "Account Access Removal"
+mitre_technique: "T1531"
+mitre_tactic: "impact"
+description: >
+  Adversaries interrupt legitimate user access by disabling, locking, or deleting
+  accounts, or by revoking permissions. This denies victims access to their systems
+  during or after an attack — preventing incident response, forcing ransom negotiation,
+  or causing operational disruption. Methods: net user /active:no, Disable-ADAccount,
+  Remove-LocalUser, revoking M365 licenses, and changing account passwords.
+  This simulation targets only PAS-created test accounts and does not touch any
+  real operational accounts.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1531/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1531 — Account Access Removal simulation (test accounts only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create and then disable test accounts — simulates adversary lockout"
+    command: |
+      Write-Host "[PAS] Account access removal simulation:"
+      $testUsers = @("PAS_T1531_victim1","PAS_T1531_victim2")
+      $pass = ConvertTo-SecureString "PAS-TestPass-Lx7!" -AsPlainText -Force
+
+      foreach ($u in $testUsers) {
+          New-LocalUser -Name $u -Password $pass -PasswordNeverExpires $true `
+              -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "[PAS] Created test account: $u"
+      }
+
+      Write-Host "[PAS] Disabling accounts (net user /active:no):"
+      foreach ($u in $testUsers) {
+          $proc = Start-Process net.exe -ArgumentList "user $u /active:no" `
+              -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Disabled: $u (Event ID 4725 generated)"
+      }
+
+      Write-Host "[PAS] Password change pattern (locks out user):"
+      $newPass = ConvertTo-SecureString "PAS-NewPass-Changed!" -AsPlainText -Force
+      Set-LocalUser -Name $testUsers[0] -Password $newPass -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Password changed for: $($testUsers[0]) (Event ID 4723/4724)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate M365 account revocation — Graph API pattern"
+    command: |
+      Write-Host "[PAS] M365 account revocation patterns (loopback):"
+      Write-Host "[PAS] Real: Revoke-MgUserSignInSession -UserId victim@corp.local"
+      Write-Host "       Revokes all active tokens — user immediately signed out everywhere"
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/v1.0/users/{userId}/revokeSignInSessions")
+          $req.Method = "POST"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.ContentLength = 0
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] revokeSignInSessions POST to loopback generated"
+      Write-Host "[PAS] Also: az ad user update --id victim --account-enabled false"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4725 (account disabled), Event 4723/4724 (password change), Graph revokeSignInSessions"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Re-enable and remove test accounts"
+    command: |
+      @("PAS_T1531_victim1","PAS_T1531_victim2") | ForEach-Object {
+          net user $_ /active:yes 2>&1 | Out-Null
+          Remove-LocalUser -Name $_ -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS][Cleanup] Test accounts re-enabled and removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1531 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4725: user account disabled — especially bulk disables in short window"
+  - "Event ID 4723/4724: password change not initiated by owner (admin-initiated = suspicious)"
+  - "Entra ID audit: revokeSignInSessions for multiple users in rapid succession"
+  - "Sentinel: SecurityEvent | where EventID == 4725 | summarize count() by SubjectUserName, bin(TimeGenerated,5m) | where count_ > 3"
+  - "Sentinel: AuditLogs | where OperationName == 'Revoke user sign-in sessions'"
+  - "MDE alert: 'Bulk account lockout — potential ransomware precursor'"
+  - "CONTROL CHECK: Break-glass accounts must be excluded from bulk operations — monitor these accounts separately"
+  - "CONTROL CHECK: Privileged Identity Management for admin operations — require approval for bulk account changes"

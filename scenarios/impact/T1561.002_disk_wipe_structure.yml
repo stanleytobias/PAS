@@ -1,0 +1,81 @@
+id: T1561.002_disk_wipe_structure
+name: "Disk Wipe — Disk Structure Wipe"
+mitre_technique: "T1561.002"
+mitre_tactic: "impact"
+description: >
+  Adversaries corrupt or overwrite disk structures required to boot a system —
+  the Master Boot Record (MBR), GUID Partition Table (GPT), Volume Boot Record
+  (VBR), or boot sector. Corrupting the MBR prevents the system from booting at
+  all. This technique was used in Shamoon, NotPetya, and HermeticWiper attacks.
+  MBR overwrite requires raw disk access and SYSTEM/admin privileges. This is a
+  marker-only scenario — MBR overwrite is irreversible and cannot be simulated
+  safely. Detection focus is on raw disk handle acquisition and known wiper tools.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1561/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context — SAFETY"
+    message: "T1561.002 — Disk Structure Wipe: adversary overwrites MBR/GPT — system cannot boot. Marker-only: too destructive to simulate."
+
+  - step: 2
+    type: exec_powershell
+    description: "Document MBR wipe pattern and check for wiper tool indicators"
+    command: |
+      Write-Host "[PAS] Disk Structure Wipe — MBR/GPT corruption pattern:"
+      Write-Host "[PAS] Real attack: CreateFile('\\\\.\PhysicalDrive0') + WriteFile(zeros, 512 bytes)"
+      Write-Host "[PAS] Effect: MBR overwritten -> system cannot boot -> BSOD on next restart"
+      Write-Host ""
+      Write-Host "[PAS] Known wiper tools targeting MBR:"
+      @("Shamoon (disttrack.exe)   — zero-fill MBR + user files",
+        "NotPetya                  — overwrite MBR with custom bootloader",
+        "HermeticWiper             — corrupt MBR via legitimate EaseUS driver",
+        "WhisperGate               — two-stage MBR overwrite + file corruptor") |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] MBR wipe prerequisite — raw disk handle check:"
+      try {
+          # Check if raw disk access is possible (probe only — do NOT write)
+          $disk = [System.IO.File]::Open(
+              "\\\\.\PhysicalDrive0",
+              [System.IO.FileMode]::Open,
+              [System.IO.FileAccess]::Read,
+              [System.IO.FileShare]::ReadWrite)
+          $disk.Close()
+          Write-Host "  Raw disk read access: available — SYSTEM/admin can write to MBR"
+      } catch {
+          Write-Host "  Raw disk access: restricted (access denied — expected for non-SYSTEM)"
+      }
+
+  - step: 3
+    type: marker
+    description: "Detection control check"
+    message: "CONTROL CHECK: Monitor CreateFile on \\\\.\PhysicalDrive0 with GENERIC_WRITE access — any non-system process opening raw disk for write is a critical incident indicator."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — raw disk handle (PhysicalDrive0) opened with write access by non-system process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1561.002 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "MDE: DeviceEvents | where ActionType == 'CreateFile' and FileName contains 'PhysicalDrive' and AccessMask contains 'Write'"
+  - "Process event: known wiper tool hashes (disttrack, HermeticWiper) — check against IOC lists"
+  - "Sentinel: DeviceEvents | where AdditionalFields contains 'PhysicalDrive0' and AdditionalFields contains 'WriteAccess'"
+  - "CONTROL CHECK: Boot integrity — UEFI Secure Boot detects MBR corruption and prevents boot"
+  - "CONTROL CHECK: Measured Boot + TPM — detects pre-boot environment modification"
+  - "CONTROL CHECK: Bare-metal backup — MBR wipe requires full OS reinstall; BMR backup enables <1hr recovery"
