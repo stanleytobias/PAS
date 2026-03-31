@@ -1,0 +1,105 @@
+id: suite_living_off_the_land_lateral_movement
+name: "Living-off-the-Land (LotL) Lateral Movement"
+description: >
+  Simulates an adversary operating exclusively with Windows-native binaries and
+  built-in PowerShell — no custom tools, no known-bad hashes. This is the dominant
+  post-compromise technique used by nation-state actors (APT29/Cozy Bear archetype)
+  and sophisticated ransomware operators to evade hash-based and signature-based
+  detection. The chain exercises whether your behavioural detections (Sentinel
+  analytics, MDE behavioural rules, script block logging) fire purely on
+  command-line patterns and API calls without any IOC matching.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/groups/G0016/
+  - https://attack.mitre.org/groups/G0007/
+
+scenarios:
+  - step: 1
+    technique: "T1033"
+    tactic: "discovery"
+    scenario_file: "discovery/T1033_system_owner_user_discovery.yml"
+    rationale: "whoami /all — enumerate current user context and privileges using built-in OS binary"
+
+  - step: 2
+    technique: "T1057"
+    tactic: "discovery"
+    scenario_file: "discovery/T1057_process_discovery.yml"
+    rationale: "tasklist /svc — enumerate running processes and services using built-in Windows utilities"
+
+  - step: 3
+    technique: "T1016"
+    tactic: "discovery"
+    scenario_file: "discovery/T1016_system_network_configuration_discovery.yml"
+    rationale: "ipconfig /all, arp -a, route print — map network configuration using native OS tools"
+
+  - step: 4
+    technique: "T1018"
+    tactic: "discovery"
+    scenario_file: "discovery/T1018_remote_system_discovery.yml"
+    rationale: "net view /domain, ARP cache inspection — enumerate network hosts without installing any tools"
+
+  - step: 5
+    technique: "T1552.002"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1552.002_unsecured_credentials_registry.yml"
+    rationale: "reg query — search registry for stored credentials using built-in reg.exe"
+
+  - step: 6
+    technique: "T1552.003"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1552.003_unsecured_credentials_shell_history.yml"
+    rationale: "Read ConsoleHost_history.txt — extract credentials from PowerShell history using Get-Content"
+
+  - step: 7
+    technique: "T1021.006"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1021.006_remote_services_winrm.yml"
+    rationale: "Invoke-Command / Enter-PSSession — lateral movement using built-in PowerShell remoting"
+
+  - step: 8
+    technique: "T1570"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1570_lateral_tool_transfer.yml"
+    rationale: "certutil -urlcache — tool staging using built-in certutil.exe, a classic LotL technique"
+
+  - step: 9
+    technique: "T1053.005"
+    tactic: "persistence"
+    scenario_file: "persistence/T1053.005_scheduled_task_windows.yml"
+    rationale: "schtasks /create — persistence via scheduled task using built-in schtasks.exe"
+
+  - step: 10
+    technique: "T1070.001"
+    tactic: "defense_evasion"
+    scenario_file: "defense_evasion/T1070.001_indicator_removal_clear_windows_event_logs.yml"
+    rationale: "wevtutil cl — cover tracks by clearing event logs using built-in Windows event utility"
+
+analyst_narrative: >
+  This suite validates behavioural detection with zero IOC reliance. Every binary
+  used (whoami, tasklist, ipconfig, net, reg, powershell, certutil, schtasks,
+  wevtutil) is present on every Windows installation. Detection must fire on
+  command-line arguments, API call patterns, and process ancestry — not hashes
+  or file paths. The critical test is step 7: Invoke-Command to a remote host
+  from a user workstation is unusual but invisible to hash-based tools. Step 8
+  (certutil -urlcache) is one of the most well-known LotL techniques and should
+  fire a high-confidence alert. Step 10 (log clearing) is a last-ditch cleanup
+  step — if this fires without steps 1-9 firing, detection coverage is insufficient.
+
+detection_chain:
+  - "Steps 1-4: native discovery binaries — low severity individually, correlate as recon cluster"
+  - "Steps 5-6: reg.exe credential paths, PSReadLine history access — medium severity"
+  - "Step 7: Invoke-Command to remote host from workstation — HIGH SEVERITY (WinRM lateral)"
+  - "Step 8: certutil.exe -urlcache — HIGH SEVERITY (well-known LotL technique)"
+  - "Step 9: schtasks /create with PowerShell payload — HIGH SEVERITY"
+  - "Step 10: wevtutil cl — CRITICAL (log clearing = active cover-up)"
+  - "Correlation rule: native-binary recon cluster (steps 1-4) + credential search (5-6) + WinRM (7) within 30 min = LotL lateral movement playbook"
+
+coverage_notes: >
+  Tactics covered: Discovery, Credential Access, Lateral Movement, Persistence, Defense Evasion.
+  Key detection dependency: script block logging (Event 4104) MUST be enabled —
+  without it, PowerShell-based steps are invisible. Verify PSScriptBlockLogging
+  GPO is applied before running this suite.
+  Tuning note: high false-positive risk on steps 1-4 in IT admin contexts —
+  tune correlation to fire only when discovery cluster is followed by lateral movement.

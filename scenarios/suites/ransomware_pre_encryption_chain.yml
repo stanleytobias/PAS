@@ -1,0 +1,102 @@
+id: suite_ransomware_pre_encryption_chain
+name: "Ransomware Pre-Encryption Chain"
+description: >
+  Simulates the full pre-encryption kill chain used by modern ransomware operators
+  (Conti, LockBit, BlackCat/ALPHV archetypes). The sequence begins with initial
+  host reconnaissance, escalates through credential access and lateral movement,
+  then executes the three critical pre-encryption steps that defenders must catch
+  to prevent catastrophic impact: shadow copy deletion, service termination, and
+  finally encryption. Each step produces telemetry — but the decisive detection
+  window is the 5–15 minutes between credential access and vssadmin delete.
+  Suites like this validate whether correlation rules fire in time.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/groups/G0092/
+  - https://attack.mitre.org/groups/G0139/
+
+scenarios:
+  - step: 1
+    technique: "T1082"
+    tactic: "discovery"
+    scenario_file: "discovery/T1082_system_information_discovery.yml"
+    rationale: "Operator enumerates OS version, architecture, and patch level to confirm viable target and select appropriate ransomware payload variant"
+
+  - step: 2
+    technique: "T1083"
+    tactic: "discovery"
+    scenario_file: "discovery/T1083_file_and_directory_discovery.yml"
+    rationale: "Recursively enumerate file system to locate high-value data (databases, documents, backups) and estimate encryption scope"
+
+  - step: 3
+    technique: "T1135"
+    tactic: "discovery"
+    scenario_file: "discovery/T1135_network_share_discovery.yml"
+    rationale: "Discover network shares to include in encryption scope — ransomware encrypts mapped drives alongside local files"
+
+  - step: 4
+    technique: "T1518.002"
+    tactic: "discovery"
+    scenario_file: "discovery/T1518.002_software_discovery_backup_software.yml"
+    rationale: "Enumerate backup agents (Veeam, BackupExec, wbengine) to target for termination before encryption begins"
+
+  - step: 5
+    technique: "T1003.001"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1003.001_os_credential_dumping_lsass.yml"
+    rationale: "Dump LSASS memory to obtain credentials for lateral movement to file servers and backup systems"
+
+  - step: 6
+    technique: "T1021.002"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1021.002_remote_services_smb_admin_shares.yml"
+    rationale: "Move laterally to file servers and backup servers via SMB admin shares using stolen credentials"
+
+  - step: 7
+    technique: "T1490"
+    tactic: "impact"
+    scenario_file: "impact/T1490_inhibit_system_recovery.yml"
+    rationale: "Delete all Volume Shadow Copies and disable Windows Recovery Environment — prevents recovery without paying ransom"
+
+  - step: 8
+    technique: "T1489"
+    tactic: "impact"
+    scenario_file: "impact/T1489_service_stop.yml"
+    rationale: "Terminate database, Exchange, and backup agent services to release file locks before encryption — ensures all files can be encrypted"
+
+  - step: 9
+    technique: "T1486"
+    tactic: "impact"
+    scenario_file: "impact/T1486_data_encrypted_for_impact.yml"
+    rationale: "Encrypt staged files with per-victim asymmetric key scheme and drop ransom note"
+
+analyst_narrative: >
+  This suite maps the standard ransomware operator playbook. The early steps
+  (1-4) are reconnaissance and should trigger low-severity alerts that, in
+  isolation, are easy to miss. The decisive phase is steps 5-7: LSASS dump
+  followed by SMB lateral movement followed by vssadmin delete shadows. These
+  three events within a 15-minute window are a near-certain ransomware
+  pre-encryption indicator. Step 8 (service stop) and step 9 (encryption) are
+  last-chance detection points — catching here still allows stopping encryption
+  mid-flight via endpoint isolation. The analyst's goal is to fire on step 7
+  or earlier. Any detection at step 9 is a partial failure; detecting only at
+  step 9 is a complete detection failure.
+
+detection_chain:
+  - "Step 1-4: systeminfo.exe, dir /s, net view — low severity, log for correlation"
+  - "Step 4: vssadmin list shadows, backup service enumeration — medium severity; correlate with subsequent steps"
+  - "Step 5: LSASS dump (MiniDumpWriteDump / comsvcs.dll) — HIGH SEVERITY, immediate alert"
+  - "Step 6: SMB lateral to admin share + remote service creation (Event 7045) — HIGH SEVERITY"
+  - "Step 7: vssadmin delete shadows — CRITICAL, immediate endpoint isolation"
+  - "Step 8: bulk service stops (WinDefend, SQL, Veeam) in <60s — CRITICAL"
+  - "Step 9: bulk file rename to encrypted extension — CRITICAL (late detection)"
+  - "Correlation rule: Steps 5+6+7 within 15 min from same source = Ransomware Pre-Encryption — trigger automated isolation"
+
+coverage_notes: >
+  Tactics covered: Discovery, Credential Access, Lateral Movement, Impact.
+  Key gap: this suite starts post-initial-access — add suite_initial_access_to_ransomware
+  for the full chain including phishing delivery and execution.
+  Tuning note: vssadmin delete shadows should be a zero-tolerance alert with
+  automated response (isolate endpoint, revoke credentials) — no analyst
+  approval required for containment at this step.

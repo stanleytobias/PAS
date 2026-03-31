@@ -1,0 +1,98 @@
+id: suite_business_email_compromise
+name: "Business Email Compromise / Account Takeover"
+description: >
+  Simulates the full Business Email Compromise (BEC) kill chain — from credential
+  compromise through MFA bypass, internal phishing, and financial fraud setup.
+  BEC is the highest-dollar-impact cybercrime category ($2.9B USD reported to FBI
+  in 2023). This suite exercises the specific detection controls that separate
+  organisations that catch BEC in minutes from those that discover it weeks later
+  on the bank statement. The adversary archetype is a financially motivated threat
+  actor targeting wire transfer authorisation or payroll diversion — no malware,
+  no exploits, entirely identity-based attack.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/groups/G0098/
+
+scenarios:
+  - step: 1
+    technique: "T1110.003"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1110.003_brute_force_password_spraying.yml"
+    rationale: "Password spray against M365 authentication to obtain initial credentials without lockout"
+
+  - step: 2
+    technique: "T1621"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1621_mfa_request_generation.yml"
+    rationale: "MFA push bombing to bypass MFA on the sprayed account — fatigue victim into approving"
+
+  - step: 3
+    technique: "T1606.001"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1606.001_forge_web_credentials_cookies.yml"
+    rationale: "Alternatively: AiTM phishing captures session cookie post-MFA — adversary replays token"
+
+  - step: 4
+    technique: "T1087.003"
+    tactic: "discovery"
+    scenario_file: "discovery/T1087.003_account_discovery_email.yml"
+    rationale: "Access Global Address List from compromised mailbox — enumerate finance team and executives"
+
+  - step: 5
+    technique: "T1114.002"
+    tactic: "collection"
+    scenario_file: "collection/T1114.002_email_collection_remote_email_collection.yml"
+    rationale: "Read inbox of compromised account — identify pending wire transfers or invoices to intercept"
+
+  - step: 6
+    technique: "T1098.002"
+    tactic: "persistence"
+    scenario_file: "persistence/T1098.002_additional_email_delegate_permissions.yml"
+    rationale: "Create inbox rule to auto-forward finance-related emails and hide replies — maintains access while remaining covert"
+
+  - step: 7
+    technique: "T1534"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1534_internal_spearphishing.yml"
+    rationale: "Send internal phishing email from compromised account to finance team requesting urgent wire transfer to adversary account"
+
+  - step: 8
+    technique: "T1657"
+    tactic: "impact"
+    scenario_file: "impact/T1657_financial_theft.yml"
+    rationale: "Wire transfer redirected to adversary-controlled account — financial theft objective achieved"
+
+analyst_narrative: >
+  BEC is unique because every action is a legitimate cloud operation performed
+  by a legitimately authenticated user. There is no malware, no exploit, no
+  unusual process — only sign-ins, email reads, rule creation, and message sends.
+  The entire detection burden falls on identity and email behavioural analytics.
+  The decisive detection window is between steps 2 and 6: a successful MFA
+  auth from a new IP/device should trigger immediate step-up authentication
+  or session revocation. If the adversary reaches step 6 (inbox rule creation)
+  undetected, BEC success probability is very high. Step 7 (internal phishing)
+  is the last technical detection opportunity — Defender for Office 365 Safe
+  Links analysis on internal mail is the control. Step 8 is outcome — no
+  technical detection opportunity exists once the wire is sent.
+
+detection_chain:
+  - "Step 1: M365 sign-in failures across multiple accounts from single IP — medium severity"
+  - "Step 2: >3 MFA prompts in 5 min for single user — HIGH SEVERITY"
+  - "Step 3: Entra ID 'Anomalous token' risk detection (Identity Protection) — CRITICAL"
+  - "Step 4: GAL enumeration via Graph from new device — medium severity"
+  - "Step 5: Mailbox access from new IP not seen in 30 days — HIGH SEVERITY"
+  - "Step 6: Inbox rule created matching 'wire','invoice','payment' — CRITICAL (immediate alert)"
+  - "Step 7: Internal email with financial instruction from account that recently had new sign-in — CRITICAL"
+  - "Step 8: No technical detection — financial controls required (callback verification)"
+  - "Correlation rule: new geo sign-in + MFA fatigue + inbox rule creation within 2 hours = BEC chain"
+
+coverage_notes: >
+  Tactics covered: Credential Access, Discovery, Collection, Persistence, Lateral Movement, Impact.
+  Key detection dependency: Entra ID Identity Protection Risk Policies must be
+  configured with 'High risk sign-in' → require MFA re-authentication or block.
+  Key gap: step 8 is not technically detectable — financial process controls
+  (dual approval, callback verification) are the only mitigation.
+  Tuning note: inbox rule creation for finance keywords should be a zero-latency
+  alert — target <2 minutes from rule creation to SOC notification.

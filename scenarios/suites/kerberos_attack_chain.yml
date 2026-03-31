@@ -1,0 +1,114 @@
+id: suite_kerberos_attack_chain
+name: "Kerberos Attack Chain"
+description: >
+  Simulates the full Kerberos-based privilege escalation and lateral movement chain —
+  from unauthenticated enumeration through Kerberoasting, Pass-the-Ticket, DCSync,
+  and ultimately Golden Ticket forgery. This chain represents the Active Directory
+  compromise path used by sophisticated threat actors (APT41, FIN8 archetypes)
+  who avoid NTLM entirely to evade PtH detection. Each step exercises a specific
+  Defender for Identity and Sentinel Kerberos detection capability. The suite
+  validates whether the Kerberos detection stack catches the escalation before
+  KRBTGT hash acquisition — after which the adversary has durable, near-irrevocable
+  domain compromise.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/groups/G0096/
+
+scenarios:
+  - step: 1
+    technique: "T1087.002"
+    tactic: "discovery"
+    scenario_file: "discovery/T1087.002_account_discovery_domain.yml"
+    rationale: "Enumerate domain accounts and group memberships via LDAP — identify Kerberoastable service accounts"
+
+  - step: 2
+    technique: "T1069.002"
+    tactic: "discovery"
+    scenario_file: "discovery/T1069.002_permission_groups_domain.yml"
+    rationale: "Enumerate protected groups (adminCount=1) — identify high-value accounts to target"
+
+  - step: 3
+    technique: "T1558.003"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1558.003_kerberos_kerberoasting.yml"
+    rationale: "Request TGS tickets for SPNs using RC4 encryption — offline crack service account hashes"
+
+  - step: 4
+    technique: "T1558.004"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1558.004_kerberos_asrep_roasting.yml"
+    rationale: "AS-REP roast accounts with pre-auth disabled — additional offline cracking targets"
+
+  - step: 5
+    technique: "T1550.003"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1550.003_pass_the_ticket.yml"
+    rationale: "Inject cracked service account TGS ticket — authenticate to target service without password"
+
+  - step: 6
+    technique: "T1021.002"
+    tactic: "lateral_movement"
+    scenario_file: "lateral_movement/T1021.002_remote_services_smb_admin_shares.yml"
+    rationale: "Use Kerberos ticket to access admin shares on domain controller — stage for DCSync"
+
+  - step: 7
+    technique: "T1003.006"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1003.006_os_credential_dumping_dcsync.yml"
+    rationale: "DCSync — replicate NTLM hashes for all domain accounts including KRBTGT from the DC"
+
+  - step: 8
+    technique: "T1558.001"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1558.001_kerberos_golden_ticket.yml"
+    rationale: "Forge Golden Ticket using KRBTGT hash — unrestricted domain-wide authentication for any account"
+
+  - step: 9
+    technique: "T1134.005"
+    tactic: "privilege_escalation"
+    scenario_file: "privilege_escalation/T1134.005_sid_history_injection.yml"
+    rationale: "Inject Domain Admin SID into a low-privilege account for stealthy persistent access"
+
+  - step: 10
+    technique: "T1070.001"
+    tactic: "defense_evasion"
+    scenario_file: "defense_evasion/T1070.001_indicator_removal_clear_windows_event_logs.yml"
+    rationale: "Clear Security event log on DC to remove evidence of DCSync and ticket operations"
+
+analyst_narrative: >
+  This suite represents the definitive Active Directory compromise chain. The
+  critical threshold is step 7 (DCSync) — once KRBTGT hash is obtained, the
+  adversary can forge tickets indefinitely and the only recovery is double-rotating
+  KRBTGT (which breaks kerberos for all domain users for ~10 hours). Detection
+  must fire at step 3 (Kerberoasting RC4 burst) or step 7 (DCSync replication).
+  Defender for Identity is the primary detection control for this entire chain —
+  it monitors DC-side Kerberos protocol events that endpoint EDR cannot see.
+  Step 8 (Golden Ticket) creates a ticket that is valid even after the compromised
+  service account password is changed. Step 9 (SID-History) provides a stealthy
+  persistent backdoor that survives the entire chain being discovered and remediated
+  if the SID-History attribute is not specifically checked during IR.
+
+detection_chain:
+  - "Steps 1-2: LDAP bulk enumeration (objectClass=user, adminCount=1) — medium severity"
+  - "Step 3: Event 4769 RC4 TGS requests burst for multiple SPNs — HIGH SEVERITY"
+  - "Step 4: Event 4768 with PreAuthType=0 — medium severity"
+  - "Step 5: Ticket injection (klist purge + new TGS without TGT) — HIGH SEVERITY"
+  - "Step 6: SMB admin share access from non-admin workstation — HIGH SEVERITY"
+  - "Step 7: DsGetNCChanges replication from non-DC IP — CRITICAL (immediate alert)"
+  - "Step 8: Golden Ticket usage (abnormal ticket lifetime / non-existent user) — CRITICAL"
+  - "Step 9: sIDHistory attribute modification (Event 4738) — CRITICAL"
+  - "Step 10: Security log cleared on DC (Event 1102) — CRITICAL"
+  - "Correlation rule: Kerberoasting burst + DCSync within 60 min = full domain compromise chain"
+
+coverage_notes: >
+  Tactics covered: Discovery, Credential Access, Lateral Movement, Privilege Escalation, Defense Evasion.
+  Key detection dependency: Defender for Identity MUST be deployed on ALL domain
+  controllers — DCSync detection (step 7) requires DFI; Sentinel alone cannot
+  detect it without DFI feeding events.
+  Key remediation note: after step 7 is detected, rotate KRBTGT password TWICE
+  24 hours apart — single rotation is insufficient to invalidate Golden Tickets.
+  Tuning note: Kerberoasting alert (step 3) has a moderate false-positive rate in
+  environments with many SPNs — tune to fire on >5 RC4 TGS requests in 60 seconds
+  from a single non-service account.

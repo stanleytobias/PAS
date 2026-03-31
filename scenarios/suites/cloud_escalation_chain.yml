@@ -1,0 +1,111 @@
+id: suite_cloud_escalation_chain
+name: "Cloud Escalation Chain"
+description: >
+  Simulates an adversary who has obtained a low-privilege Entra ID credential
+  and escalates through the cloud tenant to Global Administrator, then exfiltrates
+  data from Azure storage and M365. This represents the cloud-native attack path
+  used by Midnight Blizzard (APT29) and Storm-0558 archetypes — no on-premises
+  lateral movement required. The chain exercises Azure Sentinel cloud-side
+  detection: Entra ID audit logs, Azure Activity logs, and Defender for Cloud Apps.
+  No Windows host telemetry is generated in steps 4-8 — this validates your
+  cloud-only detection coverage gap.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/groups/G0016/
+  - https://attack.mitre.org/campaigns/C0014/
+
+scenarios:
+  - step: 1
+    technique: "T1078.004"
+    tactic: "initial_access"
+    scenario_file: "initial_access/T1078.004_valid_accounts_cloud.yml"
+    rationale: "Adversary uses stolen Entra ID credentials (phished or purchased) to establish initial cloud foothold"
+
+  - step: 2
+    technique: "T1087.004"
+    tactic: "discovery"
+    scenario_file: "discovery/T1087.004_account_discovery_cloud.yml"
+    rationale: "Enumerate all Entra ID users, groups, and service principals via Graph API to map the tenant"
+
+  - step: 3
+    technique: "T1526"
+    tactic: "discovery"
+    scenario_file: "discovery/T1526_cloud_service_discovery.yml"
+    rationale: "Enumerate Azure resources, services, and security tooling to identify targets and detection gaps"
+
+  - step: 4
+    technique: "T1580"
+    tactic: "discovery"
+    scenario_file: "discovery/T1580_cloud_infrastructure_discovery.yml"
+    rationale: "List all VMs, storage accounts, databases, and snapshots to identify high-value data sources"
+
+  - step: 5
+    technique: "T1621"
+    tactic: "credential_access"
+    scenario_file: "credential_access/T1621_mfa_request_generation.yml"
+    rationale: "MFA push bombing against the compromised account to escalate from credential-only to authenticated session"
+
+  - step: 6
+    technique: "T1548.005"
+    tactic: "privilege_escalation"
+    scenario_file: "privilege_escalation/T1548.005_temporary_elevated_cloud_access.yml"
+    rationale: "Activate eligible PIM role (Global Administrator) without approval — 1-hour elevation window"
+
+  - step: 7
+    technique: "T1098.003"
+    tactic: "privilege_escalation"
+    scenario_file: "privilege_escalation/T1098.003_additional_cloud_roles.yml"
+    rationale: "Assign permanent Global Administrator role to backdoor account before PIM window expires"
+
+  - step: 8
+    technique: "T1619"
+    tactic: "discovery"
+    scenario_file: "discovery/T1619_cloud_storage_object_discovery.yml"
+    rationale: "Enumerate all blob containers and objects across all storage accounts to locate exfiltration targets"
+
+  - step: 9
+    technique: "T1567.002"
+    tactic: "exfiltration"
+    scenario_file: "exfiltration/T1567.002_exfil_to_cloud_storage.yml"
+    rationale: "Copy sensitive data from victim storage account to adversary-controlled storage account via azcopy"
+
+  - step: 10
+    technique: "T1098.002"
+    tactic: "persistence"
+    scenario_file: "persistence/T1098.002_additional_email_delegate_permissions.yml"
+    rationale: "Grant FullAccess mailbox delegation on executive accounts for persistent email access"
+
+analyst_narrative: >
+  This suite generates exclusively cloud-plane telemetry — Entra ID sign-in logs,
+  Azure Activity logs, Microsoft Graph audit logs, and Exchange audit logs. There
+  are zero host-side events until step 9 (azcopy execution). This chain tests
+  your cloud-native detection coverage. The critical detection point is step 6
+  (PIM activation) — an after-hours Global Administrator PIM activation is a
+  near-certain compromise indicator. Step 7 (permanent role assignment) is the
+  persistence mechanism and should trigger an immediate CRITICAL alert. If steps
+  6 and 7 go undetected, the adversary has durable tenant-wide access. Steps 9
+  and 10 represent the objective completion phase — detecting here is too late
+  to prevent data loss, though containment is still valuable.
+
+detection_chain:
+  - "Step 1: Entra ID sign-in from new IP/device/country — medium severity"
+  - "Step 2-4: Graph API bulk enumeration (users, resources) — medium severity"
+  - "Step 5: MFA push flood >3 prompts in 5 min — HIGH SEVERITY"
+  - "Step 6: PIM Global Admin activation outside business hours — CRITICAL"
+  - "Step 7: 'Add member to role: Global Administrator' audit event — CRITICAL (immediate automated response)"
+  - "Step 8: blob ListContainers bulk enumeration — HIGH SEVERITY"
+  - "Step 9: azcopy cross-tenant transfer — CRITICAL"
+  - "Step 10: mailbox FullAccess delegation grant — HIGH SEVERITY"
+  - "Correlation rule: new sign-in + MFA fatigue + PIM activation within 60 min = account takeover chain"
+
+coverage_notes: >
+  Tactics covered: Initial Access, Discovery, Credential Access, Privilege Escalation,
+  Exfiltration, Persistence — all cloud-plane.
+  Key detection dependency: Entra ID audit logs and Azure Activity logs MUST be
+  forwarded to Sentinel. Without this, steps 6-8 are completely invisible.
+  Key gap: no host-side telemetry until step 9 — validate that your Sentinel
+  workspace receives Entra ID SigninLogs and AuditLogs in near-real-time (<5 min lag).
+  Tuning note: PIM activation alert should auto-revoke the activation if outside
+  approved hours and IP range — no analyst approval needed for automated response.
