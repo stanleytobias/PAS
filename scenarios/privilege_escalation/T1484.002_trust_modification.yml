@@ -1,0 +1,92 @@
+id: T1484.002_domain_policy_modification_trust_modification
+name: "Domain or Tenant Policy Modification — Trust Modification"
+mitre_technique: "T1484.002"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries modify or create domain trust relationships to escalate privileges
+  across domain or forest boundaries. With Domain Admin rights, an attacker can
+  create a new external trust to an attacker-controlled domain, add their domain
+  as a trusted federation partner, or modify existing trust properties (transitive,
+  SID filtering disabled). Disabling SID filtering on an existing trust enables
+  SID-History injection attacks across the trust. Creating trusts to attacker
+  domains enables cross-domain lateral movement using attacker-issued Kerberos tickets.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1484/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1484.002 — Trust Modification simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate existing trusts and SID filtering status"
+    command: |
+      Write-Host "[PAS] Domain trust enumeration for modification targeting:"
+      nltest /domain_trusts 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Trust SID filtering status check:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              $searcher.Filter = "(objectClass=trustedDomain)"
+              $searcher.PropertiesToLoad.AddRange(@("cn","trustAttributes","trustDirection","trustType"))
+              $results = $searcher.FindAll()
+              foreach ($r in $results) {
+                  $attrs = $r.Properties["trustattributes"][0]
+                  # trustAttributes bit 0x4 = quarantine (SID filtering enabled)
+                  $sidFiltered = ($attrs -band 0x4) -ne 0
+                  Write-Host "  Trust: $($r.Properties['cn'][0])"
+                  Write-Host "    SID Filtering: $sidFiltered (disabled = SID-History attack possible)"
+              }
+          } catch { Write-Host "  LDAP trust query failed (no DC)" }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate trust modification — disable SID filtering (netdom pattern)"
+    command: |
+      Write-Host "[PAS] Trust modification pattern:"
+      Write-Host "[PAS] Disable SID filtering on existing trust:"
+      Write-Host "  netdom trust <trusting_domain> /domain:<trusted_domain> /quarantine:No"
+      Write-Host "  This enables SID-History injection across the trust boundary"
+      Write-Host ""
+      Write-Host "[PAS] Create new external trust to attacker domain:"
+      Write-Host "  netdom trust corp.local /domain:attacker.evil /add /twoway"
+      Write-Host "  New-ADTrust -Name 'attacker.evil' -TrustType External -Direction Bidirectional"
+      Write-Host ""
+
+      # Generate netdom process telemetry (will fail without DA — expected)
+      $proc = Start-Process netdom.exe -ArgumentList "help trust" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] netdom.exe process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4706 (new domain trust created), Event 4707 (trust removed), netdom.exe trust modification"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1484.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Event ID 4706 on DC: new trust to a domain created — any unexpected trust is critical finding"
+  - "Event ID 4707 on DC: trust removed (cleanup of malicious trust after use)"
+  - "Event ID 5136: trustedDomain object modified (SID filtering change)"
+  - "Sentinel: SecurityEvent | where EventID in (4706,4707) | project TimeGenerated, SubjectUserName, TargetDomainName"
+  - "Defender for Identity: 'Domain trust modification' alert"
+  - "CONTROL CHECK: Zero-tolerance policy for unexpected domain trusts — any Event 4706 outside approved migration process = immediate incident"
+  - "CONTROL CHECK: SID filtering MUST be enabled on all external trusts — verify quarterly with netdom query trust"

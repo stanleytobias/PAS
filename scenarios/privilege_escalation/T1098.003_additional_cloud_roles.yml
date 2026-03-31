@@ -1,0 +1,98 @@
+id: T1098.003_account_manipulation_additional_cloud_roles
+name: "Account Manipulation — Additional Cloud Roles"
+mitre_technique: "T1098.003"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries with sufficient cloud permissions assign additional high-privilege
+  roles to a compromised account to escalate privileges within the cloud tenant.
+  In Entra ID, an adversary with Privileged Role Administrator can add Global
+  Administrator to any account — including a newly created backdoor account.
+  In Azure, Owner on a subscription can add any RBAC role. These role assignments
+  may persist beyond password resets and are often missed during incident response
+  unless specifically audited.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1098/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1098.003 — Additional Cloud Roles simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current role assignments and simulate role escalation"
+    command: |
+      Write-Host "[PAS] Cloud role escalation simulation:"
+      Write-Host "[PAS] Step 1: enumerate current role assignments"
+
+      # Graph API — list directory role assignments
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/v1.0/roleManagement/directory/roleAssignments?`$filter=principalId eq '{compromisedUserId}'")
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Graph: GET roleAssignments for compromised account — current roles enumerated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Global Admin role assignment — escalation to highest cloud role"
+    command: |
+      Write-Host "[PAS] Step 2: assign Global Administrator role (loopback):"
+      Write-Host "[PAS] Real: POST /v1.0/roleManagement/directory/roleAssignments"
+      $assignBody = @"
+{
+  "principalId": "{compromisedUserId}",
+  "roleDefinitionId": "62e90394-69f5-4237-9190-012177145e10",
+  "directoryScopeId": "/"
+}
+"@
+      Write-Host "[PAS] Role assignment body:"
+      Write-Host "  roleDefinitionId 62e90394... = Global Administrator"
+      Write-Host "  directoryScopeId '/' = tenant-wide scope"
+
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/v1.0/roleManagement/directory/roleAssignments")
+          $req.Method = "POST"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes($assignBody)
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Role assignment POST to loopback generated"
+
+      Write-Host "[PAS] Azure RBAC equivalent:"
+      Write-Host "  az role assignment create --role Owner --assignee <UPN> --scope /subscriptions/<id>"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Entra ID audit — 'Add member to role' for Global Administrator by unexpected principal"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1098.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Entra ID audit: 'Add member to role' operation for Global Administrator or Privileged Role Administrator"
+  - "Sentinel: AuditLogs | where OperationName == 'Add member to role' and TargetResources contains 'Global Administrator'"
+  - "Azure Activity Log: RBAC Owner/Contributor assignment at subscription scope by unexpected principal"
+  - "CONTROL CHECK: Require approval for Global Admin assignment — cannot be self-service"
+  - "CONTROL CHECK: Monthly review of all Global Administrator assignments — Get-MgDirectoryRoleMember"
+  - "CONTROL CHECK: PIM for all Entra ID privileged roles — active assignment requires time-bound justification"

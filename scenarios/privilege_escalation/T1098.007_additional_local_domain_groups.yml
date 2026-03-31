@@ -1,0 +1,98 @@
+id: T1098.007_account_manipulation_additional_local_domain_groups
+name: "Account Manipulation — Additional Local or Domain Groups"
+mitre_technique: "T1098.007"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries add their compromised account (or a backdoor account) to privileged
+  local or domain groups to gain persistent elevated access. On Windows, adding
+  to the local Administrators group grants full local admin. Adding to Domain
+  Admins grants domain-wide admin. Methods: net localgroup Administrators /add,
+  Add-LocalGroupMember, Add-ADGroupMember. This is one of the most durable
+  privilege escalation techniques — group membership persists through reboots,
+  password resets, and is often missed during IR unless group changes are audited.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1098/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1098.007 — Additional Local/Domain Group simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create test account and add to local Administrators"
+    command: |
+      Write-Host "[PAS] Local group privilege escalation simulation:"
+      $testUser = "PAS_T1098_007_privesc"
+
+      # Create test account
+      New-LocalUser -Name $testUser `
+          -Password (ConvertTo-SecureString "PAS-TestPass-Kx9!" -AsPlainText -Force) `
+          -PasswordNeverExpires $true -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Test account created: $testUser"
+
+      # Add to Administrators — the escalation step
+      Add-LocalGroupMember -Group "Administrators" -Member $testUser `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Added $testUser to Administrators group"
+      Write-Host "[PAS] Event ID 4732 generated: member added to security-enabled local group"
+
+      # Verify membership
+      $isMember = (Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue) |
+          Where-Object { $_.Name -match $testUser }
+      Write-Host "[PAS] Admin group member: $($null -ne $isMember)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Domain Admins group addition — domain escalation pattern"
+    command: |
+      Write-Host "[PAS] Domain group escalation pattern:"
+      Write-Host "[PAS] Real: Add-ADGroupMember -Identity 'Domain Admins' -Members victim_account"
+      Write-Host "[PAS] Or: net group 'Domain Admins' victim_account /add /domain"
+      Write-Host "[PAS] Event ID 4728 on DC: member added to global security group"
+
+      # Generate net group command telemetry (will fail without domain admin — expected)
+      $proc = Start-Process net.exe `
+          -ArgumentList "group 'Domain Admins' $testUser /add /domain" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] net group 'Domain Admins' /add — process event generated (exit: $($proc?.ExitCode))"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4732 (local admin group add), Event 4728 (domain group add), net.exe group /add"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test account from Administrators and delete account"
+    command: |
+      $testUser = "PAS_T1098_007_privesc"
+      Remove-LocalGroupMember -Group "Administrators" -Member $testUser `
+          -ErrorAction SilentlyContinue
+      Remove-LocalUser -Name $testUser -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test account removed from Administrators and deleted"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1098.007 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4732: member added to security-enabled local group (Administrators)"
+  - "Event ID 4728 on DC: member added to global security group (Domain Admins)"
+  - "Sentinel: SecurityEvent | where EventID == 4732 and TargetUserName == 'Administrators'"
+  - "Sentinel: SecurityEvent | where EventID == 4728 and GroupName contains 'Domain Admins'"
+  - "Defender for Identity: 'Sensitive group modification' alert for Domain Admins changes"
+  - "CONTROL CHECK: Alert immediately on any Domain Admins group modification — zero tolerance for unplanned changes"
+  - "CONTROL CHECK: Local Administrators group managed via LAPS + restricted baseline — no ad-hoc additions"
+  - "CONTROL CHECK: Quarterly review of local Administrators membership on all endpoints via MDE inventory"

@@ -1,0 +1,115 @@
+id: T1134.001_access_token_manipulation_token_impersonation
+name: "Access Token Manipulation — Token Impersonation/Theft"
+mitre_technique: "T1134.001"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries duplicate an existing access token from a higher-privileged process
+  (SYSTEM, domain admin) and impersonate it to elevate their own privileges.
+  APIs used: OpenProcessToken to open a target process's token, DuplicateToken
+  or DuplicateTokenEx to clone it, then ImpersonateLoggedOnUser or SetThreadToken
+  to assume the security context. With SYSTEM token impersonation, any subsequent
+  operation runs under SYSTEM authority. This is the core mechanism behind
+  potato-family exploits (JuicyPotato, PrintSpoofer, GodPotato).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.001 — Token Impersonation/Theft simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate processes with high-value tokens — impersonation targets"
+    command: |
+      Write-Host "[PAS] High-value token process enumeration:"
+      $targets = Get-Process -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -in @("lsass","winlogon","services","wininit","csrss") }
+      $targets | ForEach-Object {
+          Write-Host "  PID $($_.Id): $($_.Name) — potential SYSTEM token source"
+      }
+      Write-Host "[PAS] Token impersonation targets identified"
+
+  - step: 3
+    type: exec_powershell
+    description: "Demonstrate OpenProcessToken + DuplicateToken API pattern"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASTokenSim {
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool OpenProcessToken(
+              IntPtr hProcess, uint desiredAccess, out IntPtr tokenHandle);
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool DuplicateToken(
+              IntPtr existingToken, int impersonationLevel, out IntPtr dupToken);
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool RevertToSelf();
+          [DllImport("kernel32.dll",SetLastError=true)]
+          public static extern bool CloseHandle(IntPtr handle);
+          public const uint TOKEN_QUERY      = 0x0008;
+          public const uint TOKEN_DUPLICATE  = 0x0002;
+          public const int  SecurityImpersonation = 2;
+      }
+"@
+      Write-Host "[PAS] Token manipulation API sequence:"
+      # Open current process token (safe — own process)
+      $selfProc   = [System.Diagnostics.Process]::GetCurrentProcess()
+      $tokenHandle = [IntPtr]::Zero
+      $opened = [PASTokenSim]::OpenProcessToken(
+          $selfProc.Handle,
+          [PASTokenSim]::TOKEN_QUERY -bor [PASTokenSim]::TOKEN_DUPLICATE,
+          [ref]$tokenHandle)
+      Write-Host "  OpenProcessToken (self): $opened — token handle opened"
+
+      # Duplicate the token
+      $dupToken = [IntPtr]::Zero
+      $duped = [PASTokenSim]::DuplicateToken(
+          $tokenHandle,
+          [PASTokenSim]::SecurityImpersonation,
+          [ref]$dupToken)
+      Write-Host "  DuplicateToken: $duped — token duplicated"
+
+      # Impersonate (own token — safe demo)
+      $impersonated = [PASTokenSim]::ImpersonateLoggedOnUser($dupToken)
+      Write-Host "  ImpersonateLoggedOnUser: $impersonated — impersonation active"
+
+      # Revert immediately
+      [PASTokenSim]::RevertToSelf() | Out-Null
+      [PASTokenSim]::CloseHandle($dupToken) | Out-Null
+      [PASTokenSim]::CloseHandle($tokenHandle) | Out-Null
+      Write-Host "  RevertToSelf: complete — impersonation ended"
+      Write-Host "[PAS] Full token impersonation API chain executed"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — OpenProcessToken on SYSTEM process, DuplicateToken + ImpersonateLoggedOnUser sequence from user process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1134.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: OpenProcessToken on lsass.exe or winlogon.exe from non-SYSTEM process"
+  - "API: DuplicateToken followed by ImpersonateLoggedOnUser — token theft sequence"
+  - "MDE: DeviceEvents | where ActionType == 'TokenImpersonation' and InitiatingProcessFileName != 'System'"
+  - "Sentinel: DeviceEvents | where ActionType contains 'Impersonat' and InitiatingProcessAccountName != 'SYSTEM'"
+  - "MDE alert: 'Token impersonation' and 'Suspicious use of SeImpersonatePrivilege'"
+  - "CONTROL CHECK: Credential Guard isolates LSASS tokens from user-mode impersonation"
+  - "CONTROL CHECK: Service accounts should use virtual service accounts (NT SERVICE\\) — no token to steal"
+  - "CONTROL CHECK: Remove SeImpersonatePrivilege from accounts that don't require it via GPO"

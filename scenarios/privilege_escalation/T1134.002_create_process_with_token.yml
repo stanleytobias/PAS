@@ -1,0 +1,113 @@
+id: T1134.002_access_token_manipulation_create_process_with_token
+name: "Access Token Manipulation — Create Process with Token"
+mitre_technique: "T1134.002"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries create a new process using an elevated token from another process,
+  effectively spawning a child process that inherits the security context of a
+  privileged account. APIs: CreateProcessWithTokenW (requires SeImpersonatePrivilege)
+  and runas.exe. This differs from token impersonation (T1134.001) in that it
+  creates a new visible process rather than silently assuming the security context
+  of the current thread. Runas /user:Administrator is the most common user-visible
+  form; adversaries use the Win32 API form to do it silently.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.002 — Create Process with Token simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate CreateProcessWithTokenW API pattern"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASCreateProcToken {
+          [DllImport("advapi32.dll",CharSet=CharSet.Auto,SetLastError=true)]
+          public static extern bool CreateProcessWithTokenW(
+              IntPtr hToken, uint dwLogonFlags, string lpApplicationName,
+              string lpCommandLine, uint dwCreationFlags,
+              IntPtr lpEnvironment, string lpCurrentDirectory,
+              ref STARTUPINFO lpStartupInfo,
+              out PROCESS_INFORMATION lpProcessInformation);
+          [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]
+          public struct STARTUPINFO {
+              public int cb; public string lpReserved; public string lpDesktop;
+              public string lpTitle; public int dwX; public int dwY;
+              public int dwXSize; public int dwYSize; public int dwXCountChars;
+              public int dwYCountChars; public int dwFillAttribute;
+              public int dwFlags; public short wShowWindow; public short cbReserved2;
+              public IntPtr lpReserved2; public IntPtr hStdInput;
+              public IntPtr hStdOutput; public IntPtr hStdError;
+          }
+          [StructLayout(LayoutKind.Sequential)]
+          public struct PROCESS_INFORMATION {
+              public IntPtr hProcess; public IntPtr hThread;
+              public int dwProcessId; public int dwThreadId;
+          }
+      }
+"@
+      Write-Host "[PAS] CreateProcessWithTokenW API pattern:"
+      Write-Host "[PAS] Flow: steal elevated token -> CreateProcessWithTokenW -> elevated child process"
+      Write-Host "[PAS] Requires: SeImpersonatePrivilege or SeAssignPrimaryTokenPrivilege"
+      Write-Host "[PAS] Common use: spawn cmd.exe as SYSTEM after potato exploit"
+
+      # Check SeImpersonatePrivilege on current process
+      $whoamiPriv = whoami /priv 2>&1 | Select-String "SeImpersonatePrivilege"
+      Write-Host "  SeImpersonatePrivilege present: $($null -ne $whoamiPriv)"
+      whoami /priv 2>&1 | Select-String "SeImpersonate|SeAssignPrimary" |
+          ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate runas pattern — visible CreateProcessWithTokenW form"
+    command: |
+      Write-Host "[PAS] runas.exe token pattern (safe simulation):"
+      # runas with /savecred generates token manipulation telemetry
+      $proc = Start-Process runas.exe `
+          -ArgumentList "/user:$env:COMPUTERNAME\Administrator whoami" `
+          -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 800
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] runas.exe process event generated — token creation telemetry"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CreateProcessWithTokenW from non-SYSTEM process, runas.exe spawning elevated child"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure runas processes cleaned up"
+    command: |
+      Get-Process runas -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Complete"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1134.002 cleanup complete"
+
+analyst_checklist:
+  - "API: CreateProcessWithTokenW called from non-SYSTEM process — strong privesc indicator"
+  - "Process: runas.exe spawning cmd.exe or powershell.exe with admin credentials"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'runas.exe' and InitiatingProcessFileName in ('powershell.exe','cmd.exe')"
+  - "MDE alert: 'Suspicious process creation with elevated token'"
+  - "CONTROL CHECK: Remove SeImpersonatePrivilege and SeAssignPrimaryTokenPrivilege from non-service accounts"
+  - "CONTROL CHECK: Standard user (non-admin) accounts cannot use CreateProcessWithTokenW effectively — enforce least privilege"

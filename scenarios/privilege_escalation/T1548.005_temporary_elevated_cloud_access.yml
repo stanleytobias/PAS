@@ -1,0 +1,98 @@
+id: T1548.005_temporary_elevated_cloud_access
+name: "Abuse Elevation Control Mechanism — Temporary Elevated Cloud Access"
+mitre_technique: "T1548.005"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries abuse cloud just-in-time (JIT) access mechanisms to gain temporary
+  elevated permissions. In Azure, Privileged Identity Management (PIM) allows
+  eligible users to self-activate high-privilege roles (Global Admin, Privileged
+  Role Admin) for a limited window. An adversary with an eligible PIM assignment
+  can activate the role without approval and use the elevated access before it
+  expires. Detection requires monitoring PIM role activations, especially outside
+  business hours or from unexpected locations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1548/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1548.005 — Temporary Elevated Cloud Access simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate PIM-eligible role assignments on current account"
+    command: |
+      Write-Host "[PAS] PIM eligible role enumeration (Graph API, loopback):"
+      Write-Host "[PAS] Real: GET https://graph.microsoft.com/v1.0/roleManagement/directory/roleEligibilitySchedules"
+
+      # Simulate Graph API calls for PIM enumeration
+      $pimEndpoints = @(
+          "http://127.0.0.1/v1.0/roleManagement/directory/roleEligibilitySchedules?`$filter=principalId eq '{userId}'",
+          "http://127.0.0.1/v1.0/roleManagement/directory/roleAssignmentScheduleRequests",
+          "http://127.0.0.1/v1.0/roleManagement/directory/roleActivationRequests"
+      )
+      foreach ($ep in $pimEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] PIM query: $($ep.Split('?')[0].Split('directory/')[1])"
+      }
+
+      Write-Host "[PAS] az CLI equivalent:"
+      Write-Host "  az rest --method GET --url 'https://management.azure.com/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01'"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate PIM role activation request — self-activation without approval"
+    command: |
+      Write-Host "[PAS] PIM role activation simulation:"
+      Write-Host "[PAS] Real: POST /v1.0/roleManagement/directory/roleAssignmentScheduleRequests"
+      $activationBody = @"
+{
+  "action": "selfActivate",
+  "principalId": "{userId}",
+  "roleDefinitionId": "62e90394-69f5-4237-9190-012177145e10",
+  "directoryScopeId": "/",
+  "justification": "PAS simulation",
+  "scheduleInfo": {
+    "startDateTime": "$(Get-Date -Format o)",
+    "expiration": { "type": "AfterDuration", "duration": "PT1H" }
+  }
+}
+"@
+      Write-Host "[PAS] Activation body (Global Administrator role, 1-hour window):"
+      Write-Host $activationBody
+      Write-Host "[PAS] roleDefinitionId 62e90394... = Global Administrator"
+      Write-Host "[PAS] Self-activation with no approval = immediate elevation"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Entra ID audit logs — PIM role activation outside business hours, activation without justification"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1548.005 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Entra ID audit: 'Add member to role completed (PIM activation)' at unusual time or from new IP"
+  - "Sentinel: AuditLogs | where OperationName == 'Add member to role completed (PIM activation)' and TimeGenerated between (17h..8h)"
+  - "Sentinel: AuditLogs | where OperationName contains 'PIM activation' and InitiatedBy.user.ipAddress not in (office_ips)"
+  - "CONTROL CHECK: Require approval for Global Administrator PIM activation — no self-activation without manager sign-off"
+  - "CONTROL CHECK: PIM activation requires MFA — stolen credential alone is insufficient"
+  - "CONTROL CHECK: Alert on PIM activation outside business hours; require justification with ticket number"
+  - "CONTROL CHECK: Limit PIM eligible assignments — only users who genuinely need JIT admin should be eligible"

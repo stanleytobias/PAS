@@ -1,0 +1,92 @@
+id: T1134.003_access_token_manipulation_make_and_impersonate_token
+name: "Access Token Manipulation — Make and Impersonate Token"
+mitre_technique: "T1134.003"
+mitre_tactic: "privilege_escalation"
+description: >
+  Adversaries create a new logon session for a known account using LogonUser,
+  obtaining a token they can then impersonate with SetThreadToken. Unlike
+  T1134.001 (stealing an existing token), this technique requires knowing a
+  username and password but does not require the target user to have an active
+  session. With stolen credentials, an adversary can create a token for any
+  account — including domain admins — and impersonate it without that user
+  being logged in. The resulting token enables access to all resources available
+  to the impersonated account.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1134/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1134.003 — Make and Impersonate Token simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate LogonUser + SetThreadToken API pattern"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      public class PASMakeToken {
+          [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+          public static extern bool LogonUser(
+              string lpszUsername, string lpszDomain, string lpszPassword,
+              int dwLogonType, int dwLogonProvider, out IntPtr phToken);
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool SetThreadToken(IntPtr pThread, IntPtr hToken);
+          [DllImport("advapi32.dll",SetLastError=true)]
+          public static extern bool RevertToSelf();
+          [DllImport("kernel32.dll",SetLastError=true)]
+          public static extern bool CloseHandle(IntPtr handle);
+          public const int LOGON32_LOGON_NEW_CREDENTIALS = 9;
+          public const int LOGON32_PROVIDER_DEFAULT = 0;
+      }
+"@
+      Write-Host "[PAS] LogonUser + SetThreadToken pattern:"
+      Write-Host "[PAS] Real: LogonUser(username, domain, password) -> SetThreadToken -> impersonate"
+
+      # Create logon session with intentionally wrong password (no real auth — demonstrates API call)
+      $token = [IntPtr]::Zero
+      $result = [PASMakeToken]::LogonUser(
+          "PAS_TestUser", $env:COMPUTERNAME, "PAS-WrongPass-NoAuth!",
+          [PASMakeToken]::LOGON32_LOGON_NEW_CREDENTIALS,
+          [PASMakeToken]::LOGON32_PROVIDER_DEFAULT,
+          [ref]$token)
+      Write-Host "  LogonUser (LOGON_NEW_CREDENTIALS, wrong pass): result=$result error=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+      Write-Host "  LOGON_NEW_CREDENTIALS (type 9) creates token without validating password locally"
+
+      if ($token -ne [IntPtr]::Zero) {
+          [PASMakeToken]::SetThreadToken([IntPtr]::Zero, $token) | Out-Null
+          Write-Host "  SetThreadToken: token assigned to thread"
+          [PASMakeToken]::RevertToSelf() | Out-Null
+          [PASMakeToken]::CloseHandle($token) | Out-Null
+          Write-Host "  RevertToSelf + CloseHandle: impersonation ended"
+      }
+      Write-Host "[PAS] Make-and-impersonate token API sequence generated"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — LogonUser LOGON_NEW_CREDENTIALS (type 9) from scripting process, Event ID 4648"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1134.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Event ID 4648: logon with explicit credentials (LogonUser API) from scripting process"
+  - "API: LogonUser with LOGON32_LOGON_NEW_CREDENTIALS (type 9) — creates token without local auth validation"
+  - "Sentinel: SecurityEvent | where EventID == 4648 and ProcessName contains 'powershell'"
+  - "MDE alert: 'Suspicious LogonUser API call — make and impersonate token pattern'"
+  - "CONTROL CHECK: Privileged account credentials should be in CyberArk/LAPS — not available to stolen-credential attacker"
+  - "CONTROL CHECK: Network segmentation limits what an impersonated token can reach"
