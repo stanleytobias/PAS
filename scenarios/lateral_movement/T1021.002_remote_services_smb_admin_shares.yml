@@ -1,0 +1,92 @@
+id: T1021.002_remote_services_smb_admin_shares
+name: "Remote Services — SMB/Windows Admin Shares"
+mitre_technique: "T1021.002"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use stolen credentials to connect to hidden administrative shares
+  (ADMIN$, C$, IPC$) on remote systems over SMB, enabling file transfer and
+  remote command execution. PsExec creates a service on the remote host via the
+  ADMIN$ share, spawning a remote shell. Impacket's smbexec and wmiexec use IPC$.
+  All generate Event ID 4624 (logon type 3 = network) on the destination and
+  SMB named pipe connections. Lateral movement via SMB is the most prevalent
+  technique in enterprise intrusions.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.002 — SMB Admin Share lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate accessible admin shares and connect to loopback"
+    command: |
+      Write-Host "[PAS] SMB admin share enumeration:"
+      net view \\127.0.0.1 /all 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Admin share connection (loopback):"
+      net use \\127.0.0.1\IPC$ 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] C$ share access attempt (loopback):"
+      Test-Path "\\127.0.0.1\C$" -ErrorAction SilentlyContinue |
+          ForEach-Object { Write-Host "  C$ accessible: $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate PsExec-style service creation pattern via admin share"
+    command: |
+      Write-Host "[PAS] PsExec lateral movement pattern:"
+      Write-Host "[PAS] Real: psexec \\target -u admin -p pass cmd.exe /c whoami"
+      Write-Host "[PAS] Mechanism: copy PSEXESVC.exe to \\target\ADMIN$"
+      Write-Host "           create and start service PSEXESVC via RPC"
+      Write-Host "           service spawns cmd.exe as SYSTEM"
+      Write-Host "[PAS] Detection: ADMIN$ write + service creation + cmd.exe from services.exe"
+
+      # Simulate the SMB service creation telemetry
+      $proc = Start-Process sc.exe `
+          -ArgumentList "\\127.0.0.1 create PAS_T1021_002 binPath= cmd.exe" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] sc.exe remote service create to loopback — Event 7045 telemetry"
+
+      # Clean the service immediately
+      sc.exe \\127.0.0.1 delete PAS_T1021_002 2>&1 | Out-Null
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4624 logon type 3 to admin share, Event 7045 service install on destination"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove SMB connections and service"
+    command: |
+      sc.exe \\127.0.0.1 delete PAS_T1021_002 2>&1 | Out-Null
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      net use \\127.0.0.1\C$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] SMB connections and test service removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1021.002 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4624 logon type 3 (network) to ADMIN$ or C$ share from unexpected source"
+  - "Event ID 7045 on destination: new service installed (PsExec pattern)"
+  - "Named pipe: PSEXESVC or similar service name connection"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType == 3 and ShareName in ('ADMIN$','C$')"
+  - "Sentinel: SecurityEvent | where EventID == 7045 and ServiceName matches 'PSEXE|random_8chars'"
+  - "Defender for Identity: 'Remote execution using PsExec'"
+  - "CONTROL CHECK: Disable admin shares on workstations (AutoShareWks=0) — servers may need them for management"
+  - "CONTROL CHECK: SMB signing — prevents relay attacks that abuse SMB admin share access"

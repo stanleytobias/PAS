@@ -1,0 +1,93 @@
+id: T1563.002_remote_service_session_hijacking_rdp
+name: "Remote Service Session Hijacking — RDP Hijacking"
+mitre_technique: "T1563.002"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries with SYSTEM privileges hijack existing RDP sessions of other users
+  without needing their credentials, using the tscon.exe utility. Windows allows
+  SYSTEM to connect to any session — tscon <session_id> /dest:<current_session>
+  redirects the target user's desktop to the adversary's session. This enables
+  lateral movement to a user's active session on a terminal server or workstation
+  where multiple sessions exist, including disconnected sessions that retain
+  the user's authenticated state.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1563/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1563.002 — RDP Session Hijacking simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate active and disconnected RDP sessions"
+    command: |
+      Write-Host "[PAS] RDP session enumeration:"
+      Write-Host "[PAS] Method 1: query session"
+      query session 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: qwinsta"
+      qwinsta 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 3: WMI Win32_LogonSession"
+      Get-WmiObject Win32_LogonSession -ErrorAction SilentlyContinue |
+          Where-Object { $_.LogonType -in @(2,10) } |
+          Select-Object LogonId, LogonType, StartTime |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate tscon session hijack — requires SYSTEM, generates Event 4778"
+    command: |
+      Write-Host "[PAS] tscon RDP hijack pattern:"
+      Write-Host "[PAS] Real attack (requires SYSTEM):"
+      Write-Host "  sc create rdphijack binPath= 'cmd /k tscon <target_session> /dest:rdp-tcp#<current>'"
+      Write-Host "  sc start rdphijack"
+      Write-Host "  (service runs as SYSTEM -> tscon succeeds without victim credentials)"
+      Write-Host ""
+      Write-Host "[PAS] Generating tscon.exe process telemetry:"
+      $proc = Start-Process tscon.exe -ArgumentList "1 /dest:console" `
+          -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 500
+      if ($proc -and -not $proc.HasExited) {
+          $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[PAS] tscon.exe process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — tscon.exe execution, Event 4778 (RDP session reconnect) from unexpected source"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure tscon cleanup"
+    command: |
+      Get-Process tscon -ErrorAction SilentlyContinue |
+          Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Complete — no persistent artifacts"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1563.002 cleanup complete"
+
+analyst_checklist:
+  - "Process event: tscon.exe executed from cmd.exe or service context (SYSTEM)"
+  - "Event ID 4778: session reconnected — correlate with no preceding RDP logon from same user"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'tscon.exe'"
+  - "Sentinel: SecurityEvent | where EventID == 4778 and IpAddress != expected_client"
+  - "MDE alert: 'RDP session hijacking via tscon'"
+  - "CONTROL CHECK: Restrict Terminal Services to specific admin accounts via GPO — limit who can have RDP sessions"
+  - "CONTROL CHECK: Alert on any service creation with tscon.exe in binPath — sc create + tscon = hijack pattern"
+  - "CONTROL CHECK: Disconnected session timeout — configure to 15 min max; reduces hijackable session window"

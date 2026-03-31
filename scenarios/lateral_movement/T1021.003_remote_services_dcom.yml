@@ -1,0 +1,88 @@
+id: T1021.003_remote_services_dcom
+name: "Remote Services — Distributed Component Object Model"
+mitre_technique: "T1021.003"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use the Windows Distributed Component Object Model (DCOM) to execute
+  code on remote systems without deploying tools. DCOM allows COM objects to be
+  activated on remote machines over RPC. Several built-in COM objects expose methods
+  that execute arbitrary commands: MMC20.Application (ExecuteShellCommand),
+  ShellWindows/ShellBrowserWindow (Navigate + InvokeVerb), and Excel.Application
+  (DDEExecute). DCOM lateral movement is stealthy because it uses native Windows
+  functionality over RPC (port 135 + dynamic ports) rather than dedicated tooling.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.003 — DCOM lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate DCOM objects with lateral movement potential"
+    command: |
+      Write-Host "[PAS] DCOM lateral movement objects:"
+      $dcomObjects = @(
+          @{ProgID="MMC20.Application";   Method="ExecuteShellCommand"},
+          @{ProgID="ShellWindows";         Method="Navigate + InvokeVerb"},
+          @{ProgID="ShellBrowserWindow";   Method="Navigate + InvokeVerb"},
+          @{ProgID="Excel.Application";    Method="DDEExecute"}
+      )
+      foreach ($obj in $dcomObjects) {
+          $clsid = (Get-ItemProperty "HKLM:\SOFTWARE\Classes\$($obj.ProgID)\CLSID" `
+              -ErrorAction SilentlyContinue)?."(default)"
+          $status = if ($clsid) { "CLSID=$clsid" } else { "not found" }
+          Write-Host "  $($obj.ProgID): $status | Method: $($obj.Method)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate MMC20.Application DCOM lateral movement — loopback"
+    command: |
+      Write-Host "[PAS] MMC20.Application DCOM execution pattern:"
+      Write-Host "[PAS] Real: [activator]::CreateInstance([type]::GetTypeFromProgID('MMC20.Application','target'))"
+      Write-Host "       .Document.ActiveView.ExecuteShellCommand('cmd.exe',`$null,'/c whoami','7')"
+
+      try {
+          # Activate locally (safe — no remote hop)
+          $mmc = [activator]::CreateInstance(
+              [type]::GetTypeFromProgID("MMC20.Application","127.0.0.1"))
+          if ($mmc) {
+              Write-Host "[PAS] MMC20.Application activated on loopback — DCOM RPC telemetry generated"
+              [System.Runtime.InteropServices.Marshal]::ReleaseComObject($mmc) | Out-Null
+          }
+      } catch {
+          Write-Host "[PAS] MMC20.Application loopback activation attempted (access denied — expected)"
+      }
+      Write-Host "[PAS] DCOM RPC port 135 connection to loopback generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — MMC20.Application / mmc.exe spawning cmd.exe on destination, DCOM RPC to port 135"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1021.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: mmc.exe spawning cmd.exe or powershell.exe (MMC20 exploitation)"
+  - "Process event: explorer.exe spawning unexpected children from DCOM context"
+  - "Network: RPC port 135 connection followed by dynamic port (49152+) to same destination"
+  - "Sentinel: DeviceProcessEvents | where InitiatingProcessFileName == 'mmc.exe' and FileName in ('cmd.exe','powershell.exe')"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 135 and ActionType == 'ConnectionSuccess' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Suspicious DCOM lateral movement'"
+  - "CONTROL CHECK: Restrict DCOM permissions via dcomcnfg — limit which accounts can activate remote DCOM objects"
+  - "CONTROL CHECK: Host-based firewall block inbound RPC (135) from workstation subnets"

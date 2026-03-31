@@ -1,0 +1,103 @@
+id: T1550.003_use_alternate_auth_material_pass_the_ticket
+name: "Use Alternate Authentication Material — Pass the Ticket"
+mitre_technique: "T1550.003"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries inject stolen Kerberos tickets into a logon session to authenticate
+  to services as another user without their password. Pass-the-Ticket (PtT) uses
+  tickets obtained via Kerberoasting (TGS), ccache theft, or forged tickets
+  (Golden/Silver). Unlike PtH, PtT uses Kerberos — which is the default auth
+  protocol on domain-joined systems. A stolen TGT allows requesting any service
+  ticket, enabling broad lateral movement. Tools: Rubeus.exe ptt, Mimikatz
+  kerberos::ptt. Detection: ticket injection generates Event ID 4768/4769 anomalies
+  and Kerberos encryption type mismatches.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1550/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1550.003 — Pass the Ticket simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Inspect current Kerberos ticket cache — PtT starting point"
+    command: |
+      Write-Host "[PAS] Current Kerberos ticket cache:"
+      klist 2>&1 | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Ticket types in cache:"
+      $tickets = klist 2>&1 | Select-String "#\d+"
+      Write-Host "  Current tickets: $($tickets.Count)"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate ticket injection pattern — klist purge + inject"
+    command: |
+      Write-Host "[PAS] Pass-the-Ticket injection pattern:"
+      Write-Host "[PAS] Real (Rubeus): Rubeus.exe ptt /ticket:<base64_kirbi>"
+      Write-Host "[PAS] Real (Mimikatz): kerberos::ptt ticket.kirbi"
+      Write-Host ""
+      Write-Host "[PAS] Step 1: klist purge (clear existing tickets)"
+      $proc1 = Start-Process klist.exe -ArgumentList "purge" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] klist purge executed — Event 4634 (logoff) + new session"
+
+      Write-Host "[PAS] Step 2: kerberos ticket request (target service)"
+      Write-Host "[PAS] Real: Rubeus.exe asktgs /ticket:<TGT> /service:cifs/target.corp.local /ptt"
+      Write-Host "[PAS] Effect: CIFS service ticket injected -> access \\target\C$ as stolen account"
+
+      # Create a marker .kirbi file (simulated stolen ticket artefact)
+      $kirbiPath = "$env:TEMP\PAS_T1550_003_ticket.kirbi"
+      Set-Content $kirbiPath "PAS-T1550.003-KERBEROS-TICKET-MARKER"
+      Write-Host "[PAS] Stolen ticket marker: $kirbiPath"
+
+  - step: 4
+    type: exec_powershell
+    description: "Demonstrate Kerberos-based lateral movement after PtT"
+    command: |
+      Write-Host "[PAS] Post-PtT lateral movement pattern:"
+      Write-Host "[PAS] With injected TGT: klist shows tickets for other user"
+      Write-Host "[PAS] SMB access: dir \\target\C$ uses injected ticket transparently"
+      Write-Host "[PAS] WinRM: Enter-PSSession -ComputerName target (uses injected ticket)"
+      Write-Host ""
+      Write-Host "[PAS] Detection signal: ticket use without preceding AS-REQ from same host"
+      Write-Host "[PAS] Event 4769 (TGS request) from source IP that has no Event 4768 (TGT request)"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — klist purge followed by new ticket requests, Event 4769 without preceding 4768 on DC"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove ticket artefact and purge test tickets"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1550_003_ticket.kirbi" -Force -ErrorAction SilentlyContinue
+      klist purge 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Ticket artefact removed and cache purged"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1550.003 cleanup complete"
+
+analyst_checklist:
+  - "Process event: Rubeus.exe execution — any Rubeus on endpoint is high-severity alert"
+  - "Process event: klist.exe purge followed immediately by new ticket requests"
+  - "Kerberos: Event 4769 (TGS) from host with no preceding Event 4768 (TGT) in same window"
+  - "Sentinel: SecurityEvent | where EventID == 4769 | where not (TimeGenerated ..join.. SecurityEvent EventID==4768)"
+  - "Defender for Identity: 'Pass-the-ticket attack'"
+  - "CONTROL CHECK: Short Kerberos ticket lifetime (4 hours for TGT) limits stolen ticket replay window"
+  - "CONTROL CHECK: KRBTGT rotation — Golden Tickets using old KRBTGT hash become invalid; rotate twice annually minimum"
+  - "CONTROL CHECK: Protected Users group — members get non-cacheable, non-delegatable tickets with 4-hour lifetime"

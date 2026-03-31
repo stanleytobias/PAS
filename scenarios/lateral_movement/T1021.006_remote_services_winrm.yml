@@ -1,0 +1,96 @@
+id: T1021.006_remote_services_winrm
+name: "Remote Services — Windows Remote Management"
+mitre_technique: "T1021.006"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use Windows Remote Management (WinRM) — Microsoft's implementation
+  of the WS-Management protocol — to execute commands on remote Windows systems.
+  WinRM uses HTTP/5985 or HTTPS/5986. PowerShell Invoke-Command and Enter-PSSession
+  are built-in WinRM clients. Evil-WinRM is a popular adversary tool. WinRM
+  requires the target to have it enabled and the initiating account to be a
+  local admin or member of the Remote Management Users group on the target. All
+  WinRM connections generate Event ID 4624 logon type 3 and WSMan provider log entries.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/006/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.006 — WinRM lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check WinRM status and attempt loopback connection"
+    command: |
+      Write-Host "[PAS] WinRM configuration check:"
+      $winrm = Get-Service WinRM -ErrorAction SilentlyContinue
+      Write-Host "  WinRM service: $($winrm?.Status ?? 'Not found')"
+
+      $listeners = winrm enumerate winrm/config/listener 2>&1 |
+          Select-String "Address|Transport|Port"
+      if ($listeners) {
+          $listeners | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+      } else {
+          Write-Host "  No WinRM listeners configured"
+      }
+
+      Write-Host "[PAS] WinRM loopback connection attempt:"
+      try {
+          $session = New-PSSession -ComputerName 127.0.0.1 -ErrorAction Stop
+          Write-Host "[PAS] PSSession to loopback established — Event 4624 type 3 generated"
+          Remove-PSSession $session -ErrorAction SilentlyContinue
+      } catch {
+          Write-Host "[PAS] WinRM loopback attempted ($(($_.Exception.Message -split '\n')[0].Trim()))"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Invoke-Command remote execution pattern"
+    command: |
+      Write-Host "[PAS] Invoke-Command lateral movement pattern:"
+      Write-Host "[PAS] Real: Invoke-Command -ComputerName target -ScriptBlock { whoami }"
+      try {
+          Invoke-Command -ComputerName 127.0.0.1 `
+              -ScriptBlock { "PAS-T1021.006-WINRM-EXEC" } `
+              -ErrorAction Stop | Out-Null
+          Write-Host "[PAS] Remote command execution via WinRM — telemetry generated"
+      } catch {
+          Write-Host "[PAS] WinRM Invoke-Command to loopback attempted — expected outcome"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — New-PSSession / Invoke-Command to non-localhost, Event 4624 type 3 on destination port 5985"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any open PSSessions"
+    command: |
+      Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] PSSessions removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1021.006 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4624 logon type 3 on destination with source port 5985/5986"
+  - "WSMan provider log: Microsoft-Windows-WinRM/Operational — incoming connection events"
+  - "Script block logging: Invoke-Command / New-PSSession with remote ComputerName"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort in (5985,5986) and ActionType == 'ConnectionSuccess'"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Invoke-Command'"
+  - "MDE alert: 'Suspicious WinRM lateral movement'"
+  - "CONTROL CHECK: WinRM disabled on workstations — winrm quickconfig should fail; service should be Disabled"
+  - "CONTROL CHECK: Remote Management Users group should be empty on workstations"

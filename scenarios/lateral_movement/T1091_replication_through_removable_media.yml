@@ -1,0 +1,106 @@
+id: T1091_replication_through_removable_media
+name: "Replication Through Removable Media"
+mitre_technique: "T1091"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries propagate malware to new systems by placing payloads on removable
+  media (USB drives) and relying on Autorun or user interaction to execute them.
+  On Windows, autorun.inf files historically triggered automatic execution on
+  insertion. Modern Windows disables Autorun for non-optical media by default,
+  but adversaries still use USB lateral movement by: renaming malware as
+  appealing filenames (Resume.pdf.exe, Invoice.lnk), placing .lnk shortcuts
+  that execute hidden payloads, or exploiting Windows icon rendering to run
+  code when a folder is browsed.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1091/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1091 — Replication Through Removable Media simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check Autorun policy and USB drive state"
+    command: |
+      Write-Host "[PAS] Autorun/Autoplay configuration check:"
+      $autorun = Get-ItemProperty `
+          "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
+          -Name NoDriveTypeAutoRun -ErrorAction SilentlyContinue
+      Write-Host "  NoDriveTypeAutoRun: $($autorun.NoDriveTypeAutoRun ?? 'Not set (default)')"
+      Write-Host "  Value 255 (0xFF) = disable all Autorun (recommended)"
+      Write-Host "  Value 0 = Autorun enabled for all drive types"
+
+      $usbDrives = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=2" `
+          -ErrorAction SilentlyContinue
+      Write-Host "  Connected USB drives: $($usbDrives.Count)"
+      $usbDrives | ForEach-Object { Write-Host "  USB: $($_.DeviceID) [$($_.VolumeName)]" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate USB replication — create payload and autorun on simulated drive"
+    command: |
+      $usbSim = "$env:TEMP\PAS_T1091_USB_SIM"
+      New-Item -ItemType Directory $usbSim -Force | Out-Null
+
+      # Create autorun.inf (detection target)
+      Set-Content "$usbSim\autorun.inf" @"
+[autorun]
+open=PAS_T1091_payload.exe
+label=USB Drive
+icon=PAS_T1091_payload.exe
+"@
+      Write-Host "[PAS] autorun.inf created: $usbSim\autorun.inf"
+
+      # Create disguised payload (LNK-style attack)
+      $shell = New-Object -ComObject WScript.Shell
+      $lnk   = $shell.CreateShortcut("$usbSim\Invoice_Q4.pdf.lnk")
+      $lnk.TargetPath = "cmd.exe"
+      $lnk.Arguments  = "/c echo PAS-T1091-USB-LATERAL-EXEC"
+      $lnk.WindowStyle = 7  # minimised
+      $lnk.IconLocation = "$env:SystemRoot\system32\shell32.dll,1"
+      $lnk.Save()
+      [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+      Write-Host "[PAS] Disguised .lnk created: Invoice_Q4.pdf.lnk"
+
+      # Mark files as hidden (System attribute)
+      attrib +h +s "$usbSim\autorun.inf" 2>&1 | Out-Null
+      Write-Host "[PAS] autorun.inf hidden+system attributes set"
+      Write-Host "[PAS] USB replication artefacts staged in: $usbSim"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — autorun.inf file creation, disguised .lnk on removable media, USB insertion events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove USB simulation directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1091_USB_SIM" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] USB simulation directory removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1091 cleanup complete"
+
+analyst_checklist:
+  - "File event: autorun.inf created on removable drive"
+  - "File event: .lnk file with cmd.exe/powershell.exe target on removable drive"
+  - "Device event: USB insertion (Event 6416) followed by process execution from drive path"
+  - "Sentinel: DeviceFileEvents | where FileName == 'autorun.inf' and FolderPath matches '^[D-Z]:'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.lnk' and FolderPath matches '^[D-Z]:'"
+  - "MDE alert: 'Autorun-based malware on removable media'"
+  - "CONTROL CHECK: Disable Autorun via GPO (NoDriveTypeAutoRun=255) — should be standard baseline"
+  - "CONTROL CHECK: MDE Device Control — block or restrict removable media execution"

@@ -1,0 +1,99 @@
+id: T1570_lateral_tool_transfer
+name: "Lateral Tool Transfer"
+mitre_technique: "T1570"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries copy tools and payloads between compromised systems within the network
+  to stage for further operations. Methods: SMB file copy to admin shares
+  (copy \\target\C$\Windows\Temp\tool.exe), certutil -urlcache to pull from a
+  compromised internal web server, robocopy over SMB, and BITS transfers between
+  systems. Tool transfer generates SMB authentication events and file creation
+  events on the destination system, providing detection opportunities distinct
+  from the initial payload delivery.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1570/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1570 — Lateral Tool Transfer simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate SMB-based tool transfer to admin share (loopback)"
+    command: |
+      $toolPath = "$env:TEMP\PAS_T1570_tool.exe"
+      Set-Content $toolPath "PAS-T1570-LATERAL-TOOL-MARKER"
+      Write-Host "[PAS] Tool payload created: $toolPath"
+
+      Write-Host "[PAS] SMB admin share copy pattern (loopback):"
+      net use \\127.0.0.1\IPC$ 2>&1 | Out-Null
+      try {
+          Copy-Item $toolPath "\\127.0.0.1\C$\Windows\Temp\PAS_T1570_tool.exe" `
+              -Force -ErrorAction Stop
+          Write-Host "[PAS] Tool copied to \\127.0.0.1\C$\Windows\Temp\ via SMB"
+      } catch {
+          Write-Host "[PAS] SMB copy to loopback attempted — access denied or no listener (expected)"
+      }
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate certutil lateral pull from internal server"
+    command: |
+      Write-Host "[PAS] certutil lateral tool download pattern:"
+      $proc = Start-Process certutil.exe `
+          -ArgumentList "-urlcache -split -f http://127.0.0.1/tool.exe $env:TEMP\PAS_T1570_cert_tool.exe" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] certutil -urlcache download to loopback — process event generated"
+
+      Write-Host "[PAS] BITS lateral transfer pattern:"
+      bitsadmin /create /download PAS_T1570_BITS 2>&1 | Out-Null
+      bitsadmin /addfile PAS_T1570_BITS `
+          "http://127.0.0.1/tool.exe" "$env:TEMP\PAS_T1570_bits_tool.exe" 2>&1 | Out-Null
+      Write-Host "[PAS] BITS download job created for lateral pull"
+      bitsadmin /cancel PAS_T1570_BITS 2>&1 | Out-Null
+      Write-Host "[PAS] BITS job cancelled (lab safety)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SMB file write to admin share, certutil -urlcache internal URL, BITS download job creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove tool transfer artifacts"
+    command: |
+      bitsadmin /cancel PAS_T1570_BITS 2>&1 | Out-Null
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      @("$env:TEMP\PAS_T1570_tool.exe",
+        "$env:TEMP\PAS_T1570_cert_tool.exe",
+        "$env:TEMP\PAS_T1570_bits_tool.exe",
+        "C:\Windows\Temp\PAS_T1570_tool.exe") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      Write-Host "[PAS][Cleanup] Tool transfer artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1570 cleanup complete"
+
+analyst_checklist:
+  - "File event: .exe or .dll file created in C:\\Windows\\Temp via SMB from remote source"
+  - "Process event: certutil.exe -urlcache with internal IP/hostname as source"
+  - "Device event: BITS job created with internal URL source"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Windows\\\\Temp' and InitiatingProcessRemoteSessionDeviceName != ''"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains 'urlcache'"
+  - "MDE alert: 'Lateral tool transfer via SMB admin share'"
+  - "CONTROL CHECK: Disable admin shares on workstations — AutoShareWks=0 via GPO"
+  - "CONTROL CHECK: Windows Defender Application Control — prevent unsigned executables from running in Temp directories"

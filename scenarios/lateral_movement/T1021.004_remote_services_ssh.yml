@@ -1,0 +1,77 @@
+id: T1021.004_remote_services_ssh
+name: "Remote Services — SSH"
+mitre_technique: "T1021.004"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use SSH with stolen credentials or stolen private keys to log into
+  Linux, macOS, Windows (OpenSSH), and network devices. Windows 10/Server 2019+
+  ship with OpenSSH client and optionally the server (sshd). Adversaries use ssh.exe
+  directly or tools like PuTTY, MobaXterm, and Bitvise for lateral movement.
+  SSH lateral movement generates network connections to port 22, process events
+  for ssh.exe, and authentication events on the destination.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.004 — SSH lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check OpenSSH availability and attempt loopback connection"
+    command: |
+      Write-Host "[PAS] SSH lateral movement check:"
+      $sshClient = Get-Command ssh.exe -ErrorAction SilentlyContinue
+      Write-Host "  OpenSSH client: $($null -ne $sshClient) $(if ($sshClient) {"($($sshClient.Source))"})"
+
+      $sshdSvc = Get-Service sshd -ErrorAction SilentlyContinue
+      Write-Host "  OpenSSH server (sshd): $($sshdSvc?.Status ?? 'Not installed')"
+
+      if ($sshClient) {
+          Write-Host "[PAS] SSH connection attempt to loopback:"
+          $proc = Start-Process ssh.exe `
+              -ArgumentList "-o StrictHostKeyChecking=no -o ConnectTimeout=1 127.0.0.1 whoami" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 1200
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] ssh.exe connection to 127.0.0.1 — process and network event generated"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ssh.exe to non-management destination, port 22 TCP from workstation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Ensure SSH processes cleaned up"
+    command: |
+      Get-Process ssh -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Complete"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1021.004 cleanup complete"
+
+analyst_checklist:
+  - "Process event: ssh.exe with target IP/hostname argument from unexpected user context"
+  - "Network event: TCP port 22 outbound from workstation to internal server"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ssh.exe' and ProcessCommandLine contains '@'"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 22 and ActionType == 'ConnectionSuccess' and InitiatingProcessFileName == 'ssh.exe'"
+  - "CONTROL CHECK: OpenSSH server disabled on workstations — Get-Service sshd should show Stopped/Disabled"
+  - "CONTROL CHECK: SSH restricted to jump server only — block port 22 from workstation VLAN to server VLAN"
+  - "CONTROL CHECK: SSH key management — private keys should require passphrase; use ssh-agent with timeout"

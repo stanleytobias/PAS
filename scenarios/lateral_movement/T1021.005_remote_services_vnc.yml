@@ -1,0 +1,79 @@
+id: T1021.005_remote_services_vnc
+name: "Remote Services — VNC"
+mitre_technique: "T1021.005"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use Virtual Network Computing (VNC) to gain remote graphical access
+  to systems. VNC uses the RFB protocol and typically runs on TCP port 5900.
+  Adversaries may install VNC servers as a persistence/access mechanism or exploit
+  existing VNC deployments with weak or no passwords. Common tools: TightVNC,
+  UltraVNC, RealVNC, TigerVNC. VNC traffic to unexpected internal hosts or VNC
+  client execution from scripting processes are key detection signals.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.005 — VNC lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for VNC installation and attempt loopback connection"
+    command: |
+      Write-Host "[PAS] VNC environment check:"
+      $vncClients = @("tvnviewer.exe","vncviewer.exe","uvnc_settings.exe","RealVNC","TightVNC")
+      foreach ($v in $vncClients) {
+          $found = Get-Command $v -ErrorAction SilentlyContinue
+          if ($found) { Write-Host "  VNC client found: $($found.Source)" }
+      }
+
+      $vncServices = Get-Service -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match "vnc|tvnserver|uvnc" }
+      if ($vncServices) {
+          $vncServices | ForEach-Object {
+              Write-Host "  VNC service: $($_.Name) [$($_.Status)]"
+          }
+      }
+
+      Write-Host "[PAS] VNC port probe (loopback 5900):"
+      try {
+          $tcp    = New-Object System.Net.Sockets.TcpClient
+          $result = $tcp.BeginConnect("127.0.0.1", 5900, $null, $null)
+          $open   = $result.AsyncWaitHandle.WaitOne(300, $false)
+          $tcp.Close()
+          Write-Host "  Port 5900: $(if ($open) {'OPEN — VNC server running'} else {'closed'})"
+      } catch {}
+
+      Write-Host "[PAS] Password extraction check (WinRegistry — T1552.002 cross-ref):"
+      $vncPass = Get-ItemProperty "HKLM:\SOFTWARE\RealVNC\WinVNC4" `
+          -Name Password -ErrorAction SilentlyContinue
+      if ($vncPass) { Write-Host "  RealVNC password found in registry [RISK]" }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — VNC client process execution, TCP port 5900 connections between internal hosts"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1021.005 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: vncviewer.exe or tvnviewer.exe from unexpected context"
+  - "Network event: TCP port 5900 between internal workstations"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 5900 and ActionType == 'ConnectionSuccess'"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('vncviewer.exe','tvnviewer.exe')"
+  - "CONTROL CHECK: VNC should not be installed on corporate endpoints — use approved RDP/Intune remote control"
+  - "CONTROL CHECK: Block port 5900 between workstation VLANs at network firewall"

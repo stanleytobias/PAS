@@ -1,0 +1,82 @@
+id: T1021.007_remote_services_cloud_services
+name: "Remote Services — Cloud Services"
+mitre_technique: "T1021.007"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use compromised cloud credentials to move laterally into cloud-hosted
+  services and resources. With stolen Entra ID / Azure tokens, adversaries access
+  Azure management APIs, M365 workloads (SharePoint, Exchange, Teams), and Azure
+  resource management. This differs from initial cloud access — it represents
+  deliberate movement between cloud services using already-compromised cloud
+  identities. Key tools: Azure CLI (az), Azure PowerShell, Microsoft Graph SDK,
+  and the Azure Portal itself.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.007 — Cloud Service lateral movement simulation (loopback)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate cloud services accessible with compromised token"
+    command: |
+      Write-Host "[PAS] Cloud service lateral movement pattern:"
+      $cloudServices = @(
+          @{Service="Azure Management"; Endpoint="http://127.0.0.1/subscriptions?api-version=2021-04-01"},
+          @{Service="Graph Users";      Endpoint="http://127.0.0.1/v1.0/users"},
+          @{Service="SharePoint";       Endpoint="http://127.0.0.1/_api/web"},
+          @{Service="Exchange";         Endpoint="http://127.0.0.1/v1.0/users/me/messages"},
+          @{Service="Key Vault";        Endpoint="http://127.0.0.1/secrets"}
+      )
+      foreach ($svc in $cloudServices) {
+          try {
+              $req = [System.Net.WebRequest]::Create($svc.Endpoint)
+              $req.Headers.Add("Authorization","Bearer PAS_STOLEN_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Cloud lateral access: $($svc.Service)"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate az run-command for VM lateral movement"
+    command: |
+      Write-Host "[PAS] Azure VM run-command lateral movement:"
+      Write-Host "[PAS] Real: az vm run-command invoke -g ResourceGroup -n TargetVM --command-id RunPowerShellScript --scripts 'whoami'"
+      $az = Get-Command az -ErrorAction SilentlyContinue
+      if ($az) {
+          Write-Host "[PAS] Azure CLI found — run-command telemetry pattern:"
+          Write-Host "  This invokes a script on any Azure VM you have access to"
+          Write-Host "  No RDP/WinRM/SSH needed — uses Azure agent on VM"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — VM runCommand invocations, bulk Graph API access from new IP/device"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1021.007 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Activity Log: Microsoft.Compute/virtualMachines/runCommand/action from unexpected principal"
+  - "Entra ID: token used across multiple cloud services in rapid succession from single session"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'runCommand'"
+  - "Sentinel: SigninLogs | where AppDisplayName in ('Azure Portal','Graph','SharePoint') and DeviceDetail.isCompliant == false"
+  - "CONTROL CHECK: Restrict runCommand via Azure Policy — deny Microsoft.Compute/virtualMachines/runCommand to non-admin roles"
+  - "CONTROL CHECK: Continuous Access Evaluation — revokes token across all services simultaneously on risk detection"

@@ -1,0 +1,87 @@
+id: T1021.008_remote_services_direct_cloud_vm_connections
+name: "Remote Services — Direct Cloud VM Connections"
+mitre_technique: "T1021.008"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries use cloud-native VM access methods that bypass traditional network
+  controls — Azure Serial Console, Azure Bastion, AWS EC2 Instance Connect, AWS
+  Systems Manager Session Manager, and GCP Cloud Shell. These methods use the
+  cloud control plane rather than direct network connectivity, bypassing host
+  firewalls, NSGs, and VPN requirements. Azure Serial Console grants access even
+  to VMs with no network connectivity. Detection requires cloud audit log monitoring
+  — these activities leave no host-side network events.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1021/008/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1021.008 — Direct Cloud VM Connection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check Azure Serial Console and Bastion availability"
+    command: |
+      Write-Host "[PAS] Cloud-native VM access method enumeration:"
+      Write-Host "[PAS] Azure Serial Console:"
+      Write-Host "  Endpoint: https://serialconsole.azure.com"
+      Write-Host "  Requires: Microsoft.SerialConsole/serialPorts/connect permission"
+      Write-Host "  Bypasses: all NSG rules, host firewall, no SSH/RDP needed"
+      Write-Host "  Access: Azure Portal -> VM -> Serial Console"
+      Write-Host ""
+      Write-Host "[PAS] Azure Bastion:"
+      Write-Host "  Provides RDP/SSH through browser without public IP on VM"
+      Write-Host "  Requires: Bastion subnet + Microsoft.Network/bastionHosts resource"
+      Write-Host ""
+      Write-Host "[PAS] AWS EC2 Instance Connect:"
+      Write-Host "  Pushes temporary SSH key via AWS API — no persistent credentials"
+      Write-Host "  az equivalent: aws ec2-instance-connect send-ssh-public-key"
+      Write-Host ""
+      Write-Host "[PAS] AWS SSM Session Manager:"
+      Write-Host "  Shell access via SSM agent — no inbound network rule required"
+      Write-Host "  aws ssm start-session --target instance-id"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Azure Serial Console access probe (REST API, loopback)"
+    command: |
+      Write-Host "[PAS] Azure Serial Console REST probe (loopback):"
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Compute/virtualMachines/{vm}/serialPort/connect?api-version=2018-05-01")
+          $req.Method = "POST"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.ContentLength = 0
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Serial console connect POST to loopback — ARM API telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Activity Log — serialPort/connect operations, Bastion RDP/SSH sessions from unexpected principals"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1021.008 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Activity Log: Microsoft.SerialConsole/serialPorts/connect from unexpected principal or time"
+  - "Azure Activity Log: Microsoft.Network/bastionHosts/createShareableLinks — Bastion session initiated"
+  - "AWS CloudTrail: SendSSHPublicKey or StartSession events from unexpected user or region"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'serialPorts/connect'"
+  - "CONTROL CHECK: Disable Serial Console on all VMs unless needed for break-glass — Azure Policy deny"
+  - "CONTROL CHECK: Bastion — restrict to approved admin accounts; enable Bastion audit logs"
+  - "CONTROL CHECK: AWS SSM — restrict StartSession via IAM condition keys (ssm:resourceTag, aws:SourceVpc)"

@@ -1,0 +1,108 @@
+id: T1080_taint_shared_content
+name: "Taint Shared Content"
+mitre_technique: "T1080"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries inject malicious content into shared file systems, network drives,
+  or internal code repositories that other users access. When a user opens a
+  tainted file, the malicious payload executes on their system — giving the
+  adversary access to the new system without direct network connection. Methods:
+  replace legitimate Office documents with macro-enabled versions, plant .lnk
+  files that execute hidden commands when browsed, inject malicious scripts into
+  shared script repositories, or modify shared executables with a trojanised version.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1080/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1080 — Taint Shared Content simulation (local simulation only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate accessible network shares — taint targets"
+    command: |
+      Write-Host "[PAS] Network share enumeration for taint targets:"
+      net view \\127.0.0.1 /all 2>&1 | Select-Object -First 10 |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Mapped drive shares:"
+      Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+          Where-Object { $_.Root -like "\\*" } |
+          ForEach-Object { Write-Host "  $($_.Name): -> $($_.Root)" }
+
+      Write-Host "[PAS] SharePoint/OneDrive sync folders:"
+      $onedrive = Get-ChildItem "$env:USERPROFILE" -Filter "OneDrive*" -Directory `
+          -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($onedrive) { Write-Host "  OneDrive: $($onedrive.FullName)" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Create tainted content in simulated shared directory"
+    command: |
+      $shareSimDir = "$env:TEMP\PAS_T1080_share_sim"
+      New-Item -ItemType Directory $shareSimDir -Force | Out-Null
+
+      # Create a tainted .lnk file disguised as a document
+      $shell = New-Object -ComObject WScript.Shell
+      $lnk   = $shell.CreateShortcut("$shareSimDir\Q4 Budget Report.pdf.lnk")
+      $lnk.TargetPath = "cmd.exe"
+      $lnk.Arguments  = "/c echo PAS-T1080-TAINT-SHARED-CONTENT"
+      $lnk.WindowStyle = 7
+      $lnk.IconLocation = "$env:SystemRoot\system32\shell32.dll,1"
+      $lnk.Save()
+      [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+      Write-Host "[PAS] Tainted .lnk created: Q4 Budget Report.pdf.lnk"
+
+      # Create a tainted script in a shared scripts folder
+      Set-Content "$shareSimDir\deploy.ps1" @'
+# PAS T1080 — Tainted shared script
+# Legitimate-looking content with malicious addition
+Get-Date
+
+# Adversary-injected payload:
+Write-Host "PAS-T1080-TAINTED-SCRIPT-EXEC"
+'@
+      Write-Host "[PAS] Tainted script created: deploy.ps1 (malicious code injected)"
+
+      # Mark .lnk as hidden (common adversary behaviour)
+      attrib +h "$shareSimDir\Q4 Budget Report.pdf.lnk" 2>&1 | Out-Null
+      Write-Host "[PAS] Share tainted — waiting for victim to browse: $shareSimDir"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — .lnk file creation on network share, script file modification on shared path, Office macro enable events"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove tainted share simulation"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1080_share_sim" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Tainted share simulation removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1080 cleanup complete"
+
+analyst_checklist:
+  - "File event: .lnk file created on network share path by unexpected process"
+  - "File event: .ps1 or .bat modification on shared script directory"
+  - "File event: .docm/.xlsm file written to shared document library"
+  - "Sentinel: DeviceFileEvents | where FolderPath startswith '\\\\\\\\' and FileName endswith '.lnk' and ActionType == 'FileCreated'"
+  - "Sentinel: DeviceFileEvents | where FolderPath startswith '\\\\\\\\' and FileName endswith '.ps1' and ActionType == 'FileModified'"
+  - "MDE alert: 'Malicious content placed in shared folder'"
+  - "CONTROL CHECK: Write ACLs on shared folders — most users should have read-only; only content owners write"
+  - "CONTROL CHECK: SharePoint/OneDrive versioning + restore — tainted content can be rolled back"
+  - "CONTROL CHECK: Office macro policy — block all macros except digitally signed from trusted publisher"

@@ -1,0 +1,100 @@
+id: T1550.002_use_alternate_auth_material_pass_the_hash
+name: "Use Alternate Authentication Material — Pass the Hash"
+mitre_technique: "T1550.002"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries authenticate to remote systems using a stolen NTLM password hash
+  without needing the plaintext password. The NTLM authentication protocol accepts
+  the hash directly — it never transmits the plaintext password. Pass-the-Hash (PtH)
+  enables lateral movement to any system where the stolen account has local admin
+  rights, without cracking the hash first. Tools: Mimikatz sekurlsa::pth,
+  Invoke-TheHash, impacket psexec.py/smbexec.py. Detection: Event 4624 logon
+  type 3 with NtLmSsp authentication package, and the absence of a preceding
+  interactive logon on the source.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1550/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1550.002 — Pass the Hash simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Demonstrate PtH authentication flow — NTLM hash usage pattern"
+    command: |
+      Write-Host "[PAS] Pass-the-Hash attack pattern:"
+      Write-Host "[PAS] Required: NTLM hash of target account (obtained via T1003)"
+      Write-Host "[PAS] Example hash (fake): aad3b435b51404eeaad3b435b51404ee:32ed87bdb5fdc5e9cba88547376818d4"
+      Write-Host ""
+      Write-Host "[PAS] Mimikatz PtH command:"
+      Write-Host "  sekurlsa::pth /user:Administrator /domain:CORP /ntlm:32ed87... /run:cmd.exe"
+      Write-Host "  Effect: spawns cmd.exe with Administrator NTLM token"
+      Write-Host "  No plaintext password required"
+      Write-Host ""
+      Write-Host "[PAS] impacket psexec.py PtH:"
+      Write-Host "  psexec.py -hashes aad3b...:32ed87... CORP/Administrator@target"
+      Write-Host ""
+
+      # Generate NTLM authentication telemetry using net use with wrong credentials
+      Write-Host "[PAS] NTLM network auth to loopback (PtH telemetry pattern):"
+      net use \\127.0.0.1\IPC$ 2>&1 | Out-Null
+      Write-Host "[PAS] NTLM type 3 authentication to loopback generated — Event 4624 logon type 3"
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for PtH protection controls"
+    command: |
+      Write-Host "[PAS] PtH mitigation control check:"
+
+      # Check Credential Guard
+      $cgKey = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard"
+      $cg    = Get-ItemProperty $cgKey -ErrorAction SilentlyContinue
+      Write-Host "  Credential Guard enabled: $($cg?.EnableVirtualizationBasedSecurity -eq 1)"
+
+      # Check Protected Users group membership
+      Write-Host "  Protected Users group: accounts in this group cannot use NTLM"
+
+      # Check NTLM restriction policy
+      $ntlmKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"
+      $ntlm    = Get-ItemProperty $ntlmKey -Name RestrictSendingNTLMTraffic `
+          -ErrorAction SilentlyContinue
+      Write-Host "  RestrictSendingNTLMTraffic: $($ntlm?.RestrictSendingNTLMTraffic ?? 'Not set')"
+      Write-Host "  Value 2 = Deny All — blocks NTLM authentication"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4624 logon type 3 with NtLmSsp auth package, no preceding interactive logon on source"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Clean net use connections"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Complete"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1550.002 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4624 logon type 3 with AuthenticationPackageName = NTLM / NtLmSsp from workstation-to-workstation"
+  - "Absence of logon type 2 (interactive) on source preceding the network logon — PtH signature"
+  - "Sentinel: SecurityEvent | where EventID == 4624 and LogonType == 3 and AuthenticationPackageName == 'NTLM'"
+  - "Defender for Identity: 'Pass-the-Hash attack' — correlates NTLM lateral auth without preceding interactive logon"
+  - "CONTROL CHECK: Credential Guard — virtualises NTLM hash storage; PtH cannot extract usable hash"
+  - "CONTROL CHECK: Protected Users group for privileged accounts — members cannot authenticate with NTLM at all"
+  - "CONTROL CHECK: Restrict NTLM: Outgoing NTLM traffic = Deny All — eliminates PtH lateral movement channel"

@@ -1,0 +1,99 @@
+id: T1072_software_deployment_tools
+name: "Software Deployment Tools"
+mitre_technique: "T1072"
+mitre_tactic: "lateral_movement"
+description: >
+  Adversaries abuse centralized software deployment and management platforms to
+  move laterally at scale across the enterprise. Tools: Microsoft Intune (run
+  PowerShell scripts on all enrolled devices), SCCM/ConfigMgr (push software or
+  scripts to device collections), Azure Arc (run-command on Arc-managed servers),
+  and third-party RMM tools (ConnectWise, Kaseya, NinjaRMM). Compromising the
+  management platform gives instant access to all managed endpoints — lateral
+  movement at enterprise scale without touching individual systems.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1072/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1072 — Software Deployment Tools lateral movement simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate deployment tool agents on this system"
+    command: |
+      Write-Host "[PAS] Software deployment tool agent check:"
+      $agents = @{
+          "SCCM/ConfigMgr"  = @("CcmExec","CCMEXEC","SMS Agent Host")
+          "Intune/MDM"       = @("IntuneManagementExtension","deviceenrollment")
+          "Azure Arc"        = @("GCArcService","himds")
+          "ConnectWise"      = @("LTService","LabTechService")
+          "Kaseya"           = @("KaseyaRemoteAgent","Kaseya")
+          "NinjaRMM"         = @("NinjaRMMAgent")
+      }
+      foreach ($tool in $agents.Keys) {
+          foreach ($svc in $agents[$tool]) {
+              $s = Get-Service $svc -ErrorAction SilentlyContinue
+              if ($s) { Write-Host "  [FOUND] $tool agent: $svc [$($s.Status)]" }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Intune PowerShell script deployment — Graph API pattern"
+    command: |
+      Write-Host "[PAS] Intune PowerShell script deployment pattern (loopback):"
+      Write-Host "[PAS] Real: POST /beta/deviceManagement/deviceManagementScripts"
+      Write-Host "       Body: { displayName, scriptContent (base64), runAsAccount: 'system' }"
+      Write-Host "       Effect: script runs as SYSTEM on ALL enrolled Windows devices"
+
+      $scriptContent = [Convert]::ToBase64String(
+          [Text.Encoding]::UTF8.GetBytes("Write-Host 'PAS-T1072-INTUNE-LATERAL'"))
+
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/beta/deviceManagement/deviceManagementScripts")
+          $req.Method = "POST"
+          $req.ContentType = "application/json"
+          $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+          $req.Timeout = 300
+          $body = [Text.Encoding]::UTF8.GetBytes(
+              "{`"displayName`":`"PAS Test`",`"scriptContent`":`"$scriptContent`",`"runAsAccount`":`"system`"}")
+          $req.ContentLength = $body.Length
+          $s = $req.GetRequestStream(); $s.Write($body,0,$body.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Intune script POST to loopback generated"
+
+      Write-Host "[PAS] SCCM lateral movement pattern:"
+      Write-Host "  wmic /node:sccm_server product call Install (CMPivot query)"
+      Write-Host "  ConfigMgr script deployment -> runs on all devices in collection"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Intune audit log — new PowerShell script assigned to All Devices; SCCM script deployment outside change window"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1072 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Intune audit log: new deviceManagementScript created and assigned to 'All Devices' group"
+  - "SCCM status messages: script deployment to large device collection outside maintenance window"
+  - "Sentinel: AuditLogs | where OperationName contains 'deviceManagementScript' and OperationName contains 'Create'"
+  - "MDE alert: 'Suspicious Intune script deployment'"
+  - "CONTROL CHECK: Intune script deployment restricted to specific admin role — not general IT helpdesk"
+  - "CONTROL CHECK: SCCM script approval workflow — all scripts require peer review before deployment"
+  - "CONTROL CHECK: Alert on any script assigned to 'All Devices' scope — should be rare and require CISO approval"
