@@ -1,0 +1,73 @@
+id: T1007_system_service_discovery
+name: "System Service Discovery"
+mitre_technique: "T1007"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate running and stopped services to understand the system's role,
+  identify exploit targets, and find services to hijack for persistence or privilege
+  escalation. Methods: sc query, Get-Service, tasklist /svc, wmic service.
+  Services reveal: web servers (IIS, Apache), databases (SQL Server, MySQL),
+  management agents (WMI, WinRM), and scheduled maintenance tasks that may run
+  with elevated privileges.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1007/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1007 — System Service Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate services via sc, Get-Service, and tasklist"
+    command: |
+      Write-Host "[PAS] System service enumeration:"
+
+      Write-Host "[PAS] Method 1: sc query"
+      sc.exe query type= all state= all 2>&1 | Select-Object -First 30 |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: tasklist /svc"
+      $proc = Start-Process tasklist.exe -ArgumentList "/svc /FO CSV" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] tasklist /svc process event generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate auto-start services — persistence and attack surface"
+    command: |
+      Write-Host "[PAS] Auto-start services (attack surface for hijack):"
+      Get-WmiObject Win32_Service -ErrorAction SilentlyContinue |
+          Where-Object { $_.StartMode -eq 'Auto' -and $_.State -eq 'Running' } |
+          Select-Object Name, DisplayName, PathName, StartName |
+          Sort-Object Name | Select-Object -First 15 |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Services running as SYSTEM with user-writable binary paths are privesc targets"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — sc.exe query all, tasklist /svc, WMI Win32_Service from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1007 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: sc.exe with 'query' argument, tasklist.exe with '/svc'"
+  - "WMI query: Win32_Service from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('sc.exe','tasklist.exe') and ProcessCommandLine contains ('query','svc')"
+  - "MDE alert: 'Service enumeration'"
+  - "CONTROL CHECK: Services with user-writable binary paths — detected via Get-ServiceAcl; should alert if found"
