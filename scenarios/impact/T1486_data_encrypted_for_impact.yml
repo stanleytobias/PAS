@@ -58,14 +58,8 @@ steps:
       $aes.Dispose()
 
       # Drop ransom note
-      Set-Content "$ransomDir\README_PAS_RESTORE.txt" @"
-PAS-T1486 SIMULATION RANSOM NOTE
----------------------------------
-This is a PAS detection engineering simulation only.
-Key (retained for cleanup): $keyB64
-IV: $ivB64
-REAL ransomware would NOT include the key here.
-"@
+      $ransomNote = "PAS-T1486 SIMULATION RANSOM NOTE`n---------------------------------`nThis is a PAS detection engineering simulation only.`nKey (retained for cleanup): $keyB64`nIV: $ivB64`nREAL ransomware would NOT include the key here."
+      Set-Content "$ransomDir\README_PAS_RESTORE.txt" $ransomNote
       Write-Host "[PAS] Ransom note dropped: README_PAS_RESTORE.txt"
       Write-Host "[PAS] Encryption complete — $((Get-ChildItem $ransomDir -Filter '*.PAS_LOCKED').Count) files encrypted"
 
