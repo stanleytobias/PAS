@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    PAS — Practical Attack Simulation
+    PAS -- Practical Attack Simulation
 
 .DESCRIPTION
     A detection engineering platform for validating detections, mapping coverage
@@ -71,7 +71,7 @@
 
 .NOTES
     Run as Administrator for scenarios requiring elevated privileges.
-    Always run in an isolated lab VM — never on production systems.
+    Always run in an isolated lab VM -- never on production systems.
     GitHub: https://github.com/stanleytobias/PracticalAttackSim-Runner
 #>
 
@@ -178,13 +178,13 @@ switch ($PSCmdlet.ParameterSetName) {
             exit 1
         }
 
-        Write-PASBanner "TACTIC RUN — $($Tactic.ToUpper()) ($($files.Count) scenarios)"
+        Write-PASBanner "TACTIC RUN -- $($Tactic.ToUpper()) ($($files.Count) scenarios)"
 
         foreach ($file in $files) {
             $s = Import-PASYaml -Path $file.FullName
             $v = Test-PASSchema -Scenario $s
             if (-not $v.Valid) {
-                Write-PASWarn "Skipping $($file.Name) — schema errors: $($v.Errors -join '; ')"
+                Write-PASWarn "Skipping $($file.Name) -- schema errors: $($v.Errors -join '; ')"
                 continue
             }
             Invoke-PASScenario -Scenario $s `
@@ -229,7 +229,7 @@ switch ($PSCmdlet.ParameterSetName) {
                         $fail++
                     }
                 } catch {
-                    Write-PASError "  ERR   $($f.Name) — $_"
+                    Write-PASError "  ERR   $($f.Name) -- $_"
                     $fail++
                 }
             }
