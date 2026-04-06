@@ -57,7 +57,7 @@ function New-PASSigmaScaffold {
     $dateOnly   = ([datetime]$Result['timestamp']).ToString('yyyy-MM-dd')
     $uuid       = [System.Guid]::NewGuid().ToString()
 
-    # Logsource — prefer non-process types if present
+    # Logsource -- prefer non-process types if present
     $logsource = 'process_creation'
     foreach ($t in $StepTypes) {
         if ($script:LOGSOURCE_MAP.ContainsKey($t) -and $script:LOGSOURCE_MAP[$t] -ne 'process_creation') {
@@ -71,7 +71,7 @@ function New-PASSigmaScaffold {
     $base   = $technique -replace '\.\d+$', ''
     $fpHint = if ($script:FP_HINTS[$technique]) { $script:FP_HINTS[$technique] }
               elseif ($script:FP_HINTS[$base])  { $script:FP_HINTS[$base] }
-              else { 'Legitimate administrative activity — review environment baseline' }
+              else { 'Legitimate administrative activity -- review environment baseline' }
 
     $level = switch ($verdict) {
         'BLIND_SPOT' { 'high'   }
