@@ -1,6 +1,6 @@
 # PAS.Executor.psm1
 # Core scenario and suite execution engine.
-# No vendor/EDR framing — this is a detection engineering platform.
+# No vendor/EDR framing -- this is a detection engineering platform.
 
 function Invoke-PASScenario {
     param(
@@ -34,7 +34,7 @@ function Invoke-PASScenario {
         $type = $step['type']
         $desc = $step['description']
 
-        Write-PASStep "[$num] $type — $desc"
+        Write-PASStep "[$num] $type -- $desc"
 
         $stepResult = [ordered]@{
             step        = $num
@@ -83,7 +83,7 @@ function Invoke-PASScenario {
     }
 
     if ($cleanupOk) { Write-PASOk "Cleanup complete." }
-    else            { Write-PASWarn "Cleanup had errors — review artifacts manually." }
+    else            { Write-PASWarn "Cleanup had errors -- review artifacts manually." }
 
     # ── Analyst interaction ───────────────────────────────────────────────────
     $outcome = $null
@@ -91,7 +91,7 @@ function Invoke-PASScenario {
     if (-not $DryRun -and -not $Quiet) {
         if ($HuntMode) {
             Write-PASBanner "HUNT ARTIFACT GENERATED" Magenta
-            Write-PASInfo "Artifacts generated for: $($Scenario['mitre_technique']) — $($Scenario['name'])"
+            Write-PASInfo "Artifacts generated for: $($Scenario['mitre_technique']) -- $($Scenario['name'])"
             Write-PASInfo "Go hunt in your SIEM. Suggested queries from the analyst checklist:"
             Write-PASInfo ""
             @($Scenario['analyst_checklist']) | ForEach-Object { Write-PASInfo "  - $_" }
@@ -138,7 +138,7 @@ function Invoke-PASScenario {
     # ── Auto Sigma on gap ─────────────────────────────────────────────────────
     if (-not $DryRun -and -not $HuntMode -and $outcome) {
         if ($outcome.Verdict -in @('GAP', 'BLIND_SPOT', 'PARTIAL')) {
-            Write-PASInfo "Verdict is $($outcome.Verdict) — generating Sigma scaffold..."
+            Write-PASInfo "Verdict is $($outcome.Verdict) -- generating Sigma scaffold..."
             $sigmaOut  = Join-Path $Out 'sigma'
             $sigmaPath = New-PASSigmaScaffold -Result $resultObj `
                              -StepTypes ($stepsExecuted | ForEach-Object { $_['type'] }) `
@@ -184,7 +184,7 @@ function Invoke-PASSuite {
     $suiteDir  = Split-Path $SuitePath -Parent
     $scenarios = @($Suite['scenarios'])
 
-    Write-PASBanner "SUITE — $($Suite['name'])"
+    Write-PASBanner "SUITE -- $($Suite['name'])"
     Write-PASInfo "Total scenarios : $($scenarios.Count)"
     Write-PASInfo ""
 
@@ -199,14 +199,14 @@ function Invoke-PASSuite {
         Write-PASInfo "[$idx/$($scenarios.Count)] $([System.IO.Path]::GetFileName($path))"
 
         if (-not (Test-Path $path)) {
-            Write-PASWarn "  File not found — skipping: $path"
+            Write-PASWarn "  File not found -- skipping: $path"
             continue
         }
 
         $s = Import-PASYaml -Path $path
         $v = Test-PASSchema -Scenario $s
         if (-not $v.Valid) {
-            Write-PASWarn "  Schema invalid — skipping: $($v.Errors -join '; ')"
+            Write-PASWarn "  Schema invalid -- skipping: $($v.Errors -join '; ')"
             continue
         }
 
@@ -221,7 +221,7 @@ function Invoke-PASSuite {
 
     # Suite summary
     $tally = $results | Group-Object { $_['outcome']['verdict'] }
-    Write-PASBanner "SUITE COMPLETE — $($Suite['name'])"
+    Write-PASBanner "SUITE COMPLETE -- $($Suite['name'])"
     foreach ($g in $tally | Sort-Object Name) {
         $col = switch ($g.Name) {
             'COVERED'       { 'Green'      }
@@ -329,7 +329,7 @@ function Read-PASOutcome {
     $line = '=' * 60
     Write-Host ""
     Write-Host $line                                             -ForegroundColor Magenta
-    Write-Host "  ANALYST CHECKLIST — $($Scenario['id'])"       -ForegroundColor Magenta
+    Write-Host "  ANALYST CHECKLIST -- $($Scenario['id'])"       -ForegroundColor Magenta
     Write-Host "  $($Scenario['mitre_technique']) | $($Scenario['mitre_tactic'])" -ForegroundColor Magenta
     Write-Host $line                                             -ForegroundColor Magenta
     Write-Host ""
@@ -340,11 +340,11 @@ function Read-PASOutcome {
     }
     Write-Host ""
     Write-Host "  VERDICT:" -ForegroundColor Yellow
-    Write-Host "    [1] COVERED     — detection fired, correct technique context"    -ForegroundColor Green
-    Write-Host "    [2] PARTIAL     — detection fired but low fidelity or missing context" -ForegroundColor Yellow
-    Write-Host "    [3] GAP         — no detection, but telemetry is present in SIEM"     -ForegroundColor DarkYellow
-    Write-Host "    [4] BLIND_SPOT  — no detection and no telemetry at all"               -ForegroundColor Red
-    Write-Host "    [5] PENDING     — skip for now, revisit later"                        -ForegroundColor DarkGray
+    Write-Host "    [1] COVERED     -- detection fired, correct technique context"    -ForegroundColor Green
+    Write-Host "    [2] PARTIAL     -- detection fired but low fidelity or missing context" -ForegroundColor Yellow
+    Write-Host "    [3] GAP         -- no detection, but telemetry is present in SIEM"     -ForegroundColor DarkYellow
+    Write-Host "    [4] BLIND_SPOT  -- no detection and no telemetry at all"               -ForegroundColor Red
+    Write-Host "    [5] PENDING     -- skip for now, revisit later"                        -ForegroundColor DarkGray
     Write-Host ""
 
     # Verdict
@@ -382,8 +382,8 @@ function Read-PASOutcome {
         Write-Host "  Gap type:"                                           -ForegroundColor Yellow
         Write-Host "    [1] No detection rule exists for this technique"   -ForegroundColor Gray
         Write-Host "    [2] Rule exists but did not fire"                  -ForegroundColor Gray
-        Write-Host "    [3] Telemetry missing — log source not configured" -ForegroundColor Gray
-        Write-Host "    [4] Telemetry missing — sensor not deployed"       -ForegroundColor Gray
+        Write-Host "    [3] Telemetry missing -- log source not configured" -ForegroundColor Gray
+        Write-Host "    [4] Telemetry missing -- sensor not deployed"       -ForegroundColor Gray
         $g = Read-Host "  Gap type [1-4]"
         $gapType = switch ($g) {
             '1' { 'no_rule' }
