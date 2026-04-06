@@ -353,7 +353,7 @@ function Read-PASOutcome {
     while ($true) {
         $c = Read-Host "  Verdict [1-5]"
         if ($verdictMap.ContainsKey($c)) { $verdict = $verdictMap[$c]; break }
-        Write-PASWarn "  Enter 1–5"
+        Write-PASWarn "  Enter 1-5"
     }
 
     if ($verdict -eq 'PENDING') { return [PSCustomObject]@{ Verdict='PENDING'; TelemetryVisible=$null; DetectionFired=$null; DetectionName=$null; Fidelity=$null; GapType=$null; Notes='' } }
