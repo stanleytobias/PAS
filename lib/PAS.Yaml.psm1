@@ -1,7 +1,7 @@
 # PAS.Yaml.psm1
 # Lightweight YAML parser sufficient for PAS scenario files.
 # Handles: scalars, quoted strings, block scalars (|, >), sequences, mappings.
-# No external dependencies — pure PowerShell.
+# No external dependencies -- pure PowerShell.
 
 function Import-PASYaml {
     param(
@@ -51,7 +51,7 @@ function Parse-YamlValue {
 
     $v = $Raw.Trim()
 
-    # Block scalar — literal (|) or folded (>)
+    # Block scalar -- literal (|) or folded (>)
     if ($v -eq '|' -or $v -eq '>') {
         $fold = ($v -eq '>')
         $script:_yaml_pos++
@@ -153,7 +153,7 @@ function Parse-YamlSequence {
             $script:_yaml_pos++
 
             if ($itemValue -eq '') {
-                # Block item — next lines form a mapping
+                # Block item -- next lines form a mapping
                 $nextLine   = Get-CurrentLine
                 $nextIndent = Get-Indent $nextLine
                 if ($null -ne $nextLine -and $nextIndent -gt $Indent) {
