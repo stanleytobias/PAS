@@ -159,8 +159,22 @@ function Parse-YamlSequence {
                 if ($null -ne $nextLine -and $nextIndent -gt $Indent) {
                     $seq += , (Parse-YamlMapping -Indent $nextIndent)
                 }
+            } elseif ($itemValue -match '^([^:#]+):\s*(.*)$') {
+                # Inline mapping: "- key: value" with possible continuation keys
+                $inlineKey   = $Matches[1].Trim()
+                $inlineValue = $Matches[2].Trim()
+                $itemMap     = [ordered]@{}
+                $itemMap[$inlineKey] = Parse-YamlValue -Raw $inlineValue -BaseIndent ($Indent + 2)
+
+                $nextLine   = Get-CurrentLine
+                $nextIndent = Get-Indent $nextLine
+                if ($null -ne $nextLine -and $nextIndent -gt $Indent) {
+                    $rest = Parse-YamlMapping -Indent $nextIndent
+                    foreach ($k in $rest.Keys) { $itemMap[$k] = $rest[$k] }
+                }
+                $seq += , $itemMap
             } else {
-                # Inline value or inline mapping fragment
+                # Plain scalar value
                 $seq += , (Parse-YamlValue -Raw $itemValue -BaseIndent $Indent)
             }
         } else {
