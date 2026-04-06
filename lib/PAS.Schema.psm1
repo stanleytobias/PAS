@@ -38,20 +38,20 @@ function Test-PASSchema {
 
     # ── Field format validation ───────────────────────────────────────────────
     if ($Scenario['id'] -and $Scenario['id'] -notmatch '^T\d{4}(\.\d{3})?_.+$') {
-        $errors += "Field 'id' must match pattern T####[.###]_name — got: '$($Scenario['id'])'"
+        $errors += "Field 'id' must match pattern T####[.###]_name -- got: '$($Scenario['id'])'"
     }
 
     if ($Scenario['mitre_technique'] -and $Scenario['mitre_technique'] -notmatch '^T\d{4}(\.\d{3})?$') {
-        $errors += "Field 'mitre_technique' must match T#### or T####.### — got: '$($Scenario['mitre_technique'])'"
+        $errors += "Field 'mitre_technique' must match T#### or T####.### -- got: '$($Scenario['mitre_technique'])'"
     }
 
     $tacticNorm = ($Scenario['mitre_tactic'] -replace '_', '-')
     if ($Scenario['mitre_tactic'] -and $tacticNorm -notin $VALID_TACTICS) {
-        $errors += "Field 'mitre_tactic' must be one of: $($VALID_TACTICS -join ', ') — got: '$($Scenario['mitre_tactic'])'"
+        $errors += "Field 'mitre_tactic' must be one of: $($VALID_TACTICS -join ', ') -- got: '$($Scenario['mitre_tactic'])'"
     }
 
     if ($Scenario['platform'] -and $Scenario['platform'] -notin $VALID_PLATFORMS) {
-        $errors += "Field 'platform' must be one of: $($VALID_PLATFORMS -join ', ') — got: '$($Scenario['platform'])'"
+        $errors += "Field 'platform' must be one of: $($VALID_PLATFORMS -join ', ') -- got: '$($Scenario['platform'])'"
     }
 
     # ── Steps validation ──────────────────────────────────────────────────────
