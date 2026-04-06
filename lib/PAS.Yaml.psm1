@@ -56,15 +56,33 @@ function Parse-YamlValue {
         $fold = ($v -eq '>')
         $script:_yaml_pos++
         $blockLines = @()
+        $inHereStr  = $false
+        $hereStrEnd = $null
+
         while ($script:_yaml_pos -lt $script:_yaml_lines.Count) {
-            $l = $script:_yaml_lines[$script:_yaml_pos]
-            if ($l.Trim() -eq '' -or (Get-Indent $l) -gt $BaseIndent) {
-                $blockLines += $l.TrimStart()  # strip base indent
+            $l        = $script:_yaml_lines[$script:_yaml_pos]
+            $lTrimmed = $l.TrimStart()
+            $lIndent  = Get-Indent $l
+
+            # Detect here-string opening on the current processed line
+            if (-not $inHereStr) {
+                if ($lTrimmed -match "@'`$")  { $inHereStr = $true; $hereStrEnd = "'@" }
+                elseif ($lTrimmed -match '@"$') { $inHereStr = $true; $hereStrEnd = '"@' }
+            }
+
+            if ($inHereStr -or $l.Trim() -eq '' -or $lIndent -gt $BaseIndent) {
+                # Zero-indent here-string content: keep as-is (col 0); otherwise strip leading indent
+                $blockLines += if ($inHereStr -and $lIndent -le $BaseIndent) { $l } else { $lTrimmed }
                 $script:_yaml_pos++
+
+                # Detect here-string close (terminator may be followed by pipeline, e.g. "@ | Set-Content)
+                if ($inHereStr -and $lTrimmed.StartsWith($hereStrEnd)) {
+                    $inHereStr = $false; $hereStrEnd = $null
+                }
             } else { break }
         }
         if ($fold) { return ($blockLines -join ' ').Trim() }
-        return ($blockLines -join "`n").TrimEnd()
+        return ($blockLines -join "`r`n").TrimEnd()
     }
 
     # Sequence inline: [a, b, c]
