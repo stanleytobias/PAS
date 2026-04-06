@@ -33,7 +33,7 @@ function New-PASReport {
         }
         $sigma    = if ($r.sigma_rule_path) { "<span class='sigma-tag'>Sigma</span>" } else { '' }
         $gapType  = if ($r.outcome.gap_type)        { "<span class='gap-type'>$($r.outcome.gap_type)</span>" } else { '' }
-        $detName  = if ($r.outcome.detection_name)  { $r.outcome.detection_name } else { '—' }
+        $detName  = if ($r.outcome.detection_name)  { $r.outcome.detection_name } else { '--' }
         $notes    = if ($r.outcome.notes)            { $r.outcome.notes }           else { '' }
         $modeTag  = if ($r.mode -eq 'HUNT')     { "<span class='mode-tag hunt'>HUNT</span>" }
                     elseif ($r.mode -eq 'DRY-RUN') { "<span class='mode-tag dry'>DRY</span>" }
@@ -84,7 +84,7 @@ function New-PASReport {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PAS — Detection Coverage</title>
+<title>PAS -- Detection Coverage</title>
 <style>
 :root {
   --bg:       #0d1117; --surface:  #161b22; --border:   #30363d;
@@ -149,7 +149,7 @@ td.ts { color: var(--muted); font-size: 10px; white-space: nowrap; }
 </head>
 <body>
 
-<h1>PAS — Detection Coverage Report</h1>
+<h1>PAS -- Detection Coverage Report</h1>
 <div class="sub">Generated: $generatedAt &nbsp;·&nbsp; $ResultsDir</div>
 
 <div class="summary">
