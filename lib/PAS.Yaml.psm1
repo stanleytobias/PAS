@@ -159,7 +159,7 @@ function Parse-YamlSequence {
                 if ($null -ne $nextLine -and $nextIndent -gt $Indent) {
                     $seq += , (Parse-YamlMapping -Indent $nextIndent)
                 }
-            } elseif ($itemValue -match '^([^:#]+):\s*(.*)$') {
+            } elseif ($itemValue -notmatch '^["\x27]' -and $itemValue -match '^([^:#]+):\s*(.*)$') {
                 # Inline mapping: "- key: value" with possible continuation keys
                 $inlineKey   = $Matches[1].Trim()
                 $inlineValue = $Matches[2].Trim()
