@@ -45,7 +45,8 @@ function Test-PASSchema {
         $errors += "Field 'mitre_technique' must match T#### or T####.### — got: '$($Scenario['mitre_technique'])'"
     }
 
-    if ($Scenario['mitre_tactic'] -and $Scenario['mitre_tactic'] -notin $VALID_TACTICS) {
+    $tacticNorm = ($Scenario['mitre_tactic'] -replace '_', '-')
+    if ($Scenario['mitre_tactic'] -and $tacticNorm -notin $VALID_TACTICS) {
         $errors += "Field 'mitre_tactic' must be one of: $($VALID_TACTICS -join ', ') — got: '$($Scenario['mitre_tactic'])'"
     }
 
