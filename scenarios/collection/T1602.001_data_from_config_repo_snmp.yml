@@ -1,0 +1,89 @@
+id: T1602.001_data_from_configuration_repository_snmp
+name: "Data from Configuration Repository — SNMP (MIB Dump)"
+mitre_technique: "T1602.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries query network devices via SNMP to extract Management Information Base
+  (MIB) data — including network topology, interface configurations, routing tables,
+  ARP caches, and connected device information. With a known community string (often
+  the default "public"), an adversary can walk the entire MIB of a switch, router,
+  or firewall using snmpwalk. This provides a complete network map without touching
+  individual hosts. Detection relies on SNMP query volume and source IP anomalies.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1602/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1602.001 — SNMP MIB Dump simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check if SNMP service is running and accessible"
+    command: |
+      Write-Host "[PAS] SNMP service check:"
+      $snmpSvc = Get-Service -Name SNMP -ErrorAction SilentlyContinue
+      $snmpTrap = Get-Service -Name SNMPTRAP -ErrorAction SilentlyContinue
+      Write-Host "  SNMP service: $(if ($snmpSvc) { $snmpSvc.Status } else { 'Not installed' })"
+      Write-Host "  SNMP Trap: $(if ($snmpTrap) { $snmpTrap.Status } else { 'Not installed' })"
+
+      # Test SNMP port 161 UDP
+      try {
+          $udp = New-Object System.Net.Sockets.UdpClient
+          $udp.Connect("127.0.0.1", 161)
+          $udp.Close()
+          Write-Host "  SNMP UDP 161: accessible"
+      } catch { Write-Host "  SNMP UDP 161: not accessible" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate SNMP GET-BULK walk — generates SNMP query telemetry to loopback"
+    command: |
+      Write-Host "[PAS] Simulating SNMP MIB walk (loopback):"
+      Write-Host "[PAS] Real attack: snmpwalk -v2c -c public 192.168.1.1 .1.3.6.1"
+      Write-Host "[PAS] Retrieves: sysDescr, ifTable, ipAddrTable, ipRouteTable, arpCache"
+
+      # Generate UDP 161 traffic to loopback — SNMP GetRequest packet
+      try {
+          $udp = New-Object System.Net.Sockets.UdpClient
+          # Minimal SNMP v1 GetRequest for sysDescr OID
+          $snmpGetReq = [byte[]](
+              0x30, 0x26, 0x02, 0x01, 0x00,           # SEQUENCE, version=0 (v1)
+              0x04, 0x06, 0x70, 0x75, 0x62, 0x6c, 0x69, 0x63, # community="public"
+              0xa0, 0x19, 0x02, 0x04, 0x00, 0x00, 0x00, 0x01, # GetRequest, request-id
+              0x02, 0x01, 0x00, 0x02, 0x01, 0x00,      # error-status, error-index
+              0x30, 0x0b, 0x30, 0x09, 0x06, 0x05,      # VarBindList
+              0x2b, 0x06, 0x01, 0x02, 0x01, 0x05, 0x00) # sysDescr OID
+          $udp.Send($snmpGetReq, $snmpGetReq.Length, "127.0.0.1", 161) | Out-Null
+          $udp.Close()
+          Write-Host "[PAS] SNMP GetRequest packet sent to 127.0.0.1:161"
+      } catch { Write-Host "[PAS] SNMP probe complete (expected no response)" }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SNMP UDP 161 queries from unexpected source, bulk SNMP walk pattern"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1602.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: SNMP GET-BULK requests from non-management source IP on UDP 161"
+  - "Network event: rapid sequential SNMP queries (MIB walk pattern) from single source"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 161 and Protocol == 'Udp' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'SNMP MIB enumeration from unexpected host'"
+  - "CONTROL CHECK: Change default SNMP community string from 'public' — use complex random string"
+  - "CONTROL CHECK: Restrict SNMP access via ACL to management station IPs only"
+  - "CONTROL CHECK: Upgrade to SNMPv3 with authentication and encryption — v1/v2c credentials are cleartext"

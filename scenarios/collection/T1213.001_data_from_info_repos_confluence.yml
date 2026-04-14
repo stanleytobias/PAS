@@ -1,0 +1,68 @@
+id: T1213.001_data_from_info_repositories_confluence
+name: "Data from Information Repositories — Confluence"
+mitre_technique: "T1213.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries access Confluence wikis to harvest sensitive organisational knowledge:
+  network diagrams, runbooks, credential documentation, internal procedures, and
+  technical architecture. A single Confluence space with 'All Users' read access can
+  contain years of sensitive operational documentation. Adversaries use the Confluence
+  REST API with stolen credentials or session tokens to programmatically download
+  all pages from target spaces. Detection relies on Confluence audit logs showing
+  bulk page exports or API access from unusual sources.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1213/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1213.001 — Confluence: adversary harvests wiki pages using REST API with stolen credentials"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Confluence REST API bulk export pattern"
+    command: |
+      Write-Host "[PAS] Confluence API collection pattern (loopback):"
+      Write-Host "[PAS] Real: GET /wiki/rest/api/content?type=page&limit=100&start=0"
+
+      try {
+          $req = [System.Net.WebRequest]::Create("http://127.0.0.1:8090/wiki/rest/api/content?type=page&limit=100")
+          $req.Headers.Add("Authorization", "Basic $(
+              [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('admin:password')))")
+          $req.Timeout = 500
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Confluence API query telemetry generated"
+
+  - step: 3
+    type: marker
+    description: "Confluence audit check"
+    message: "CONTROL CHECK: Enable Confluence audit logging — track page views, space exports, and API access. Alert on >50 page accesses in 5 minutes from single IP."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Confluence audit log — bulk page access, space export, API token usage from unexpected IP"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1213.001 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Confluence audit: >50 page views in 5 minutes from single user/IP"
+  - "Confluence audit: Space export triggered — exports entire space as zip"
+  - "Network event: HTTP GET to /wiki/rest/api/content with pagination (start=0, start=100...)"
+  - "CONTROL CHECK: Restrict Confluence space visibility — 'All Users' access on sensitive spaces is over-permissive"
+  - "CONTROL CHECK: Enable Confluence audit logging and forward to SIEM"
+  - "CONTROL CHECK: API token governance — review all active API tokens quarterly"

@@ -1,0 +1,83 @@
+id: T1530_data_from_cloud_storage
+name: "Data from Cloud Storage"
+mitre_technique: "T1530"
+mitre_tactic: "collection"
+description: >
+  Adversaries access data stored in cloud storage services (Azure Blob, AWS S3,
+  Google Cloud Storage, OneDrive, SharePoint) using stolen credentials or
+  overly-permissive access controls. Common methods: using az CLI or AWS CLI with
+  stolen service principal credentials, accessing misconfigured public S3 buckets,
+  or using a compromised user account with Microsoft Graph API to download files from
+  OneDrive/SharePoint. Detection relies on cloud audit logs showing bulk data access,
+  access from unusual locations, or access by service accounts at unusual times.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1530/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1530 — Cloud Storage Collection: adversary downloads data from Azure Blob/OneDrive/S3 using stolen credentials"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for cloud storage tools and credentials on this host"
+    command: |
+      Write-Host "[PAS] Cloud storage credential check:"
+      $cloudTools = @{
+          "Azure CLI"   = "az"
+          "AWS CLI"     = "aws"
+          "AzCopy"      = "azcopy"
+          "OneDrive"    = "OneDrive.exe"
+      }
+      foreach ($tool in $cloudTools.Keys) {
+          $cmd = Get-Command $cloudTools[$tool] -ErrorAction SilentlyContinue
+          if ($cmd) { Write-Host "  FOUND: $tool ($($cmd.Source))" }
+      }
+
+      # Check for cached cloud credentials
+      $credPaths = @(
+          "$env:USERPROFILE\.azure",
+          "$env:USERPROFILE\.aws",
+          "$env:APPDATA\Microsoft\UserSecrets"
+      )
+      foreach ($p in $credPaths) {
+          if (Test-Path $p) { Write-Host "  Credential cache: $p" }
+      }
+
+  - step: 3
+    type: marker
+    description: "Cloud storage access audit"
+    message: "CONTROL CHECK: Azure — Storage Diagnostic Logs must be enabled. Run: Get-AzStorageAccountDiagnosticSetting. Alert on bulk downloads (>100 files) in short window."
+
+  - step: 4
+    type: marker
+    description: "S3 misconfiguration check"
+    message: "CONTROL CHECK: S3 — run AWS Trusted Advisor or Security Hub to detect publicly accessible buckets. All buckets should have 'Block Public Access' = true."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — StorageBlobLogs | where OperationName == 'GetBlob' | summarize count() by CallerIpAddress, bin(TimeGenerated,1m) | where count_ > 50"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1530 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: StorageBlobLogs | where OperationName == 'GetBlob' | summarize count() by CallerIpAddress, bin(TimeGenerated,5m) | where count_ > 100"
+  - "Sentinel: AuditLogs | where OperationName == 'Download' and Category == 'OneDrive' — bulk OneDrive download"
+  - "MDE: Defender for Cloud Apps — alert on 'Mass download' activity from M365"
+  - "CONTROL CHECK: Conditional Access — service principal access to storage should be from known IP ranges only"
+  - "CONTROL CHECK: Storage account network rules — restrict access to approved VNets and IPs"
+  - "CONTROL CHECK: Immutable storage and soft-delete — limits damage from bulk deletion after collection"

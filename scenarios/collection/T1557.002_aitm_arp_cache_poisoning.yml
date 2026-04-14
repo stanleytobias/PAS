@@ -1,0 +1,89 @@
+id: T1557.002_aitm_arp_cache_poisoning
+name: "Adversary-in-the-Middle — ARP Cache Poisoning"
+mitre_technique: "T1557.002"
+mitre_tactic: "collection"
+description: >
+  Adversaries poison the ARP cache of target hosts by sending gratuitous ARP replies
+  that associate the adversary's MAC address with a victim's IP address. Once the
+  ARP cache is poisoned, traffic intended for the victim is redirected to the adversary,
+  enabling network sniffing, credential capture, and traffic manipulation. Common tools:
+  arpspoof, ettercap, bettercap. This scenario simulates ARP poisoning telemetry and
+  validates ARP inspection and dynamic ARP inspection (DAI) controls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1557/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1557.002 — ARP Cache Poisoning simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Display current ARP cache — establish baseline"
+    command: |
+      Write-Host "[PAS] Current ARP cache (baseline):"
+      arp -a 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate ARP poisoning — inject fake static ARP entry"
+    command: |
+      Write-Host "[PAS] Simulating ARP cache poisoning:"
+      Write-Host "[PAS] Real attack: send gratuitous ARP reply mapping victim IP to attacker MAC"
+
+      # Add a static ARP entry (simulates a poisoned cache entry)
+      # Use a non-routable test IP to avoid affecting real traffic
+      $testIP  = "169.254.100.100"   # Link-local — safe test IP
+      $fakeMac = "00-50-56-AA-BB-CC" # VMware-range MAC (obviously fake)
+      arp -s $testIP $fakeMac 2>&1 | Out-Null
+      Write-Host "[PAS] Static ARP entry added: $testIP -> $fakeMac"
+      Write-Host "[PAS] Real attack: victim's IP -> attacker's MAC -> traffic redirected"
+
+      # Show the injected entry
+      arp -a | Select-String $testIP | ForEach-Object { Write-Host "  $($_.Line)" }
+
+  - step: 4
+    type: exec_powershell
+    description: "Verify ARP cache state and check for static entries"
+    command: |
+      Write-Host "[PAS] ARP cache static entries (poisoning indicators):"
+      arp -a 2>&1 | Select-String "static" | ForEach-Object {
+          Write-Host "  STATIC: $($_.Line.Trim())"
+      }
+      Write-Host "[PAS] Static ARP entries from unknown sources are always suspicious"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ARP cache modification events, static ARP entries for non-management IPs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove poisoned ARP entry"
+    command: |
+      arp -d 169.254.100.100 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Fake ARP entry removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1557.002 cleanup complete"
+
+analyst_checklist:
+  - "Network event: gratuitous ARP replies from unexpected source MACs"
+  - "Network event: ARP reply where sender IP is the gateway but MAC differs from known gateway MAC"
+  - "MDE: DeviceNetworkEvents — ARP traffic anomalies (requires NDR/network monitoring)"
+  - "Sentinel: NetworkSession | where SrcMacAddr != known_gateway_mac and DestIpAddr == gateway_ip"
+  - "CONTROL CHECK: Enable Dynamic ARP Inspection (DAI) on managed switches — validates ARP against DHCP snooping table"
+  - "CONTROL CHECK: Static ARP entries for critical infrastructure (gateway, DNS) prevent poisoning of those entries"
+  - "CONTROL CHECK: 802.1X port authentication limits which devices can inject traffic on the network"

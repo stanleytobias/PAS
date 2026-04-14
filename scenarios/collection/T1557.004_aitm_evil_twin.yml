@@ -1,0 +1,70 @@
+id: T1557.004_aitm_evil_twin
+name: "Adversary-in-the-Middle — Evil Twin"
+mitre_technique: "T1557.004"
+mitre_tactic: "collection"
+description: >
+  Adversaries create a rogue Wi-Fi access point with the same SSID as a legitimate
+  corporate or public network. Victim devices that auto-connect to known SSIDs will
+  connect to the adversary's AP, routing all their traffic through the attacker.
+  This enables credential capture (especially on HTTP or proxied HTTPS), network
+  sniffing, and session hijacking. Requires physical proximity to the target.
+  No host-side simulation is possible — detection is wireless-infrastructure driven.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1557/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1557.004 — Evil Twin: rogue AP with same SSID as corporate WiFi intercepts connecting clients"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check current wireless connections and saved profiles"
+    command: |
+      Write-Host "[PAS] Wireless connection audit:"
+      $connected = netsh wlan show interfaces 2>&1 | Select-String "SSID|Authentication|Signal"
+      $connected | ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+      Write-Host "[PAS] Saved profiles (targets for evil twin):"
+      netsh wlan show profiles 2>&1 | Select-String "All User Profile" |
+          ForEach-Object {
+              $name = ($_.Line -split ':')[1].Trim()
+              Write-Host "  Profile: '$name' — adversary can create AP with this SSID"
+          }
+
+  - step: 3
+    type: marker
+    description: "WIPS control check"
+    message: "CONTROL CHECK: Wireless Intrusion Prevention System (WIPS) — detects duplicate SSIDs with different BSSID. Configure alerts for evil twin detection."
+
+  - step: 4
+    type: marker
+    description: "Certificate-based auth check"
+    message: "CONTROL CHECK: Use WPA3-Enterprise with EAP-TLS certificate authentication — device validates AP certificate, preventing connection to evil twins without the CA-signed cert."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check WIPS console — duplicate SSID alerts, clients connecting to unknown BSSID"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1557.004 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "WIPS alert: duplicate SSID detected with different BSSID/MAC address"
+  - "Network event: client connecting to AP with different BSSID than usual for same SSID"
+  - "CONTROL CHECK: WPA3-Enterprise + EAP-TLS: certificate validation defeats evil twin"
+  - "CONTROL CHECK: Remove saved personal/hotel/conference WiFi profiles — reduces attack surface"
+  - "CONTROL CHECK: Always-On VPN: even if connected to evil twin, all traffic encrypted to corporate VPN"

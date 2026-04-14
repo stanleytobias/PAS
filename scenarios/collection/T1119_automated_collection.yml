@@ -1,0 +1,108 @@
+id: T1119_automated_collection
+name: "Automated Collection"
+mitre_technique: "T1119"
+mitre_tactic: "collection"
+description: >
+  Adversaries use scripts or tools to automatically search, filter, and copy files
+  of interest across the file system. Rather than manually browsing, automated
+  collection uses criteria like file extension, modification date, keyword in filename,
+  or file size to rapidly gather relevant data. Common tools: PowerShell (Get-ChildItem
+  with filters), robocopy, xcopy, and custom Python/bash scripts. This generates
+  high-volume file access and copy events that can be detected by file monitoring.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1119/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1119 — Automated Collection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate automated file search by extension — high-value file discovery"
+    command: |
+      Write-Host "[PAS] Automated collection — searching for high-value file types:"
+      $targetExtensions = @("*.docx","*.xlsx","*.pdf","*.pst","*.kdbx","*.key","*.pfx","*.p12")
+      $stagingDir = "$env:TEMP\PAS_T1119_collected"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+
+      $found = 0
+      foreach ($ext in $targetExtensions) {
+          $files = Get-ChildItem $env:USERPROFILE -Filter $ext -Recurse `
+              -ErrorAction SilentlyContinue | Select-Object -First 2
+          foreach ($f in $files) {
+              Write-Host "[PAS] Found: $($f.FullName) ($($f.Length) bytes)"
+              $found++
+          }
+      }
+      Write-Host "[PAS] Auto-collection scan complete — $found files matching target extensions"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate keyword-based file search — find credential files"
+    command: |
+      Write-Host "[PAS] Keyword search simulation (password/credential files):"
+      $keywords = @("password","credential","secret","token","key","private")
+      foreach ($kw in $keywords) {
+          $matches = Get-ChildItem $env:USERPROFILE -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match $kw -and !$_.PSIsContainer } |
+              Select-Object -First 1
+          if ($matches) {
+              Write-Host "[PAS] Keyword hit '$kw': $($matches.FullName)"
+          }
+      }
+      Write-Host "[PAS] Keyword file scan complete"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate bulk copy to staging — robocopy pattern"
+    command: |
+      $stagingDir = "$env:TEMP\PAS_T1119_collected"
+      $dummyFile  = "$env:TEMP\PAS_T1119_sample.docx"
+      Set-Content $dummyFile "PAS-T1119-SAMPLE-DOC"
+
+      # robocopy-style copy to staging
+      Copy-Item $dummyFile $stagingDir -Force
+      Write-Host "[PAS] File staged to: $stagingDir"
+      Write-Host "[PAS] Real attack: robocopy /E /Z /LOG:log.txt source staging"
+
+      $stagedCount = (Get-ChildItem $stagingDir -Recurse -ErrorAction SilentlyContinue |
+          Measure-Object).Count
+      Write-Host "[PAS] Total staged files: $stagedCount"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — high volume Get-ChildItem/robocopy across user directories, bulk file copies to staging"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove collection staging directory and sample"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1119_collected" -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1119_sample.docx" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Auto-collection artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1119 cleanup complete"
+
+analyst_checklist:
+  - "File event: high-volume recursive file access across user directories in short time window"
+  - "Process event: robocopy.exe or xcopy.exe with /E /S flags targeting sensitive directories"
+  - "Sentinel: DeviceFileEvents | summarize count() by InitiatingProcessFileName, bin(TimeGenerated,1m) | where count_ > 100"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'robocopy.exe' and ProcessCommandLine contains '/E'"
+  - "MDE alert: 'Suspicious bulk file copy' or 'Mass file access detected'"
+  - "CONTROL CHECK: File access auditing on sensitive directories — alert on >50 file opens in 60 seconds from non-backup process"
+  - "CONTROL CHECK: DLP policy should flag bulk copy of sensitive file types (.docx, .xlsx, .pst) to staging locations"

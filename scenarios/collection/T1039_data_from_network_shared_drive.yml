@@ -1,0 +1,94 @@
+id: T1039_data_from_network_shared_drive
+name: "Data from Network Shared Drive"
+mitre_technique: "T1039"
+mitre_tactic: "collection"
+description: >
+  Adversaries enumerate and copy data from network file shares accessible from the
+  compromised host. This includes SMB shares (\\server\share), NFS mounts, and DFS
+  namespaces. Network shares often contain shared documents, scripts with hardcoded
+  credentials, backup files, and IT configuration data. Adversaries use net use to
+  connect, then robocopy or xcopy for bulk collection. Event ID 5140 (network share
+  access) and 5145 (share object access) provide detection telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1039/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1039 — Data from Network Shared Drive simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate accessible network shares — discovery phase"
+    command: |
+      Write-Host "[PAS] Network share enumeration:"
+      # Enumerate shares on local machine (simulates discovering shares on a target)
+      net share 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Current net use connections:"
+      net use 2>&1 | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Connect to loopback share and enumerate files"
+    command: |
+      Write-Host "[PAS] Connecting to local IPC$ share (simulates lateral SMB access):"
+      net use \\127.0.0.1\IPC$ 2>&1 | Out-Null
+      Write-Host "[PAS] SMB connection to 127.0.0.1 — Event ID 5140 generated"
+
+      # Enumerate ADMIN$ share (accessible to local admins)
+      Write-Host "[PAS] Enumerating accessible shares on localhost:"
+      $shares = Get-WmiObject Win32_Share -ErrorAction SilentlyContinue
+      foreach ($share in $shares) {
+          Write-Host "  Share: \\127.0.0.1\$($share.Name) ($($share.Type))"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate bulk copy from network share to staging"
+    command: |
+      Write-Host "[PAS] Bulk network share copy simulation:"
+      Write-Host "[PAS] Real: robocopy \\\\fileserver\\departments\\Finance staging\ /E /COPYALL"
+
+      $stagingDir = "$env:TEMP\PAS_T1039_staging"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+      Set-Content "$stagingDir\PAS_collected.txt" "PAS-T1039-NETWORK-SHARE-DATA"
+      Write-Host "[PAS] Files staged to: $stagingDir"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 5140 (share accessed), 5145 (share object checked), bulk file copies from UNC paths"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Disconnect share and remove staging"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Remove-Item "$env:TEMP\PAS_T1039_staging" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Share connection and staging removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1039 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 5140: A network share object was accessed — enables share access auditing"
+  - "Event ID 5145: A network share object was checked — file-level share access"
+  - "Sentinel: SecurityEvent | where EventID == 5140 and ShareName !contains 'IPC$' and SubjectUserName !contains '$'"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 445 and ActionType == 'ConnectionSuccess' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Bulk file copy from network share'"
+  - "CONTROL CHECK: Enable 'Audit File Share' GPO — Event ID 5140/5145 require explicit audit policy"
+  - "CONTROL CHECK: Share permissions follow least privilege — Finance share accessible only to Finance team"
+  - "CONTROL CHECK: SMB signing enforced — prevents relay attacks alongside share access monitoring"

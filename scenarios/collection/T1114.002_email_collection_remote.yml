@@ -1,0 +1,87 @@
+id: T1114.002_email_collection_remote
+name: "Email Collection — Remote Email Collection"
+mitre_technique: "T1114.002"
+mitre_tactic: "collection"
+description: >
+  Adversaries access Exchange Server or M365/Exchange Online remotely using stolen
+  credentials or access tokens to collect email. Methods include: EWS (Exchange Web
+  Services) API with Invoke-WebRequest or MailSniper, Microsoft Graph API
+  (GET /v1.0/me/messages), and PowerShell Exchange remoting. Graph API access is
+  particularly stealthy — it uses standard HTTPS and blends with legitimate
+  application traffic. Detection relies on M365 Unified Audit Log (UAL) and
+  Defender for Cloud Apps anomaly detection.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1114/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1114.002 — Remote Email Collection simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Exchange Web Services (EWS) email harvest — loopback"
+    command: |
+      Write-Host "[PAS] EWS email collection pattern (loopback):"
+      Write-Host "[PAS] Real: POST /EWS/Exchange.asmx with FindItem/GetItem SOAP"
+      try {
+          $req  = [System.Net.WebRequest]::Create("https://127.0.0.1/EWS/Exchange.asmx")
+          $req.Method      = "POST"
+          $req.ContentType = "text/xml; charset=utf-8"
+          $req.Headers.Add("SOAPAction", "http://schemas.microsoft.com/exchange/services/2006/messages/FindItem")
+          $req.ServerCertificateValidationCallback = { $true }
+          $req.Timeout = 500
+          $body = '<?xml version="1.0"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"></soap:Envelope>'
+          $bytes = [Text.Encoding]::UTF8.GetBytes($body)
+          $s = $req.GetRequestStream(); $s.Write($bytes,0,$bytes.Length); $s.Close()
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] EWS SOAP request to loopback:443 generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Graph API mail harvest — GET /v1.0/me/messages"
+    command: |
+      Write-Host "[PAS] Graph API email collection pattern (loopback):"
+      $graphEndpoints = @(
+          "http://127.0.0.1/v1.0/me/messages?`$select=subject,from,body&`$top=100",
+          "http://127.0.0.1/v1.0/users/victim@company.com/messages?`$top=100",
+          "http://127.0.0.1/v1.0/me/mailFolders/inbox/messages"
+      )
+      foreach ($ep in $graphEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization", "Bearer PAS_FAKE_GRAPH_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Graph mail query: $ep"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — OfficeActivity MailItemsAccessed events, Graph /messages queries from non-Outlook process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1114.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: OfficeActivity | where Operation == 'MailItemsAccessed' and ClientInfoString !contains 'Outlook' | summarize count() by UserId"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'graph.microsoft.com' and RemoteUrl contains '/messages' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Defender for Cloud Apps: M365 connected — alert on 'Unusual email read activity'"
+  - "CONTROL CHECK: Enable M365 Unified Audit Log — MailItemsAccessed requires E5 or Audit Premium licence"
+  - "CONTROL CHECK: Graph API app permissions — Mail.Read is sensitive; audit all apps with this permission"
+  - "CONTROL CHECK: Conditional Access — block EWS legacy auth; force modern auth only"

@@ -1,0 +1,95 @@
+id: T1074.001_data_staged_local
+name: "Data Staged — Local Data Staging"
+mitre_technique: "T1074.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries consolidate collected data into a central staging location on the local
+  system prior to exfiltration. The staging directory aggregates files from multiple
+  sources into one location for efficient bulk transfer. Common staging locations:
+  hidden directories in TEMP, AppData, ProgramData, or the recycler bin. Adversaries
+  may rename files to blend in or use random names. Detection relies on identifying
+  directories with disproportionate file counts appearing in unusual locations.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1074/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1074.001 — Local Data Staging simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create hidden staging directory and populate with collected files"
+    command: |
+      # Create hidden staging directory
+      $stagingDir = "$env:TEMP\PAS_T1074_001_stage"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+      (Get-Item $stagingDir).Attributes = 'Hidden,Directory'
+      Write-Host "[PAS] Hidden staging directory created: $stagingDir"
+
+      # Simulate collecting from multiple sources into staging
+      $sources = @{
+          "documents"  = "PAS-T1074.001-DOC-CONTENT"
+          "emails.pst" = "PAS-T1074.001-EMAIL-ARCHIVE"
+          "config.xml" = "PAS-T1074.001-CONFIG-DATA"
+          "creds.txt"  = "PAS-T1074.001-CREDENTIAL-DATA"
+      }
+      foreach ($file in $sources.Keys) {
+          $sources[$file] | Set-Content "$stagingDir\$file"
+      }
+      Write-Host "[PAS] Staged $($sources.Count) files in hidden directory"
+      Write-Host "[PAS] Total staging size: $((Get-ChildItem $stagingDir | Measure-Object -Property Length -Sum).Sum) bytes"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate staging in Recycle Bin — common adversary hiding spot"
+    command: |
+      Write-Host "[PAS] Recycle Bin staging pattern:"
+      $recycleStage = "C:\`$RECYCLE.BIN\PAS_T1074_001_hidden"
+      New-Item -ItemType Directory $recycleStage -Force -ErrorAction SilentlyContinue | Out-Null
+      "PAS-T1074.001-RECYCLE-STAGE" | Set-Content "$recycleStage\data.bin" -ErrorAction SilentlyContinue
+      Write-Host "[PAS] Staging in Recycle Bin: $recycleStage"
+      Write-Host "[PAS] Files in Recycle Bin are hidden from normal directory listings"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — hidden directory created in TEMP/AppData, unusual file concentration in single directory"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove staging directories"
+    command: |
+      $stagingDir = "$env:TEMP\PAS_T1074_001_stage"
+      # Remove hidden attribute first for reliable deletion
+      if (Test-Path $stagingDir) {
+          (Get-Item $stagingDir -Force).Attributes = 'Directory'
+          Remove-Item $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+      }
+      Remove-Item "C:\`$RECYCLE.BIN\PAS_T1074_001_hidden" -Recurse -Force `
+          -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Staging directories removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1074.001 cleanup complete"
+
+analyst_checklist:
+  - "File event: large number of files copied to single directory in TEMP/AppData within short window"
+  - "File event: hidden directory created in TEMP containing files from diverse source paths"
+  - "File event: files written to C:\\$RECYCLE.BIN by non-Explorer process"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'RECYCLE.BIN' and InitiatingProcessFileName != 'explorer.exe'"
+  - "Sentinel: DeviceFileEvents | summarize FileCount=count() by FolderPath, InitiatingProcessFileName, bin(TimeGenerated,5m) | where FileCount > 20"
+  - "MDE alert: 'Data staging detected — unusual file aggregation'"
+  - "CONTROL CHECK: DLP policy should detect bulk file staging before exfiltration"

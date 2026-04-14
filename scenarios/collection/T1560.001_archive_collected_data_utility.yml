@@ -1,0 +1,111 @@
+id: T1560.001_archive_collected_data_utility
+name: "Archive Collected Data — Archive via Utility"
+mitre_technique: "T1560.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries use utilities such as 7-Zip, WinRAR, zip.exe, or tar to compress and
+  optionally encrypt collected data prior to exfiltration. Compression reduces transfer
+  size; encryption hides content from network inspection. Common patterns: 7z.exe a
+  archive.7z -p<password> staging\*, rar.exe a -hp<password> archive.rar staging\*.
+  The archive tool process event and the resulting archive file in a staging directory
+  are key detection points.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1560/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1560.001 — Archive via Utility simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create staged data and compress with built-in Compress-Archive"
+    command: |
+      # Create a staging directory with dummy data files
+      $stagingDir = "$env:TEMP\PAS_T1560_001_staging"
+      $archivePath = "$env:TEMP\PAS_T1560_001_exfil.zip"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+
+      # Create dummy collected files (simulating sensitive data)
+      "PAS-T1560.001-SENSITIVE-DOC-CONTENT" | Set-Content "$stagingDir\financials.xlsx"
+      "PAS-T1560.001-CREDENTIALS-FILE"       | Set-Content "$stagingDir\passwords.txt"
+      "PAS-T1560.001-SOURCE-CODE"             | Set-Content "$stagingDir\source.zip"
+
+      # Compress with PowerShell (built-in, no external tool needed)
+      Compress-Archive -Path "$stagingDir\*" -DestinationPath $archivePath -Force
+      Write-Host "[PAS] Archive created: $archivePath"
+      Write-Host "[PAS] Size: $((Get-Item $archivePath).Length) bytes"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate 7-Zip password-protected archive (common adversary pattern)"
+    command: |
+      $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
+      $stagingDir  = "$env:TEMP\PAS_T1560_001_staging"
+      $archivePath = "$env:TEMP\PAS_T1560_001_exfil_enc.7z"
+
+      if ($sevenZip) {
+          Write-Host "[PAS] 7-Zip found — creating password-protected archive:"
+          & 7z a -tzip -pPAS_T1560_001_password $archivePath "$stagingDir\*" 2>&1 | Out-Null
+          Write-Host "[PAS] Encrypted 7z archive created: $archivePath"
+      } else {
+          Write-Host "[PAS] 7-Zip not installed — simulating process event only:"
+          Start-Process cmd.exe -ArgumentList `
+              "/c echo 7z a -tzip -ppassword exfil.7z staging\*" `
+              -Wait -NoNewWindow -ErrorAction SilentlyContinue
+          Write-Host "[PAS] 7z.exe process event pattern generated"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate WinRAR archive creation pattern"
+    command: |
+      Write-Host "[PAS] WinRAR archiving pattern:"
+      Write-Host "[PAS] Real command: rar.exe a -hp<password> -r -m5 exfil.rar C:\staging\*"
+      $rar = Get-Command rar -ErrorAction SilentlyContinue
+      if ($rar) {
+          & rar a "$env:TEMP\PAS_T1560_001_exfil.rar" "$env:TEMP\PAS_T1560_001_staging\*" `
+              2>&1 | Out-Null
+          Write-Host "[PAS] RAR archive created"
+      } else {
+          Write-Host "[PAS] WinRAR not installed — pattern documented only"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — 7z.exe/rar.exe/Compress-Archive with staging directory, password-protected archive creation"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove staging directory and archives"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1560_001_staging"    -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_001_exfil.zip"  -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_001_exfil_enc.7z" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_001_exfil.rar"  -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Archive simulation files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1560.001 cleanup complete"
+
+analyst_checklist:
+  - "Process event: 7z.exe, rar.exe, or zip.exe with password flag (-p or -hp) on staging directory"
+  - "File event: large archive (.zip, .7z, .rar) created in TEMP or staging directory"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('7z.exe','rar.exe','WinRAR.exe') and ProcessCommandLine contains '-p'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.7z' or FileName endswith '.rar' and FolderPath contains 'Temp'"
+  - "MDE alert: 'Data compressed prior to exfiltration'"
+  - "CONTROL CHECK: DLP policy should flag large archive files created in user-writable locations"
+  - "CONTROL CHECK: Monitor Compress-Archive in script block logs — large PowerShell compression is unusual"

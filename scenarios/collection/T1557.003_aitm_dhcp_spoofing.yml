@@ -1,0 +1,91 @@
+id: T1557.003_aitm_dhcp_spoofing
+name: "Adversary-in-the-Middle — DHCP Spoofing"
+mitre_technique: "T1557.003"
+mitre_tactic: "collection"
+description: >
+  Adversaries act as a rogue DHCP server on the victim network, responding to DHCP
+  requests before the legitimate server. By providing adversary-controlled DNS server
+  and gateway addresses in DHCP responses, all victim traffic is routed through the
+  adversary. Unlike ARP poisoning (which targets specific hosts), DHCP spoofing affects
+  any new or renewing client on the network. Tools: bettercap, yersinia, Metasploit
+  DHCP exhaust module. Detection relies on DHCP snooping on managed switches and
+  monitoring for unexpected DHCP servers.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1557/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1557.003 — DHCP Spoofing simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate DHCP lease information — show what a victim receives"
+    command: |
+      Write-Host "[PAS] Current DHCP lease information (what could be spoofed):"
+      Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | ForEach-Object {
+          Write-Host "  Interface: $($_.InterfaceAlias)"
+          Write-Host "  DHCP Server: $($_.NetIPv4Interface | Get-NetIPInterface | Select-Object -ExpandProperty Dhcp)"
+          Write-Host "  Gateway: $($_.IPv4DefaultGateway.NextHop)"
+          Write-Host "  DNS Servers: $($_.DNSServer.ServerAddresses -join ', ')"
+      }
+
+      Write-Host "[PAS] DHCP spoofing attack would replace above with attacker-controlled values"
+      Write-Host "[PAS] Attacker gateway: 192.168.x.y (attacker) vs legitimate gateway"
+      Write-Host "[PAS] Attacker DNS: 192.168.x.y (attacker) — DNS hijacking all queries"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate rogue DHCP server probe — listen on DHCP port (UDP 67)"
+    command: |
+      Write-Host "[PAS] Simulating rogue DHCP server port binding:"
+      try {
+          $udp = New-Object System.Net.Sockets.UdpClient
+          $udp.Client.Bind([System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 67))
+          Write-Host "[PAS] UDP port 67 (DHCP server) bound — rogue server could listen here"
+          $udp.Close()
+      } catch {
+          Write-Host "[PAS] UDP 67 binding failed (expected — legitimate DHCP likely running): $($_.Exception.Message)"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Check for unauthorized DHCP servers on network"
+    command: |
+      Write-Host "[PAS] DHCP server detection check:"
+      Write-Host "[PAS] Authorized DHCP servers should be listed in AD (if domain-joined)"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          Write-Host "[PAS] Run on DC: Get-DhcpServerInDC to list authorized DHCP servers"
+          Write-Host "[PAS] Any DHCP server not in this list is rogue"
+      } else {
+          Write-Host "[PAS] Not domain-joined — use network monitoring to detect rogue DHCP"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check network monitoring — multiple DHCP servers responding, clients receiving unexpected gateway/DNS"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1557.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: DHCP OFFER from unexpected/unauthorized server IP on the network"
+  - "Event: client receiving DNS server address not matching approved corporate DNS"
+  - "Network monitoring: two DHCP servers answering on same VLAN"
+  - "CONTROL CHECK: Enable DHCP Snooping on managed switches — blocks DHCP responses from untrusted ports"
+  - "CONTROL CHECK: Authorize DHCP servers in AD (Get-DhcpServerInDC) — non-authorized servers are blocked"
+  - "CONTROL CHECK: Alert on new DHCP server appearing on network segment"

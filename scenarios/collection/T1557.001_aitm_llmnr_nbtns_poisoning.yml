@@ -1,0 +1,106 @@
+id: T1557.001_aitm_llmnr_nbtns_poisoning
+name: "Adversary-in-the-Middle — LLMNR/NBT-NS Poisoning and SMB Relay"
+mitre_technique: "T1557.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries respond to LLMNR (Link-Local Multicast Name Resolution) and NBT-NS
+  (NetBIOS Name Service) broadcast queries to spoof authoritative name resolution.
+  When a Windows host fails to resolve a name via DNS, it falls back to LLMNR/NBT-NS
+  broadcasts — any host can respond. The adversary replies with their own IP, causing
+  the victim to authenticate to the adversary's system and expose NTLMv2 credential
+  hashes. Tools like Responder automate this. The captured hashes can be cracked
+  offline or relayed to other services (SMB relay). This scenario generates the
+  LLMNR probe traffic and simulates the response pattern for telemetry validation.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1557/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1557.001 — LLMNR/NBT-NS Poisoning simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check LLMNR and NBT-NS status on this host — control validation"
+    command: |
+      Write-Host "[PAS] LLMNR status check:"
+      $llmnrKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient"
+      $llmnrOff = (Get-ItemProperty $llmnrKey -Name EnableMulticast `
+          -ErrorAction SilentlyContinue).EnableMulticast
+      if ($llmnrOff -eq 0) {
+          Write-Host "  [GOOD] LLMNR is DISABLED via policy"
+      } else {
+          Write-Host "  [RISK] LLMNR is ENABLED — susceptible to poisoning attacks"
+      }
+
+      Write-Host "[PAS] NetBIOS status check:"
+      Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue |
+          Where-Object { $_.IPEnabled } | ForEach-Object {
+              Write-Host "  Adapter: $($_.Description) — NetBIOS: $($_.TcpipNetbiosOptions)"
+              if ($_.TcpipNetbiosOptions -ne 2) {
+                  Write-Host "  [RISK] NetBIOS enabled (0=default/1=enabled, 2=disabled)"
+              }
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate LLMNR query — generates broadcast traffic that Responder would intercept"
+    command: |
+      Write-Host "[PAS] Simulating LLMNR name resolution failure (triggers broadcast):"
+      # Resolve a non-existent name — triggers LLMNR broadcast on the network
+      @("PAS-NONEXISTENT-HOST-T1557","fileserver001","backupshare") | ForEach-Object {
+          try {
+              [System.Net.Dns]::GetHostAddresses($_) | Out-Null
+          } catch {}
+          Write-Host "[PAS] Failed DNS resolution for '$_' — LLMNR broadcast would follow"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate SMB connection to spoofed host — credential capture trigger"
+    command: |
+      Write-Host "[PAS] Simulating SMB authentication to unresolved host:"
+      Write-Host "[PAS] Real attack: Responder answers LLMNR, victim's NTLM hash sent to attacker"
+      # net use to loopback with a non-existent share — generates Event ID 4648
+      net use \\127.0.0.1\PAS_T1557_001_share$ /user:PAS_testuser PAS-WrongPass 2>&1 | Out-Null
+      Write-Host "[PAS] SMB authentication attempt generated — NTLM challenge/response telemetry"
+      net use \\127.0.0.1\PAS_T1557_001_share$ /delete 2>&1 | Out-Null
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — LLMNR/mDNS traffic on UDP 5355, NBT-NS on UDP 137, Event ID 4648 for NTLM to unexpected host"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove any lingering network connections"
+    command: |
+      net use \\127.0.0.1\PAS_T1557_001_share$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Network connections cleaned"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1557.001 cleanup complete"
+
+analyst_checklist:
+  - "Network event: UDP 5355 (LLMNR) queries followed by responses from unexpected hosts"
+  - "Network event: UDP 137 (NBT-NS) broadcast traffic"
+  - "Event ID 4648: NTLM authentication attempt to unresolved/unexpected hostname"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 5355 and Protocol == 'Udp'"
+  - "Sentinel: SecurityEvent | where EventID == 4648 and TargetServerName !contains '.'"
+  - "MDE alert: 'LLMNR poisoning attempt detected' or 'Credential relay attack'"
+  - "CONTROL CHECK: Disable LLMNR via GPO: Computer Config > Admin Templates > Network > DNS Client > Turn off multicast name resolution = Enabled"
+  - "CONTROL CHECK: Disable NetBIOS via DHCP option 001 or adapter settings — set TcpipNetbiosOptions = 2"
+  - "CONTROL CHECK: Enable SMB signing — prevents relay even if hash is captured"
+  - "CONTROL CHECK: Defender for Identity detects Responder-style LLMNR poisoning on the network"

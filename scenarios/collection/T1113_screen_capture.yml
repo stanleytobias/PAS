@@ -1,0 +1,95 @@
+id: T1113_screen_capture
+name: "Screen Capture"
+mitre_technique: "T1113"
+mitre_tactic: "collection"
+description: >
+  Adversaries capture screenshots of the desktop to observe user activity, capture
+  credentials entered into applications, and gather situational awareness about the
+  victim's environment. Windows provides multiple APIs for screen capture:
+  Graphics.CopyFromScreen (.NET), PrintWindow (Win32), and BitBlt (GDI). Implants
+  take periodic screenshots and either store them locally for bulk exfiltration or
+  stream them to the C2. Detection relies on unexpected processes calling screen
+  capture APIs and screenshot files appearing in staging directories.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1113/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1113 — Screen Capture simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Capture screenshot via .NET CopyFromScreen — primary RAT method"
+    command: |
+      Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+      $screen     = [System.Windows.Forms.Screen]::PrimaryScreen
+      $bounds     = $screen.Bounds
+      $bitmap     = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+      $graphics   = [System.Drawing.Graphics]::FromImage($bitmap)
+      $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+
+      $screenshotPath = "$env:TEMP\PAS_T1113_screenshot.png"
+      $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+      $graphics.Dispose(); $bitmap.Dispose()
+
+      Write-Host "[PAS] Screenshot captured: $screenshotPath ($((Get-Item $screenshotPath).Length) bytes)"
+      Write-Host "[PAS] Resolution: $($bounds.Width)x$($bounds.Height)"
+      Write-Host "[PAS] CopyFromScreen API call generated — detectable via process API monitoring"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate periodic screenshot loop — interval-based capture"
+    command: |
+      Write-Host "[PAS] Periodic screenshot loop (3 captures, 1 second interval):"
+      Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+      1..3 | ForEach-Object {
+          $screen   = [System.Windows.Forms.Screen]::PrimaryScreen
+          $bounds   = $screen.Bounds
+          $bmp      = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $gfx      = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $path     = "$env:TEMP\PAS_T1113_screen_$_.png"
+          $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+          $gfx.Dispose(); $bmp.Dispose()
+          Write-Host "[PAS] Screenshot $_: $path"
+          Start-Sleep -Seconds 1
+      }
+      Write-Host "[PAS] Periodic capture complete"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — CopyFromScreen / BitBlt API calls from scripting process, .png files in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove screenshot files"
+    command: |
+      Get-ChildItem "$env:TEMP" -Filter "PAS_T1113_screen*.png" -ErrorAction SilentlyContinue |
+          Remove-Item -Force
+      Remove-Item "$env:TEMP\PAS_T1113_screenshot.png" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Screenshot files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1113 cleanup complete"
+
+analyst_checklist:
+  - "API: CopyFromScreen or BitBlt called by non-UI process (powershell.exe, cmd.exe)"
+  - "File event: .png or .bmp files created periodically in TEMP by scripting process"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.png' and FolderPath contains 'Temp' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Screen capture by non-UI process'"
+  - "CONTROL CHECK: Script block logging captures CopyFromScreen calls — visible even without file creation"
+  - "CONTROL CHECK: Application whitelisting limits which processes can call screen capture APIs"

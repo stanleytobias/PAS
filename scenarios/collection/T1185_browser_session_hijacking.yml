@@ -1,0 +1,110 @@
+id: T1185_browser_session_hijacking
+name: "Browser Session Hijacking"
+mitre_technique: "T1185"
+mitre_tactic: "collection"
+description: >
+  Adversaries steal browser session cookies to authenticate to web applications as
+  the victim without knowing their credentials. Modern browsers store session cookies
+  in encrypted SQLite databases on disk (Chrome: Cookies, Edge: Cookies). With access
+  to the victim's file system, an adversary can copy and decrypt these cookies using
+  the browser's own key material (stored in DPAPI-protected Local State). Stolen
+  session cookies bypass MFA entirely — the victim already authenticated.
+  This is the primary post-compromise technique for M365 and SaaS account takeover.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1185/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1185 — Browser Session Hijacking simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate browser cookie databases — identify theft targets"
+    command: |
+      Write-Host "[PAS] Browser cookie database locations:"
+      $cookiePaths = @{
+          "Chrome"  = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Network\Cookies"
+          "Edge"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Network\Cookies"
+          "Firefox" = "$env:APPDATA\Mozilla\Firefox\Profiles"
+      }
+      foreach ($browser in $cookiePaths.Keys) {
+          $path = $cookiePaths[$browser]
+          if (Test-Path $path) {
+              $size = if ((Get-Item $path).PSIsContainer) {
+                  (Get-ChildItem $path -Recurse | Measure-Object -Property Length -Sum).Sum
+              } else { (Get-Item $path).Length }
+              Write-Host "  $browser Cookies: $path ($([Math]::Round($size/1KB, 1)) KB)"
+          } else {
+              Write-Host "  $browser: not installed"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate cookie database copy — theft without browser running"
+    command: |
+      Write-Host "[PAS] Simulating cookie theft (copy while browser closed):"
+      $edgeCookies = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Network\Cookies"
+      $stagingPath = "$env:TEMP\PAS_T1185_cookies_stolen"
+
+      if (Test-Path $edgeCookies) {
+          Copy-Item $edgeCookies $stagingPath -Force -ErrorAction SilentlyContinue
+          if (Test-Path $stagingPath) {
+              Write-Host "[PAS] Edge cookie DB copied to: $stagingPath"
+              Write-Host "[PAS] Contains SQLite db with session tokens for all visited sites"
+          }
+      } else {
+          Set-Content "$env:TEMP\PAS_T1185_cookies_stolen" "PAS-T1185-COOKIE-THEFT-MARKER"
+          Write-Host "[PAS] Edge not installed — marker created"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Check DPAPI key location for browser decryption key"
+    command: |
+      Write-Host "[PAS] Browser encryption key location (DPAPI-protected):"
+      $localStatePath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"
+      if (Test-Path $localStatePath) {
+          Write-Host "  Edge Local State (contains DPAPI-encrypted AES key): $localStatePath"
+          Write-Host "  Real attack: decrypt key with CryptUnprotectData, then decrypt cookies"
+      }
+      Write-Host "[PAS] Credential Guard does NOT protect browser DPAPI keys"
+      Write-Host "[PAS] Any SYSTEM or user-context process can decrypt browser cookies"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — powershell.exe copying cookie database files, access to browser Local State"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove stolen cookie database copy"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1185_cookies_stolen" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Cookie theft artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1185 cleanup complete"
+
+analyst_checklist:
+  - "File event: Cookies database file copied from browser profile by non-browser process"
+  - "File event: 'Local State' file in browser profile accessed by non-browser process"
+  - "Sentinel: DeviceFileEvents | where FileName == 'Cookies' and FolderPath contains 'Edge' and InitiatingProcessFileName != 'msedge.exe'"
+  - "Sentinel: DeviceFileEvents | where FileName == 'Local State' and FolderPath contains 'User Data' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Browser credential store accessed by unexpected process'"
+  - "CONTROL CHECK: Continuous Access Evaluation (CAE) — revokes tokens when risk is detected even mid-session"
+  - "CONTROL CHECK: Sign-in frequency Conditional Access — limits session cookie validity to hours not days"
+  - "CONTROL CHECK: Entra ID Identity Protection detects token replay from new location/device"

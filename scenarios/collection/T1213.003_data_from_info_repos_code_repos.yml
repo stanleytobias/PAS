@@ -1,0 +1,98 @@
+id: T1213.003_data_from_info_repositories_code_repos
+name: "Data from Information Repositories — Code Repositories"
+mitre_technique: "T1213.003"
+mitre_tactic: "collection"
+description: >
+  Adversaries access source code repositories (GitHub, GitLab, Azure DevOps, Bitbucket)
+  to harvest source code, infrastructure-as-code, hardcoded secrets, API keys, and
+  deployment configurations. A single git clone of an internal repository can yield
+  credentials embedded in commit history, AWS access keys in .env files, and complete
+  application source code. Detection relies on git process events, bulk clone/pull
+  operations, and secrets scanning in repositories.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1213/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1213.003 — Code Repository collection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate bulk git clone pattern — harvest internal repositories"
+    command: |
+      Write-Host "[PAS] Code repository collection simulation:"
+      Write-Host "[PAS] Real attack: enumerate repos via API, then git clone each"
+
+      $git = Get-Command git -ErrorAction SilentlyContinue
+      if ($git) {
+          Write-Host "[PAS] Git found: $($git.Source)"
+          Write-Host "[PAS] Simulating bulk clone pattern (loopback — no real repos cloned):"
+
+          $repos = @(
+              "http://127.0.0.1/org/webapp-source",
+              "http://127.0.0.1/org/infrastructure-terraform",
+              "http://127.0.0.1/org/api-secrets-config"
+          )
+          foreach ($repo in $repos) {
+              Write-Host "[PAS] git clone $repo $env:TEMP\PAS_T1213_003_$(Split-Path $repo -Leaf)"
+          }
+          # Actually attempt git ls-remote to generate network event
+          $proc = Start-Process git.exe `
+              -ArgumentList "ls-remote http://127.0.0.1/org/internal-repo" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] git.exe HTTP request to loopback generated"
+      } else {
+          Write-Host "[PAS] git not installed — process event pattern documented"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Search for secrets in local git repositories"
+    command: |
+      Write-Host "[PAS] Searching local git repos for hardcoded secrets:"
+      $gitRepos = Get-ChildItem $env:USERPROFILE -Filter ".git" -Directory -Recurse `
+          -Depth 4 -ErrorAction SilentlyContinue
+      Write-Host "  Local git repos found: $($gitRepos.Count)"
+
+      foreach ($repo in $gitRepos | Select-Object -First 3) {
+          Write-Host "  Repo: $($repo.Parent.FullName)"
+          # Search for common secret patterns
+          $secrets = Get-ChildItem $repo.Parent.FullName -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match "\.env|secrets|credentials|config" -and !$_.PSIsContainer }
+          foreach ($f in $secrets) {
+              Write-Host "    Potential secret file: $($f.Name)"
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — git.exe bulk HTTP operations, secret file access in git repositories"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1213.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: git.exe with clone/pull/fetch targeting multiple repositories in rapid succession"
+  - "Network event: git.exe HTTP to internal Azure DevOps / GitLab from unexpected host"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'git.exe' and ProcessCommandLine contains 'clone'"
+  - "CONTROL CHECK: GitHub Advanced Security / GitLab Secret Detection — scan all commits for hardcoded secrets"
+  - "CONTROL CHECK: Azure DevOps — alert on personal access token used from new IP or at unusual time"
+  - "CONTROL CHECK: Pre-commit hooks + CI/CD secret scanning — prevent secrets from entering repositories"

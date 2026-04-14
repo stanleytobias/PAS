@@ -1,0 +1,110 @@
+id: T1602.002_data_from_config_repo_network_device_config
+name: "Data from Configuration Repository — Network Device Configuration Dump"
+mitre_technique: "T1602.002"
+mitre_tactic: "collection"
+description: >
+  Adversaries access network device configuration files to collect sensitive data
+  including topology information, VPN credentials, SNMP community strings, routing
+  configurations, and ACLs. Methods include: TFTP copy of running config from a
+  misconfigured device, SSH session to collect 'show running-config' output, or
+  accessing management interfaces. Configurations often contain plaintext credentials
+  and network architecture details that enable further attacks.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1602/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1602.002 — Network Device Configuration Dump simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate TFTP config pull from network device — loopback only"
+    command: |
+      Write-Host "[PAS] TFTP configuration pull simulation:"
+      Write-Host "[PAS] Real attack: tftp -i 192.168.1.1 GET running-config config.txt"
+
+      $configOutput = "$env:TEMP\PAS_T1602_002_runningconfig.txt"
+      # Simulate TFTP connection attempt to loopback
+      try {
+          $udp = New-Object System.Net.Sockets.UdpClient
+          # Minimal TFTP RRQ packet for 'running-config'
+          $tftpRRQ = [byte[]](0x00, 0x01) + # opcode RRQ
+              [Text.Encoding]::ASCII.GetBytes("running-config") + [byte](0x00) +
+              [Text.Encoding]::ASCII.GetBytes("octet") + [byte](0x00)
+          $udp.Send($tftpRRQ, $tftpRRQ.Length, "127.0.0.1", 69) | Out-Null
+          $udp.Close()
+      } catch {}
+      Write-Host "[PAS] TFTP RRQ sent to 127.0.0.1:69 — network device config pull telemetry"
+
+      Set-Content $configOutput @"
+! PAS T1602.002 - Simulated running-config output
+hostname CORE-SW-01
+enable secret 5 `$1`$abc`$simulated_hash
+interface GigabitEthernet0/1
+ ip address 10.0.0.1 255.255.255.0
+snmp-server community public RO
+snmp-server community private RW
+username admin privilege 15 secret 5 `$1`$xyz`$simulated_hash2
+"@
+      Write-Host "[PAS] Simulated config written to: $configOutput"
+      Write-Host "[PAS] Real config contains: VPN PSKs, SNMP community strings, admin hashes"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate SSH config collection — 'show running-config' via Posh-SSH or ssh.exe"
+    command: |
+      Write-Host "[PAS] SSH config collection simulation:"
+      Write-Host "[PAS] Real: ssh admin@192.168.1.1 'show running-config' > config.txt"
+
+      # Simulate SSH process event
+      $sshPath = (Get-Command ssh -ErrorAction SilentlyContinue)?.Source
+      if ($sshPath) {
+          $proc = Start-Process $sshPath `
+              -ArgumentList "-o ConnectTimeout=1 -o StrictHostKeyChecking=no admin@127.0.0.1 'show running-config'" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] ssh.exe process event generated for config collection"
+      } else {
+          Write-Host "[PAS] ssh.exe not found — process event pattern documented"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — TFTP UDP 69 from endpoints, ssh.exe with 'show running-config' argument, config file written to TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove config dump file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1602_002_runningconfig.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Config dump file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1602.002 cleanup complete"
+
+analyst_checklist:
+  - "Network event: TFTP UDP 69 from endpoints to network devices"
+  - "Network event: SSH from a workstation directly to network infrastructure (should go via jump host)"
+  - "File event: running-config or *.cfg file written to disk by ssh.exe or tftp process"
+  - "Sentinel: DeviceNetworkEvents | where RemotePort == 69 and Protocol == 'Udp'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'ssh.exe' and ProcessCommandLine contains 'running-config'"
+  - "CONTROL CHECK: Disable TFTP on network devices unless actively used for bootstrapping"
+  - "CONTROL CHECK: Network device management via jump host / bastion only — direct SSH from workstations should alert"
+  - "CONTROL CHECK: Enable 'service password-encryption' on Cisco devices — prevent plaintext secrets in config dumps"

@@ -1,0 +1,87 @@
+id: T1213.005_data_from_info_repositories_messaging
+name: "Data from Information Repositories — Messaging Applications"
+mitre_technique: "T1213.005"
+mitre_tactic: "collection"
+description: >
+  Adversaries access messaging platforms (Microsoft Teams, Slack, Discord) to harvest
+  sensitive conversations, shared files, credentials posted in chats, and internal
+  communications. Teams and Slack often contain informal sharing of passwords, AWS keys,
+  database connection strings, and sensitive business discussions that would not appear
+  in formal documents. Access is via stolen user tokens, compromised service accounts,
+  or Graph API with appropriate permissions. Detection relies on messaging platform
+  audit logs and Defender for Cloud Apps anomaly detection.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1213/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1213.005 — Messaging Application collection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate Teams message harvest via Graph API — loopback only"
+    command: |
+      Write-Host "[PAS] Teams/messaging collection via Graph API (loopback):"
+      Write-Host "[PAS] Real: GET /v1.0/teams/{id}/channels/{id}/messages"
+
+      $teamsEndpoints = @(
+          "http://127.0.0.1/v1.0/me/chats",
+          "http://127.0.0.1/v1.0/teams/PAS_team_id/channels",
+          "http://127.0.0.1/v1.0/chats/PAS_chat_id/messages"
+      )
+      foreach ($ep in $teamsEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization", "Bearer PAS_TEAMS_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Teams API query: $ep"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for locally cached Teams messages and attachments"
+    command: |
+      Write-Host "[PAS] Teams local cache check:"
+      $teamsCachePaths = @(
+          "$env:APPDATA\Microsoft\Teams\Cache",
+          "$env:LOCALAPPDATA\Microsoft\Teams\Packages"
+      )
+      foreach ($p in $teamsCachePaths) {
+          if (Test-Path $p) {
+              $size = (Get-ChildItem $p -Recurse -ErrorAction SilentlyContinue |
+                  Measure-Object -Property Length -Sum).Sum
+              Write-Host "  Teams cache: $p ($([Math]::Round($size/1MB,1)) MB)"
+          }
+      }
+      Write-Host "[PAS] Teams cache contains messages, attachments, and credentials shared in chats"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — OfficeActivity TeamsMessage bulk reads, Graph API /chats queries from non-Teams process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1213.005 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: OfficeActivity | where OfficeWorkload == 'MicrosoftTeams' and Operation == 'MessagesListed' | summarize count() by UserId, bin(TimeGenerated,5m) | where count_ > 50"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'graph.microsoft.com' and RemoteUrl contains '/messages' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Defender for Cloud Apps: Teams connected — alert on unusual message read volume"
+  - "CONTROL CHECK: Educate users — never post credentials, API keys, or sensitive data in Teams/Slack channels"
+  - "CONTROL CHECK: Microsoft Purview Communication Compliance — detect sensitive data shared in Teams"
+  - "CONTROL CHECK: Graph API permissions audit — Chat.Read and ChannelMessage.Read are sensitive permissions"

@@ -1,0 +1,99 @@
+id: T1114.001_email_collection_local
+name: "Email Collection — Local Email Collection"
+mitre_technique: "T1114.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries collect email data from local Outlook data files (.ost, .pst) stored
+  on the victim's workstation. Outlook stores all mailbox content locally in these
+  files — a single .ost file can contain years of email including sensitive business
+  communications, credentials shared via email, and ongoing incident response
+  discussions. Copying the .ost/.pst file requires only read access to the file
+  and does not touch Exchange or M365 — completely bypassing cloud-side audit logging.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1114/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1114.001 — Local Email Collection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Locate Outlook data files (.ost and .pst)"
+    command: |
+      Write-Host "[PAS] Outlook data file discovery:"
+      $outlookPaths = @(
+          "$env:LOCALAPPDATA\Microsoft\Outlook",
+          "$env:USERPROFILE\Documents\Outlook Files",
+          "$env:APPDATA\Microsoft\Outlook"
+      )
+      foreach ($path in $outlookPaths) {
+          if (Test-Path $path) {
+              Get-ChildItem $path -Filter "*.ost","*.pst" -ErrorAction SilentlyContinue |
+                  ForEach-Object {
+                      Write-Host "  Found: $($_.FullName) ($([Math]::Round($_.Length/1MB,1)) MB)"
+                  }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate .ost file copy to staging — requires Outlook to be closed"
+    command: |
+      Write-Host "[PAS] Simulating Outlook .ost file copy:"
+      $stagingDir = "$env:TEMP\PAS_T1114_001_mail_stage"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+
+      # Find and attempt copy of .ost file
+      $ostFile = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\Outlook" `
+          -Filter "*.ost" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+      if ($ostFile) {
+          # Attempt shadow copy method (file may be locked by Outlook)
+          try {
+              Copy-Item $ostFile.FullName "$stagingDir\$($ostFile.Name)" -Force `
+                  -ErrorAction SilentlyContinue
+              Write-Host "[PAS] .ost copied: $($ostFile.Name) ($([Math]::Round($ostFile.Length/1MB,1)) MB)"
+          } catch {
+              Write-Host "[PAS] .ost locked (Outlook running) — real adversary uses VSS shadow copy"
+          }
+      } else {
+          Set-Content "$stagingDir\PAS_outlook_marker.txt" "PAS-T1114.001-EMAIL-STAGE"
+          Write-Host "[PAS] No .ost found — staging marker created"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — file read/copy of .ost or .pst by non-Outlook process, large file moved to staging"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove email staging directory"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1114_001_mail_stage" -Recurse -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Email staging removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1114.001 cleanup complete"
+
+analyst_checklist:
+  - "File event: .ost or .pst file read/copied by process other than OUTLOOK.EXE"
+  - "File event: large file (>100MB) copied to staging directory"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.ost' and InitiatingProcessFileName != 'OUTLOOK.EXE'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.pst' and ActionType == 'FileRead' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Outlook data file accessed by unexpected process'"
+  - "CONTROL CHECK: .ost files should be accessed only by OUTLOOK.EXE — file access auditing on Outlook data path"
+  - "CONTROL CHECK: BitLocker encrypts .ost at rest — protects against offline theft but not live process access"

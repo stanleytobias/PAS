@@ -1,0 +1,84 @@
+id: T1560.002_archive_collected_data_library
+name: "Archive Collected Data — Archive via Library"
+mitre_technique: "T1560.002"
+mitre_tactic: "collection"
+description: >
+  Adversaries use programming language libraries to compress and/or encrypt collected
+  data without requiring external utilities. In PowerShell and .NET: System.IO.Compression
+  (GZipStream, ZipFile, DeflateStream). This avoids spawning a known tool process
+  (7z.exe, rar.exe) that is easy to detect, instead performing compression entirely
+  within the existing script or process. The resulting archive is functionally identical
+  but the creation is harder to detect without script block logging.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1560/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1560.002 — Archive via Library simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Archive via .NET ZipFile — in-process, no external tool"
+    command: |
+      Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+      $stagingDir  = "$env:TEMP\PAS_T1560_002_staging"
+      $archivePath = "$env:TEMP\PAS_T1560_002_library.zip"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+      "PAS-T1560.002-COLLECTED-DATA" | Set-Content "$stagingDir\collected.txt"
+
+      [IO.Compression.ZipFile]::CreateFromDirectory($stagingDir, $archivePath)
+      Write-Host "[PAS] .NET ZipFile archive created: $archivePath ($((Get-Item $archivePath).Length) bytes)"
+      Write-Host "[PAS] No 7z.exe or rar.exe spawned — compression happens inside powershell.exe"
+
+  - step: 3
+    type: exec_powershell
+    description: "Archive via GZipStream — byte-level compression"
+    command: |
+      $data        = [Text.Encoding]::UTF8.GetBytes("PAS-T1560.002-GZIP-COMPRESSED-DATA|$env:COMPUTERNAME")
+      $archivePath = "$env:TEMP\PAS_T1560_002_data.gz"
+
+      $fs  = [IO.File]::Create($archivePath)
+      $gz  = New-Object IO.Compression.GZipStream($fs, [IO.Compression.CompressionMode]::Compress)
+      $gz.Write($data, 0, $data.Length)
+      $gz.Close(); $fs.Close()
+      Write-Host "[PAS] GZip archive created: $archivePath ($((Get-Item $archivePath).Length) bytes)"
+      Write-Host "[PAS] Detection: GZipStream in script block logging"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging: ZipFile, GZipStream, DeflateStream operations on staging data"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove library archive files"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1560_002_staging"      -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_002_library.zip"  -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_002_data.gz"      -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Library archive files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1560.002 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (4104): ZipFile.CreateFromDirectory, GZipStream, or DeflateStream with staging path"
+  - "File event: .zip or .gz file created in TEMP by powershell.exe (no external compressor)"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'ZipFile'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.zip' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Script block logging is critical — without it, in-process compression is nearly invisible"
+  - "CONTROL CHECK: AMSI scans script blocks — compression of sensitive paths in scripts is detectable"

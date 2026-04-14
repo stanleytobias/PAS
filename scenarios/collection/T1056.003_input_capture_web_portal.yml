@@ -1,0 +1,82 @@
+id: T1056.003_input_capture_web_portal
+name: "Input Capture — Web Portal Capture"
+mitre_technique: "T1056.003"
+mitre_tactic: "collection"
+description: >
+  Adversaries install malicious code on externally facing portals (VPN login pages,
+  web applications, OWA) to capture credentials submitted by users. The injected
+  code intercepts form submission events and forwards credentials to an adversary-
+  controlled endpoint before passing them to the legitimate authentication backend.
+  This is a server-side technique — the compromise occurs on the web server, not the
+  client. Common targets: Citrix/FortiGate/Pulse VPN login pages, OWA, and ADFS
+  login pages. Detection is server-side: file integrity monitoring on web assets
+  and web application firewall (WAF) logging.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1056/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1056.003 — Web Portal Capture: adversary modifies login page on web server to intercept submitted credentials"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for local IIS web roots — identify portal file targets"
+    command: |
+      Write-Host "[PAS] Web portal file target check:"
+      $webRoots = @(
+          "C:\inetpub\wwwroot",
+          "C:\inetpub\wwwroot\owa",
+          "C:\Program Files\Microsoft\Exchange Server\V15\FrontEnd\HttpProxy"
+      )
+      foreach ($p in $webRoots) {
+          if (Test-Path $p) {
+              Write-Host "  Web root found: $p"
+              $loginFiles = Get-ChildItem $p -Filter "*.aspx","*.html","*.js" `
+                  -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match "login|auth|sign" } |
+                  Select-Object -First 3
+              foreach ($f in $loginFiles) {
+                  Write-Host "    Login file: $($f.FullName)"
+              }
+          }
+      }
+
+  - step: 3
+    type: marker
+    description: "FIM check on web assets"
+    message: "CONTROL CHECK: File Integrity Monitoring on all web root directories — any modification to login pages, JavaScript files, or authentication handlers outside of deployment pipeline requires immediate investigation."
+
+  - step: 4
+    type: marker
+    description: "WAF check"
+    message: "CONTROL CHECK: WAF logging — alert on POST requests to login endpoints that contain unexpected outbound connections or responses including data going to external IPs."
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check: FIM alerts on web root, IIS access logs for unexpected POST exfil destinations, w3wp.exe network connections to external IPs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1056.003 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "FIM alert: modification to login.aspx, auth.js, or similar files in web root"
+  - "IIS access log: POST to /login endpoint with response containing outbound exfil URL"
+  - "Network event: w3wp.exe making outbound HTTP connections to external IPs"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'wwwroot' and FileName endswith '.js' and ActionType == 'FileModified'"
+  - "Sentinel: DeviceNetworkEvents | where InitiatingProcessFileName == 'w3wp.exe' and RemoteIPType == 'Public'"
+  - "CONTROL CHECK: Web application code signing / hash verification as part of deployment pipeline"
+  - "CONTROL CHECK: WAF in blocking mode — detect and block form skimmer injection patterns"

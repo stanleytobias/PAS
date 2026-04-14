@@ -1,0 +1,88 @@
+id: T1560.003_archive_collected_data_custom
+name: "Archive Collected Data — Archive via Custom Method"
+mitre_technique: "T1560.003"
+mitre_tactic: "collection"
+description: >
+  Adversaries implement custom encoding or encryption schemes to obfuscate collected
+  data without using recognisable library calls or external utilities. Common custom
+  methods: XOR with a hardcoded key, ROT-N substitution, custom byte-reversal, or
+  a homemade stream cipher. The resulting file has no standard header or magic bytes,
+  defeating file-type identification. Detection relies on script block logging
+  capturing the custom encoding logic and entropy analysis of the output file.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1560/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1560.003 — Custom Archive Method simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Custom XOR encoding of collected data — no standard library used"
+    command: |
+      $stagingDir  = "$env:TEMP\PAS_T1560_003_staging"
+      $outputPath  = "$env:TEMP\PAS_T1560_003_custom.bin"
+      New-Item -ItemType Directory $stagingDir -Force | Out-Null
+      "PAS-T1560.003-SENSITIVE-DATA|$env:COMPUTERNAME|$(Get-Date -Format 'o')" |
+          Set-Content "$stagingDir\data.txt"
+
+      # Custom XOR encoding — no standard crypto or compression library
+      $key       = 0x5A
+      $plaintext = [IO.File]::ReadAllBytes("$stagingDir\data.txt")
+      $encoded   = $plaintext | ForEach-Object { $_ -bxor $key }
+      [IO.File]::WriteAllBytes($outputPath, [byte[]]$encoded)
+      Write-Host "[PAS] Custom XOR-encoded archive: $outputPath"
+      Write-Host "[PAS] No magic bytes — appears as random binary to file scanners"
+      Write-Host "[PAS] XOR key 0x5A hardcoded in implant"
+
+  - step: 3
+    type: exec_powershell
+    description: "Custom chunked encoding with delimiter — data hiding in plain sight"
+    command: |
+      $outputPath2 = "$env:TEMP\PAS_T1560_003_chunked.dat"
+      $data        = "PAS-T1560.003-CHUNKED-ENCODING|COMPUTERNAME=$env:COMPUTERNAME"
+      $bytes       = [Text.Encoding]::UTF8.GetBytes($data)
+
+      # Custom: reverse bytes, then base36-encode each chunk
+      [Array]::Reverse($bytes)
+      $encoded = ($bytes | ForEach-Object { $_.ToString('x2') }) -join '|'
+      Set-Content $outputPath2 $encoded
+      Write-Host "[PAS] Custom chunked hex file: $outputPath2"
+      Write-Host "[PAS] Looks like debug output — disguises exfil data"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — script block logging captures custom XOR/encoding logic; entropy analysis on output .bin file"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove custom archive files"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1560_003_staging"       -Recurse -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_003_custom.bin"    -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PAS_T1560_003_chunked.dat"   -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Custom archive files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1560.003 cleanup complete"
+
+analyst_checklist:
+  - "Script block logging (4104): XOR loop, byte manipulation, custom encoding on file data"
+  - "File event: high-entropy .bin or .dat file created in TEMP by scripting process"
+  - "Sentinel: DeviceEvents | where ActionType == 'PowerShellCommand' and AdditionalFields contains 'bxor'"
+  - "CONTROL CHECK: NDR entropy scoring on files before exfiltration — high entropy without known header = suspicious"
+  - "CONTROL CHECK: Script block logging captures custom crypto implementations — the code is visible even when output is not"

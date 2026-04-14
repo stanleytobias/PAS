@@ -1,0 +1,98 @@
+id: T1115_clipboard_data
+name: "Clipboard Data"
+mitre_technique: "T1115"
+mitre_tactic: "collection"
+description: >
+  Adversaries monitor and harvest data from the Windows clipboard. Users frequently
+  copy sensitive information — passwords from password managers, API keys, credit card
+  numbers, SSH private keys — which is then accessible via the GetClipboardData API.
+  Implants poll the clipboard at intervals and log its contents. This is especially
+  effective in banking malware (form grabbers) and RATs. Detection relies on
+  identifying processes making repeated GetClipboardData calls, particularly processes
+  with no legitimate reason to access clipboard data.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1115/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1115 — Clipboard Data collection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Read current clipboard contents — simulates single clipboard theft"
+    command: |
+      Add-Type -AssemblyName System.Windows.Forms
+      $clipText = [System.Windows.Forms.Clipboard]::GetText()
+      if ($clipText) {
+          Write-Host "[PAS] Clipboard contents captured ($($clipText.Length) chars):"
+          Write-Host "[PAS] First 50 chars: $($clipText.Substring(0, [Math]::Min(50, $clipText.Length)))"
+      } else {
+          Write-Host "[PAS] Clipboard is empty or contains non-text data"
+      }
+      Write-Host "[PAS] GetClipboardData API call generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate clipboard polling loop — continuous monitoring"
+    command: |
+      Write-Host "[PAS] Clipboard polling simulation (3 polls, 500ms interval):"
+      Add-Type -AssemblyName System.Windows.Forms
+      $collected = @()
+      1..3 | ForEach-Object {
+          $text = [System.Windows.Forms.Clipboard]::GetText()
+          if ($text -and $text -notin $collected) {
+              $collected += $text
+              Write-Host "[PAS] Poll $_ — new content: $($text.Substring(0,[Math]::Min(30,$text.Length)))..."
+          } else {
+              Write-Host "[PAS] Poll $_ — no new content"
+          }
+          Start-Sleep -Milliseconds 500
+      }
+      Write-Host "[PAS] Polling complete — $($collected.Count) unique clipboard entries captured"
+
+  - step: 4
+    type: exec_powershell
+    description: "Write clipboard harvest to staging file"
+    command: |
+      Add-Type -AssemblyName System.Windows.Forms
+      $harvestPath = "$env:TEMP\PAS_T1115_clipboard.txt"
+      $content     = [System.Windows.Forms.Clipboard]::GetText()
+      Set-Content $harvestPath "PAS-T1115-CLIPBOARD-HARVEST: $content"
+      Write-Host "[PAS] Clipboard data written to: $harvestPath"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — GetClipboardData API calls from scripting process, clipboard harvest file in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove clipboard harvest file"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1115_clipboard.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Clipboard harvest file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1115 cleanup complete"
+
+analyst_checklist:
+  - "API: GetClipboardData called repeatedly by non-productivity process"
+  - "Script block logging: Clipboard::GetText() in PowerShell from unexpected context"
+  - "File event: text file written to TEMP containing clipboard-sourced content"
+  - "Sentinel: DeviceEvents | where ActionType contains 'ClipboardData' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Clipboard data accessed by suspicious process'"
+  - "CONTROL CHECK: Password manager clipboard clearing (30-second auto-clear) limits exposure window"
+  - "CONTROL CHECK: Windows Clipboard history should be disabled in security-sensitive environments"

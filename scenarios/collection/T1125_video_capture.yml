@@ -1,0 +1,90 @@
+id: T1125_video_capture
+name: "Video Capture"
+mitre_technique: "T1125"
+mitre_tactic: "collection"
+description: >
+  Adversaries capture video from the victim's webcam or screen to gather visual
+  intelligence about the environment, observe physical security, and record sensitive
+  on-screen activity. On Windows, webcam access uses DirectShow (WMF), Windows Media
+  Foundation, or the Windows Camera API. Screen video recording uses GDI/D3D frame
+  capture. Detection relies on unexpected processes requesting webcam device access —
+  Windows 10/11 shows a privacy indicator LED when the camera is in use.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1125/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1125 — Video Capture simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate webcam devices — check camera availability"
+    command: |
+      Write-Host "[PAS] Webcam device enumeration:"
+      # Enumerate video capture devices via WMI
+      $cameras = Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match 'Camera|Webcam|Capture|Video' -and $_.Status -eq 'OK' }
+
+      if ($cameras) {
+          $cameras | ForEach-Object { Write-Host "  Camera: $($_.Name)" }
+      } else {
+          Write-Host "  No webcam devices found"
+      }
+
+      # Check Windows privacy setting for camera
+      $camKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+      if (Test-Path $camKey) {
+          $val = (Get-ItemProperty $camKey -Name Value -ErrorAction SilentlyContinue).Value
+          Write-Host "  Camera privacy setting: $val"
+          if ($val -eq "Deny") { Write-Host "  [GOOD] Camera access denied via privacy settings" }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate camera device access via Windows Imaging Component"
+    command: |
+      Write-Host "[PAS] Simulating camera device access pattern:"
+      Write-Host "[PAS] Real attack: WMF/DirectShow creates graph with video capture filter"
+      Write-Host "[PAS] Sends frames to file sink or memory buffer for exfiltration"
+
+      $videoMarker = "$env:TEMP\PAS_T1125_video_capture.avi"
+      Set-Content $videoMarker "PAS-T1125-VIDEO-CAPTURE-MARKER"
+      Write-Host "[PAS] Video capture marker: $videoMarker"
+      Write-Host "[PAS] Detection: camera LED activates when device is opened"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — camera device access by non-video-conferencing process, .avi/.mp4 in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove video capture marker"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1125_video_capture.avi" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Video capture artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1125 cleanup complete"
+
+analyst_checklist:
+  - "Process event: non-conferencing process (powershell.exe) accessing camera device"
+  - "Privacy event: camera access by unlisted application"
+  - "File event: .avi, .mp4 created in TEMP by scripting process"
+  - "Sentinel: DeviceEvents | where ActionType contains 'Camera' or ActionType contains 'VideoCapture'"
+  - "MDE alert: 'Camera accessed by unexpected process'"
+  - "CONTROL CHECK: Windows Privacy — restrict camera access to approved apps only"
+  - "CONTROL CHECK: Hardware camera cover for sensitive meetings — physical control when software controls are uncertain"

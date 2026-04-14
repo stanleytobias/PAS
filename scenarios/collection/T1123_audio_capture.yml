@@ -1,0 +1,98 @@
+id: T1123_audio_capture
+name: "Audio Capture"
+mitre_technique: "T1123"
+mitre_tactic: "collection"
+description: >
+  Adversaries record audio from the victim's microphone or system audio to eavesdrop
+  on conversations, capture spoken credentials, and gather intelligence. On Windows,
+  WASAPI (Windows Audio Session API) provides loopback recording of all system audio,
+  and the standard microphone device can be accessed via DirectSound or WASAPI.
+  Detection relies on: microphone access events in Windows Privacy settings,
+  unexpected processes accessing audio devices, and audio capture files written to disk.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1123/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1123 — Audio Capture simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate audio devices — microphone availability check"
+    command: |
+      Add-Type -AssemblyName System.Windows.Forms
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASAudio {
+          [DllImport("winmm.dll")] public static extern int waveInGetNumDevs();
+      }
+"@
+      $devCount = [PASAudio]::waveInGetNumDevs()
+      Write-Host "[PAS] Audio input devices available: $devCount"
+      if ($devCount -gt 0) {
+          Write-Host "[PAS] Microphone present — audio capture feasible"
+      }
+
+      # Check Windows privacy settings for microphone access
+      $micKey = "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+      if (Test-Path $micKey) {
+          $value = (Get-ItemProperty $micKey -Name Value -ErrorAction SilentlyContinue).Value
+          Write-Host "[PAS] Microphone access policy: $value"
+          if ($value -eq "Deny") {
+              Write-Host "[PAS] [GOOD] Microphone access denied via privacy settings"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate audio recording via SoundPlayer — generates audio device access telemetry"
+    command: |
+      Write-Host "[PAS] Simulating audio device access pattern:"
+      # Use System.Media to access audio subsystem (generates device access event)
+      try {
+          Add-Type -AssemblyName System.Media
+          $player = New-Object System.Media.SoundPlayer
+          $player.Dispose()
+          Write-Host "[PAS] Audio subsystem accessed via System.Media"
+      } catch {}
+
+      $audioFile = "$env:TEMP\PAS_T1123_recording.wav"
+      Set-Content $audioFile "PAS-T1123-AUDIO-RECORDING-MARKER"
+      Write-Host "[PAS] Audio recording file marker: $audioFile"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — unexpected process accessing microphone device, audio capture API calls in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove audio capture artifacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1123_recording.wav" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Audio capture artifacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1123 cleanup complete"
+
+analyst_checklist:
+  - "Process event: non-media process (powershell.exe, cmd.exe) accessing microphone device"
+  - "Privacy event: microphone access granted to unexpected application"
+  - "File event: .wav or .mp3 file written to TEMP by scripting process"
+  - "Sentinel: DeviceEvents | where ActionType contains 'Microphone' or ActionType contains 'AudioCapture'"
+  - "MDE alert: 'Microphone accessed by unexpected process'"
+  - "CONTROL CHECK: Windows Privacy settings — set microphone access to app-level consent required"
+  - "CONTROL CHECK: GPO: deny microphone access for all desktop apps via AppPrivacy policy"

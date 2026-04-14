@@ -1,0 +1,115 @@
+id: T1056.001_input_capture_keylogging
+name: "Input Capture — Keylogging"
+mitre_technique: "T1056.001"
+mitre_tactic: "collection"
+description: >
+  Adversaries install keyboard hooks to intercept user keystrokes and capture
+  credentials as they are typed. On Windows, SetWindowsHookEx with WH_KEYBOARD_LL
+  installs a low-level keyboard hook that receives every keystroke system-wide,
+  regardless of which application has focus. This captures passwords typed into
+  login forms, web browsers, VPN clients, and any other application. The hook
+  runs in the context of the hooking process and logs keystrokes to a file or
+  buffers them for C2 transmission.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1056/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1056.001 — Keylogging simulation (hook registration only — no keystrokes captured)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Register a low-level keyboard hook — generates API telemetry"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+
+      public class PASKeylogSim {
+          private const int WH_KEYBOARD_LL = 13;
+          private static IntPtr hookHandle = IntPtr.Zero;
+          private static LowLevelKeyboardProc proc = HookCallback;
+
+          public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+          [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(
+              int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+          [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hhk);
+          [DllImport("kernel32.dll")] static extern IntPtr GetModuleHandle(string lpModuleName);
+
+          public static bool Install() {
+              using (var curProcess = Process.GetCurrentProcess())
+              using (var curModule  = curProcess.MainModule) {
+                  hookHandle = SetWindowsHookEx(WH_KEYBOARD_LL, proc,
+                      GetModuleHandle(curModule.ModuleName), 0);
+                  return hookHandle != IntPtr.Zero;
+              }
+          }
+          public static void Uninstall() {
+              if (hookHandle != IntPtr.Zero) {
+                  UnhookWindowsHookEx(hookHandle);
+                  hookHandle = IntPtr.Zero;
+              }
+          }
+          private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+              // PAS: callback registered but not logging — simulation only
+              return IntPtr.Zero;
+          }
+      }
+"@
+      $installed = [PASKeylogSim]::Install()
+      Write-Host "[PAS] WH_KEYBOARD_LL hook installed: $installed"
+      Write-Host "[PAS] SetWindowsHookEx API call generated — hook active"
+      Write-Host "[PAS] Real keylogger: callback writes keystrokes to file"
+      Start-Sleep -Milliseconds 500
+      [PASKeylogSim]::Uninstall()
+      Write-Host "[PAS] Hook uninstalled after 500ms"
+
+  - step: 3
+    type: exec_powershell
+    description: "Write keylog file marker — simulates output file"
+    command: |
+      $keylogFile = "$env:TEMP\PAS_T1056_001_keylog.txt"
+      Set-Content $keylogFile "[PAS-T1056.001-KEYLOG-OUTPUT]`n$(Get-Date) — hook active simulation"
+      Write-Host "[PAS] Keylog output file: $keylogFile"
+      Write-Host "[PAS] Real keylogger appends each keystroke here"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — SetWindowsHookEx WH_KEYBOARD_LL (13) API call, keylog output file in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove keylog file and ensure hook is uninstalled"
+    command: |
+      # Ensure hook is removed (already done above but be safe)
+      try { [PASKeylogSim]::Uninstall() } catch {}
+      Remove-Item "$env:TEMP\PAS_T1056_001_keylog.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Keyboard hook uninstalled and keylog file removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1056.001 cleanup complete"
+
+analyst_checklist:
+  - "API: SetWindowsHookEx with WH_KEYBOARD_LL (13) from non-accessibility/non-system process"
+  - "File event: log file written to TEMP incrementally (growing file, not created once)"
+  - "Sentinel: DeviceEvents | where ActionType contains 'KeyboardHook' or ActionType contains 'SetWindowsHookEx'"
+  - "MDE alert: 'Low-level keyboard hook installed by unexpected process'"
+  - "CONTROL CHECK: MDE kernel-level monitoring detects WH_KEYBOARD_LL from unsigned/unexpected processes"
+  - "CONTROL CHECK: Credential Guard protects LSASS but not keyboard input — keylogging bypasses it"
+  - "CONTROL CHECK: Password managers with autofill reduce keystrokes for passwords (less exposure surface)"
