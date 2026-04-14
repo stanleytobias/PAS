@@ -1,0 +1,85 @@
+id: T1069.002_permission_groups_discovery_domain
+name: "Permission Groups Discovery — Domain Groups"
+mitre_technique: "T1069.002"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate domain groups to identify accounts with elevated permissions
+  — Domain Admins, Enterprise Admins, Schema Admins, and delegation groups.
+  Methods: net group /domain, Get-ADGroup, LDAP objectClass=group queries.
+  BloodHound uses this data to build attack paths. Knowing group memberships
+  reveals who can administer which systems, enabling targeted credential attacks
+  against high-value accounts rather than indiscriminate spraying.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1069/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1069.002 — Domain Group Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate domain groups and privileged memberships"
+    command: |
+      Write-Host "[PAS] Domain group enumeration:"
+      Write-Host "[PAS] Method 1: net group /domain"
+      net group /domain 2>&1 | Select-Object -First 20 |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] High-value domain group memberships:"
+      @("Domain Admins","Enterprise Admins","Schema Admins",
+        "Group Policy Creator Owners","DNSAdmins") | ForEach-Object {
+          $grp = $_
+          $output = net group "$grp" /domain 2>&1 |
+              Select-String "^[A-Za-z]" | Select-Object -Skip 2 |
+              Where-Object { $_ -notmatch "command|completed|members" }
+          Write-Host "  [$grp]: $($output -join ', ')"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "LDAP group enumeration — BloodHound-style query"
+    command: |
+      Write-Host "[PAS] LDAP group enumeration (BloodHound pattern):"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              $searcher.Filter = "(&(objectClass=group)(adminCount=1))"
+              $searcher.PropertiesToLoad.AddRange(@("cn","member","description"))
+              $results = $searcher.FindAll()
+              Write-Host "  Protected groups (adminCount=1): $($results.Count)"
+              $results | ForEach-Object {
+                  $members = $_.Properties["member"].Count
+                  Write-Host "  $($_.Properties["cn"][0]) [$members members]"
+              }
+          } catch { Write-Host "  LDAP query failed (no DC)" }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe group /domain, LDAP adminCount=1 query, Defender for Identity group enumeration alert"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1069.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: net.exe with 'group' and '/domain' arguments"
+  - "LDAP query: objectClass=group adminCount=1 — enumerates all protected groups"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'group' and ProcessCommandLine contains '/domain'"
+  - "Defender for Identity: 'Security principal reconnaissance (LDAP)'"
+  - "CONTROL CHECK: DNSAdmins group — members can load arbitrary DLLs into DNS service (privesc path); audit membership carefully"
+  - "CONTROL CHECK: Tiered admin model — DA/EA accounts should have no regular user activity"

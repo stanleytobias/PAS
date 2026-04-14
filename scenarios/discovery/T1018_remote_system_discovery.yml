@@ -1,0 +1,89 @@
+id: T1018_remote_system_discovery
+name: "Remote System Discovery"
+mitre_technique: "T1018"
+mitre_tactic: "discovery"
+description: >
+  Adversaries discover other hosts on the network to identify lateral movement
+  targets. Methods: ping sweep (for loop or fping), net view, net view /domain,
+  ARP cache inspection (arp -a shows recently contacted hosts), nbtscan, and
+  Active Directory LDAP query for computer objects. This simulation generates
+  ICMP and SMB connection telemetry toward the loopback range only.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1018/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1018 — Remote System Discovery simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate ping sweep — ICMP probes to loopback range"
+    command: |
+      Write-Host "[PAS] Ping sweep simulation (loopback only):"
+      # Ping only loopback addresses — no real network traffic
+      @("127.0.0.1","127.0.0.2","127.0.0.3") | ForEach-Object {
+          $result = Test-Connection $_ -Count 1 -ErrorAction SilentlyContinue
+          Write-Host "[PAS] ping $_ - $(if ($result) {'alive'} else {'no response'})"
+      }
+      Write-Host "[PAS] Real sweep: 1..254 | ForEach { Test-Connection 10.0.0.`$_ -Count 1 }"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate network hosts via net view and ARP"
+    command: |
+      Write-Host "[PAS] net view /domain (domain computer list):"
+      net view /domain 2>&1 | Select-Object -First 15 |
+          ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] ARP cache (recently contacted hosts):"
+      arp -a 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 4
+    type: exec_powershell
+    description: "LDAP computer object enumeration — full host inventory"
+    command: |
+      Write-Host "[PAS] LDAP computer enumeration:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              $searcher.Filter = "(objectClass=computer)"
+              $searcher.PropertiesToLoad.AddRange(@("cn","operatingSystem","lastLogon"))
+              $results = $searcher.FindAll()
+              Write-Host "  Domain computers: $($results.Count)"
+              $results | Select-Object -First 5 | ForEach-Object {
+                  $os = $_.Properties["operatingsystem"][0]
+                  Write-Host "  $($_.Properties["cn"][0]) [$os]"
+              }
+          } catch { Write-Host "  LDAP query failed (no DC)" }
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ping sweep ICMP bursts, net view /domain, LDAP objectClass=computer query"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1018 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: rapid sequential ICMP pings to multiple IPs — sweep pattern"
+  - "Process event: net.exe with 'view /domain' argument"
+  - "LDAP query: objectClass=computer from workstation context"
+  - "Sentinel: DeviceNetworkEvents | where Protocol == 'Icmp' | summarize count() by DeviceName, bin(TimeGenerated,1m) | where count_ > 20"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'view'"
+  - "Defender for Identity: 'Network-mapping reconnaissance (DNS)' and 'Network-mapping reconnaissance'"
+  - "CONTROL CHECK: ICMP echo blocked between endpoint VLANs — ping sweeps fail; adversary must use TCP or ARP"

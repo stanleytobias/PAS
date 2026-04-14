@@ -1,0 +1,88 @@
+id: T1083_file_and_directory_discovery
+name: "File and Directory Discovery"
+mitre_technique: "T1083"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate files and directories to locate sensitive data, configuration
+  files, scripts, and credentials. Common patterns: recursive directory listing of
+  user home folders (dir /s /b), targeted searches for specific file types
+  (Get-ChildItem *.docx -Recurse), and searching for keywords in filenames
+  (dir /s /b *password* *secret* *config*). This is typically automated and runs
+  across the entire filesystem within minutes of initial access.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1083/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1083 — File and Directory Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate high-value directories and file types"
+    command: |
+      Write-Host "[PAS] File and directory discovery:"
+      $searchTargets = @(
+          @{Path=$env:USERPROFILE; Desc="User profile"},
+          @{Path="C:\Users";       Desc="All user profiles"},
+          @{Path="C:\inetpub";     Desc="IIS web root"}
+      )
+      foreach ($t in $searchTargets) {
+          if (Test-Path $t.Path) {
+              $count = (Get-ChildItem $t.Path -Recurse -ErrorAction SilentlyContinue |
+                  Measure-Object).Count
+              Write-Host "  [$($t.Desc)] $($t.Path): $count items"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Search for sensitive file patterns — keyword in filename"
+    command: |
+      Write-Host "[PAS] Sensitive file search by filename keyword:"
+      $keywords = @("*password*","*secret*","*credential*","*backup*","*config*")
+      foreach ($kw in $keywords) {
+          $hits = Get-ChildItem $env:USERPROFILE -Filter $kw -Recurse -Depth 3 `
+              -ErrorAction SilentlyContinue | Select-Object -First 2
+          foreach ($h in $hits) {
+              Write-Host "  [$kw] $($h.FullName)"
+          }
+      }
+      Write-Host "[PAS] Real: dir /s /b C:\ *password* *secret* (generates high file-event volume)"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate dir /s command — high-volume directory listing"
+    command: |
+      Write-Host "[PAS] Recursive dir pattern (limited to TEMP for safety):"
+      $proc = Start-Process cmd.exe -ArgumentList "/c dir /s /b $env:TEMP" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] cmd.exe dir /s process event generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — recursive directory enumeration, cmd.exe dir /s /b on sensitive paths"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1083 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: cmd.exe with 'dir /s' on sensitive paths (C:\\Users, C:\\inetpub)"
+  - "File event: high-volume file read access in short window from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'cmd.exe' and ProcessCommandLine contains '/s' and ProcessCommandLine contains 'dir'"
+  - "Sentinel: DeviceFileEvents | summarize count() by InitiatingProcessFileName, bin(TimeGenerated,1m) | where count_ > 200"
+  - "MDE alert: 'Bulk file system enumeration detected'"
+  - "CONTROL CHECK: File access auditing on sensitive directories with threshold alerting"

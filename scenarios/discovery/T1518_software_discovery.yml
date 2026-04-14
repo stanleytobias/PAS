@@ -1,0 +1,75 @@
+id: T1518_software_discovery
+name: "Software Discovery"
+mitre_technique: "T1518"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate installed software to understand the environment, identify
+  exploit targets, and plan follow-on actions. Methods: registry Uninstall keys
+  (HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall), wmic product get,
+  Get-ItemProperty on Uninstall key. Software inventory reveals: vulnerable
+  unpatched applications, scripting environments (Python, Ruby), management tools,
+  and the general maturity of the target's patch posture.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1518/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1518 — Software Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate installed software via registry Uninstall keys"
+    command: |
+      Write-Host "[PAS] Installed software enumeration:"
+      $uninstallPaths = @(
+          "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+          "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+          "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+      )
+      $software = foreach ($path in $uninstallPaths) {
+          Get-ItemProperty $path -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName } |
+              Select-Object DisplayName, DisplayVersion, Publisher
+      }
+      Write-Host "  Total installed applications: $(($software | Measure-Object).Count)"
+      $software | Sort-Object DisplayName | Select-Object -First 10 |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "wmic product enumeration — alternative method"
+    command: |
+      Write-Host "[PAS] wmic product enumeration (slower but comprehensive):"
+      $proc = Start-Process wmic.exe `
+          -ArgumentList "product get Name,Version,Vendor /FORMAT:CSV" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wmic product get process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — registry Uninstall key bulk read, wmic product enumeration"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1518 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Registry event: bulk read of HKLM\\...\\Uninstall keys by scripting process"
+  - "Process event: wmic.exe with 'product get' arguments"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'wmic.exe' and ProcessCommandLine contains 'product'"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Uninstall' | summarize count() by InitiatingProcessFileName, bin(TimeGenerated,1m) | where count_ > 50"
+  - "MDE alert: 'Software inventory enumeration'"
+  - "CONTROL CHECK: Vulnerability management — unpatched software discovered during recon leads to exploitation; patch cadence is a direct control"

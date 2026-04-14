@@ -1,0 +1,79 @@
+id: T1033_system_owner_user_discovery
+name: "System Owner/User Discovery"
+mitre_technique: "T1033"
+mitre_tactic: "discovery"
+description: >
+  Adversaries identify the primary user and currently logged-on users of a
+  compromised system to assess the value of the target, understand what access
+  the user has, and tailor follow-on actions. Methods: whoami /all, query user,
+  query session, Get-LocalUser, net user, and WMI Win32_ComputerSystem UserName.
+  whoami /all is particularly useful as it reveals the user's group memberships
+  and privileges in a single command.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1033/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1033 — System Owner/User Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate current user context and active sessions"
+    command: |
+      Write-Host "[PAS] System owner/user discovery:"
+
+      Write-Host "[PAS] whoami /all (current user + groups + privileges):"
+      whoami /all 2>&1 | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] query user (interactive sessions):"
+      query user 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] WMI logged-on user:"
+      $cs = Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue
+      Write-Host "  Current user (WMI): $($cs?.UserName)"
+
+      Write-Host "[PAS] Environment variables (user context):"
+      Write-Host "  USERNAME=$env:USERNAME  USERDOMAIN=$env:USERDOMAIN"
+      Write-Host "  USERPROFILE=$env:USERPROFILE"
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate all logged-on users via Win32_LoggedOnUser"
+    command: |
+      Write-Host "[PAS] All logged-on users (Win32_LoggedOnUser):"
+      Get-WmiObject Win32_LoggedOnUser -ErrorAction SilentlyContinue |
+          Select-Object -Property Antecedent -Unique |
+          ForEach-Object {
+              if ($_.Antecedent -match 'Name="([^"]+)"') {
+                  Write-Host "  LoggedOn: $($Matches[1])"
+              }
+          }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — whoami.exe /all, query.exe user, WMI Win32_LoggedOnUser from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1033 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: whoami.exe with /all, /groups, or /priv flags from scripting process"
+  - "Process event: query.exe with 'user' argument"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'whoami.exe' and ProcessCommandLine contains '/all'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'query.exe' and ProcessCommandLine contains 'user'"
+  - "MDE alert: 'User context enumeration by suspicious process'"
+  - "CONTROL CHECK: whoami /all from a scripting process is a high-fidelity initial access indicator — correlate with parent process chain"

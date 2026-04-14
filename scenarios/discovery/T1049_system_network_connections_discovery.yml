@@ -1,0 +1,79 @@
+id: T1049_system_network_connections_discovery
+name: "System Network Connections Discovery"
+mitre_technique: "T1049"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate active network connections to understand what services are
+  running, identify C2 channels already established by other actors, and discover
+  connections to high-value internal systems. Methods: netstat -ano, Get-NetTCPConnection,
+  Get-NetUDPEndpoint. The PID column reveals which process owns each connection,
+  enabling adversaries to identify security monitoring agents by their outbound
+  connections to known SaaS endpoints (CrowdStrike, Defender ATP, Splunk).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1049/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1049 — System Network Connections Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate active network connections via netstat and PowerShell"
+    command: |
+      Write-Host "[PAS] Active network connections:"
+      Write-Host "[PAS] Method 1: netstat -ano"
+      netstat -ano 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: Get-NetTCPConnection with process names"
+      Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+          ForEach-Object {
+              $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+              [PSCustomObject]@{
+                  LocalPort  = $_.LocalPort
+                  RemoteAddr = $_.RemoteAddress
+                  RemotePort = $_.RemotePort
+                  Process    = $proc?.Name
+                  PID        = $_.OwningProcess
+              }
+          } | Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "Identify security agent connections — endpoint detection evasion intel"
+    command: |
+      Write-Host "[PAS] Security agent connection identification:"
+      $secPorts = @(443, 8443, 8080)
+      Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+          Where-Object { $_.RemotePort -in $secPorts } |
+          ForEach-Object {
+              $proc = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue)?.Name
+              Write-Host "  Process: $proc -> $($_.RemoteAddress):$($_.RemotePort)"
+          } | Select-Object -First 10
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — netstat.exe, Get-NetTCPConnection from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1049 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: netstat.exe with -ano flag from scripting process"
+  - "Script block logging: Get-NetTCPConnection in unexpected context"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'netstat.exe' and ProcessCommandLine contains '-ano'"
+  - "MDE alert: 'Network connection enumeration'"
+  - "CONTROL CHECK: Network visibility — correlate process-to-connection telemetry to detect anomalous outbound"

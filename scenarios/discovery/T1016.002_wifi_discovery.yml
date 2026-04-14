@@ -1,0 +1,78 @@
+id: T1016.002_wifi_discovery
+name: "System Network Configuration Discovery — Wi-Fi Discovery"
+mitre_technique: "T1016.002"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate Wi-Fi networks and stored profiles to discover network
+  names, retrieve saved passwords (via netsh wlan show profile key=clear), and
+  identify wireless infrastructure for lateral movement or pivot opportunities.
+  Saved Wi-Fi passwords are stored in plaintext-recoverable form in Windows
+  and can be extracted by any process running as admin. Corporate Wi-Fi profiles
+  may include pre-shared keys or certificate configurations revealing network access.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1016/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1016.002 — Wi-Fi Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate saved Wi-Fi profiles and attempt password extraction"
+    command: |
+      Write-Host "[PAS] Wi-Fi profile enumeration:"
+      Write-Host "[PAS] Method 1: netsh wlan show profiles"
+      netsh wlan show profiles 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: Current Wi-Fi connection"
+      netsh wlan show interfaces 2>&1 | Select-String "SSID|Signal|Auth" |
+          ForEach-Object { Write-Host "  $($_.Line.Trim())" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Attempt Wi-Fi password extraction — key=clear reveals PSK"
+    command: |
+      Write-Host "[PAS] Wi-Fi password extraction attempt (key=clear):"
+      $profiles = netsh wlan show profiles 2>&1 |
+          Select-String "All User Profile" |
+          ForEach-Object { ($_ -split ':')[1].Trim() }
+
+      foreach ($p in $profiles | Select-Object -First 3) {
+          Write-Host "[PAS] Profile: $p"
+          $detail = netsh wlan show profile name="$p" key=clear 2>&1
+          $key = $detail | Select-String "Key Content"
+          if ($key) {
+              Write-Host "  [PASSWORD FOUND] $($key.Line.Trim())"
+          } else {
+              Write-Host "  No key content (enterprise auth or insufficient privilege)"
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — netsh.exe wlan show profile key=clear execution from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1016.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: netsh.exe with 'wlan show profile' and 'key=clear' arguments"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'netsh.exe' and ProcessCommandLine contains 'key=clear'"
+  - "MDE alert: 'Wi-Fi credential extraction attempt'"
+  - "CONTROL CHECK: WPA3-Enterprise with EAP-TLS certificates — no PSK to extract"
+  - "CONTROL CHECK: Remove corporate Wi-Fi profiles from non-corporate devices"
+  - "CONTROL CHECK: Wi-Fi password rotation after any suspected compromise"

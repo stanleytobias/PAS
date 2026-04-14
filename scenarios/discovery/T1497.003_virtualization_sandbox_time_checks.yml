@@ -1,0 +1,86 @@
+id: T1497.003_virtualization_sandbox_evasion_time_checks
+name: "Virtualization/Sandbox Evasion — Time Based Checks"
+mitre_technique: "T1497.003"
+mitre_tactic: "discovery"
+description: >
+  Adversaries use timing-based techniques to detect sandbox environments that
+  accelerate time or have very short analysis windows. Methods: RDTSC (Read
+  Time-Stamp Counter) delta measurement to detect time acceleration, checking
+  system uptime (sandboxes typically have low uptime), Sleep-based evasion
+  (sleep longer than sandbox timeout), and comparing GetTickCount before and
+  after a Sleep call to detect if time was accelerated by the sandbox.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1497/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1497.003 — Time-Based Sandbox Checks simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Measure sleep delta — detect sandbox time acceleration"
+    command: |
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASTimingCheck {
+          [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+          [DllImport("kernel32.dll")] public static extern ulong GetTickCount64();
+      }
+"@
+      Write-Host "[PAS] Sleep delta measurement (sandbox time acceleration check):"
+      $before     = [PASTimingCheck]::GetTickCount()
+      Start-Sleep -Milliseconds 500
+      $after      = [PASTimingCheck]::GetTickCount()
+      $delta      = $after - $before
+      Write-Host "  Expected ~500ms sleep, actual delta: ${delta}ms"
+      if ($delta -lt 400) {
+          Write-Host "  [SANDBOX INDICATOR] Sleep was accelerated — delta too small"
+      } else {
+          Write-Host "  [NORMAL] Delta within expected range"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check system uptime — low uptime indicates sandbox"
+    command: |
+      Write-Host "[PAS] System uptime check:"
+      $uptime = (Get-Date) - (gcim Win32_OperatingSystem -ErrorAction SilentlyContinue)?.LastBootUpTime
+      if ($uptime) {
+          Write-Host "  System uptime: $([Math]::Round($uptime.TotalMinutes)) minutes"
+          if ($uptime.TotalMinutes -lt 10) {
+              Write-Host "  [SANDBOX INDICATOR] Very low uptime — freshly booted sandbox"
+          }
+      }
+
+      Write-Host "[PAS] GetTickCount64 (high-resolution uptime):"
+      $tc = [PASTimingCheck]::GetTickCount64()
+      Write-Host "  TickCount64: $tc ms ($([Math]::Round($tc/60000)) minutes since boot)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — GetTickCount, Sleep timing patterns, uptime checks from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1497.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: GetTickCount / GetTickCount64 before and after Sleep — timing check pattern"
+  - "WMI query: Win32_OperatingSystem LastBootUpTime (uptime check)"
+  - "Script block logging: Start-Sleep with large values in malware context (sleep-based evasion)"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'LastBootUpTime'"
+  - "MDE alert: 'Time-based sandbox evasion check'"
+  - "CONTROL CHECK: Sandbox — do not accelerate sleep calls; use full uptime VM images; configure realistic boot time"

@@ -1,0 +1,82 @@
+id: T1654_log_enumeration
+name: "Log Enumeration"
+mitre_technique: "T1654"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate system and application logs to learn about the environment,
+  identify other users and systems, detect security monitoring, and understand
+  incident response activities. Event logs reveal: logged-on users (Event 4624/4634),
+  failed logons (4625), installed software (Application log), security product alerts,
+  and PowerShell activity (4103/4104). Adversaries read logs both for reconnaissance
+  and to understand what telemetry defenders have captured about their own activity.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1654/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1654 — Log Enumeration simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate available event logs and sizes"
+    command: |
+      Write-Host "[PAS] Event log enumeration:"
+      Write-Host "[PAS] Method 1: wevtutil el (list logs)"
+      $logCount = (wevtutil el 2>&1 | Measure-Object).Count
+      Write-Host "  Total event logs: $logCount"
+
+      Write-Host "[PAS] Key security logs:"
+      @("Security","System","Application",
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-Sysmon/Operational") | ForEach-Object {
+          $log = Get-WinEvent -ListLog $_ -ErrorAction SilentlyContinue
+          if ($log) {
+              Write-Host "  $_ : $($log.RecordCount) records ($([Math]::Round($log.FileSize/1MB,1)) MB)"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Query recent security events — adversary situational awareness"
+    command: |
+      Write-Host "[PAS] Recent security events (last 20):"
+      Get-WinEvent -LogName Security -MaxEvents 20 -ErrorAction SilentlyContinue |
+          Select-Object TimeCreated, Id, Message |
+          ForEach-Object {
+              Write-Host "  [$($_.TimeCreated.ToString('HH:mm:ss'))] EventID=$($_.Id)"
+          }
+
+      Write-Host "[PAS] wevtutil query pattern:"
+      $proc = Start-Process wevtutil.exe `
+          -ArgumentList "qe Security /q:*[System[EventID=4624]] /c:5 /f:text" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wevtutil.exe log query process event generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — wevtutil.exe query execution, Get-WinEvent in script block logs, bulk event log reads"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1654 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: wevtutil.exe with 'qe' (query events) argument on Security/System logs"
+  - "Script block logging: Get-WinEvent against Security log from unexpected context"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'wevtutil.exe' and ProcessCommandLine contains 'qe'"
+  - "MDE alert: 'Event log enumeration by suspicious process'"
+  - "CONTROL CHECK: Protect event logs with restricted ACLs — normal users should not read Security log"
+  - "CONTROL CHECK: Forward logs to immutable SIEM — adversary reading local logs does not affect SIEM copy"

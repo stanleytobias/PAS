@@ -1,0 +1,73 @@
+id: T1016_system_network_configuration_discovery
+name: "System Network Configuration Discovery"
+mitre_technique: "T1016"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate network configuration details — IP addresses, subnet masks,
+  default gateways, DNS servers, ARP cache, and routing tables — to understand the
+  network topology and plan lateral movement. Standard utilities: ipconfig /all,
+  arp -a, route print, nbtstat -n, Get-NetIPConfiguration. This information helps
+  adversaries identify network segments, discover adjacent hosts via ARP cache,
+  and understand DNS infrastructure.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1016/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1016 — System Network Configuration Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate network configuration via standard utilities"
+    command: |
+      Write-Host "[PAS] Network configuration discovery:"
+
+      Write-Host "[PAS] ipconfig /all:"
+      ipconfig /all 2>&1 | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] arp -a (ARP cache — adjacent hosts):"
+      arp -a 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] route print (routing table):"
+      route print 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate DNS configuration — identifies internal DNS servers"
+    command: |
+      Write-Host "[PAS] DNS configuration:"
+      Get-DnsClientServerAddress -ErrorAction SilentlyContinue |
+          Where-Object { $_.ServerAddresses.Count -gt 0 } |
+          ForEach-Object {
+              Write-Host "  Interface: $($_.InterfaceAlias) DNS: $($_.ServerAddresses -join ', ')"
+          }
+      Write-Host "[PAS] nbtstat -n (NetBIOS names):"
+      nbtstat -n 2>&1 | Select-Object -First 15 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — ipconfig.exe, arp.exe, route.exe execution from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1016 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: ipconfig.exe, arp.exe, route.exe, nbtstat.exe from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('ipconfig.exe','arp.exe','route.exe','nbtstat.exe') and InitiatingProcessFileName in ('powershell.exe','cmd.exe')"
+  - "MDE alert: 'Network configuration enumeration'"
+  - "CONTROL CHECK: ARP cache reveals adjacent live hosts — network segmentation limits adversary reconnaissance scope"
+  - "CONTROL CHECK: DNS internal resolution — internal zones should only be resolvable from internal networks"

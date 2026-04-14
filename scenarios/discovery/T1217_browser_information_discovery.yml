@@ -1,0 +1,82 @@
+id: T1217_browser_information_discovery
+name: "Browser Information Discovery"
+mitre_technique: "T1217"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate browser data to learn about the victim's environment and
+  activities. Browser bookmarks reveal internal web applications, admin portals,
+  and monitoring dashboards. Browsing history shows recently accessed sites.
+  Browser extensions reveal security tools in use. Saved form data may contain
+  usernames and addresses. This information shapes follow-on targeting and helps
+  adversaries understand what internal services exist.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1217/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1217 — Browser Information Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate browser profile paths and key data files"
+    command: |
+      Write-Host "[PAS] Browser information discovery:"
+      $browserData = @{
+          "Edge Bookmarks"  = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Bookmarks"
+          "Edge History"    = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\History"
+          "Edge Extensions" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Extensions"
+          "Chrome Bookmarks"= "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Bookmarks"
+          "Chrome History"  = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\History"
+          "Firefox Profiles"= "$env:APPDATA\Mozilla\Firefox\Profiles"
+      }
+      foreach ($name in $browserData.Keys) {
+          $p = $browserData[$name]
+          if (Test-Path $p) {
+              $info = if ((Get-Item $p -Force).PSIsContainer) {
+                  "$((Get-ChildItem $p -ErrorAction SilentlyContinue).Count) items"
+              } else { "$([Math]::Round((Get-Item $p).Length/1KB,1)) KB" }
+              Write-Host "  FOUND [$info]: $name"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Read Edge bookmarks — reveals internal applications"
+    command: |
+      $bookmarkPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Bookmarks"
+      if (Test-Path $bookmarkPath) {
+          $bmarks = Get-Content $bookmarkPath -Raw -ErrorAction SilentlyContinue |
+              ConvertFrom-Json -ErrorAction SilentlyContinue
+          Write-Host "[PAS] Edge bookmarks accessed — reveals internal application URLs"
+          Write-Host "[PAS] Real adversary: parse bookmark URLs to map internal infrastructure"
+      } else {
+          Write-Host "[PAS] Edge Bookmarks not present — pattern documented"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — browser Bookmarks/History file access by non-browser process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1217 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "File event: Bookmarks or History files accessed by non-browser process"
+  - "Sentinel: DeviceFileEvents | where FileName in ('Bookmarks','History') and FolderPath contains 'User Data' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Browser data accessed by unexpected process'"
+  - "CONTROL CHECK: Browser bookmark sync policies — sensitive internal URLs should not sync to personal profiles"
+  - "CONTROL CHECK: Separate browser profiles for corporate vs personal use reduces data leakage"

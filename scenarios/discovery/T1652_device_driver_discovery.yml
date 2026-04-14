@@ -1,0 +1,85 @@
+id: T1652_device_driver_discovery
+name: "Device Driver Discovery"
+mitre_technique: "T1652"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate device drivers to identify security products (EDR kernel
+  drivers), virtualisation artefacts (VMware, VirtualBox drivers), exploitable
+  vulnerable drivers (BYOVD targets), and hardware capabilities. Driver enumeration
+  via driverquery.exe, sc query type= driver, or WMI Win32_SystemDriver reveals
+  the full driver list including third-party security products, which adversaries
+  use to select appropriate evasion techniques.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1652/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1652 — Device Driver Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate device drivers via driverquery and WMI"
+    command: |
+      Write-Host "[PAS] Device driver enumeration:"
+
+      Write-Host "[PAS] Method 1: driverquery"
+      driverquery /FO CSV 2>&1 | ConvertFrom-Csv -ErrorAction SilentlyContinue |
+          Select-Object -First 10 |
+          Select-Object 'Module Name','Display Name','Driver Type' |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 2: WMI Win32_SystemDriver"
+      Get-WmiObject Win32_SystemDriver -ErrorAction SilentlyContinue |
+          Select-Object Name, DisplayName, State, StartMode |
+          Sort-Object Name | Select-Object -First 10 |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "Identify security and virtualisation drivers — evasion relevance"
+    command: |
+      Write-Host "[PAS] Security/EDR driver check:"
+      $secDrivers = Get-WmiObject Win32_SystemDriver -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match "MpKsl|WdFilter|CrowdStrike|SentinelMonitor|CarbonBlack|cbk7|ctifile|elam" }
+      if ($secDrivers) {
+          $secDrivers | ForEach-Object { Write-Host "  Security driver: $($_.Name) [$($_.DisplayName)]" }
+      } else {
+          Write-Host "  No known security drivers detected in this scan"
+      }
+
+      Write-Host "[PAS] Virtualisation driver check:"
+      $vmDrivers = Get-WmiObject Win32_SystemDriver -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -match "vmxnet|vmhgfs|vboxdrv|vboxguest|vmci|vsock" }
+      if ($vmDrivers) {
+          $vmDrivers | ForEach-Object { Write-Host "  VM driver: $($_.Name) [$($_.DisplayName)]" }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — driverquery.exe execution, WMI Win32_SystemDriver query from unexpected process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1652 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: driverquery.exe executed by non-admin user or script"
+  - "WMI query: Win32_SystemDriver from unexpected process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'driverquery.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Win32_SystemDriver'"
+  - "MDE alert: 'Driver enumeration — potential BYOVD reconnaissance'"
+  - "CONTROL CHECK: Vulnerable driver blocklist (Microsoft recommended driver block policy) — prevents known BYOVD drivers from loading"
+  - "CONTROL CHECK: Hypervisor-Protected Code Integrity (HVCI) — prevents unsigned/untrusted kernel drivers"

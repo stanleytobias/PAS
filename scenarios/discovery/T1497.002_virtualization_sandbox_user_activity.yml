@@ -1,0 +1,94 @@
+id: T1497.002_virtualization_sandbox_evasion_user_activity
+name: "Virtualization/Sandbox Evasion — User Activity Based Checks"
+mitre_technique: "T1497.002"
+mitre_tactic: "discovery"
+description: >
+  Adversaries check for signs of real user activity to distinguish live endpoints
+  from automated sandboxes. Sandboxes typically have no mouse movement history,
+  no recently accessed files, empty browser history, and low screen resolution.
+  Checks include: GetLastInputInfo (time since last user input), querying recent
+  document MRU lists, checking browser history file size, and monitoring for mouse
+  cursor movement over a brief period. Malware delays execution or aborts if no
+  user activity is detected.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1497/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1497.002 — User Activity Based Sandbox Checks simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check user activity indicators — mouse idle time, recent files"
+    command: |
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASUserActivity {
+          [StructLayout(LayoutKind.Sequential)]
+          public struct LASTINPUTINFO {
+              public uint cbSize;
+              public uint dwTime;
+          }
+          [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+          [DllImport("kernel32.dll")] public static extern uint GetTickCount();
+      }
+"@
+      $info          = New-Object PASUserActivity+LASTINPUTINFO
+      $info.cbSize   = [System.Runtime.InteropServices.Marshal]::SizeOf($info)
+      [PASUserActivity]::GetLastInputInfo([ref]$info) | Out-Null
+      $idleMs        = [PASUserActivity]::GetTickCount() - $info.dwTime
+      $idleSec       = [Math]::Round($idleMs / 1000)
+      Write-Host "[PAS] GetLastInputInfo: idle for $idleSec seconds"
+      if ($idleSec -gt 600) {
+          Write-Host "[PAS] [SANDBOX INDICATOR] No user input for >10 minutes"
+      }
+
+      Write-Host "[PAS] Recent documents MRU check:"
+      $mruCount = (Get-ChildItem "$env:APPDATA\Microsoft\Windows\Recent" `
+          -ErrorAction SilentlyContinue | Measure-Object).Count
+      Write-Host "  Recent files count: $mruCount $(if ($mruCount -lt 5) {'[LOW - sandbox indicator]'} else {''})"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check screen resolution and display setup — sandbox detection"
+    command: |
+      Add-Type -AssemblyName System.Windows.Forms
+      $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+      Write-Host "[PAS] Screen resolution: $($screen.Bounds.Width)x$($screen.Bounds.Height)"
+      if ($screen.Bounds.Width -lt 1024 -or $screen.Bounds.Height -lt 768) {
+          Write-Host "[PAS] [SANDBOX INDICATOR] Low resolution detected"
+      }
+      Write-Host "[PAS] Browser history size check:"
+      $edgeHistory = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\History"
+      if (Test-Path $edgeHistory) {
+          $histSize = (Get-Item $edgeHistory).Length
+          Write-Host "  Edge history: $([Math]::Round($histSize/1KB,1)) KB $(if ($histSize -lt 10000) {'[SMALL - sandbox indicator]'} else {''})"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — GetLastInputInfo API, MRU recent file reads, screen resolution checks from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1497.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: GetLastInputInfo called from scripting process — checks user idle time"
+  - "File access: Recent documents directory enumerated from unexpected process"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'Windows\\\\Recent' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'User activity check — sandbox evasion behaviour'"
+  - "CONTROL CHECK: Configure sandbox with simulated mouse movement, realistic MRU history, and browser history to defeat activity checks"

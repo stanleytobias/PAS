@@ -1,0 +1,84 @@
+id: T1087.003_account_discovery_email
+name: "Account Discovery — Email Account"
+mitre_technique: "T1087.003"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate email addresses and accounts to build target lists for
+  phishing, spear-phishing, or business email compromise. On Exchange/M365,
+  the Global Address List (GAL) is accessible to any authenticated user.
+  Methods: Get-GlobalAddressList via Exchange PowerShell, Microsoft Graph API
+  (GET /v1.0/users), LDAP query for mail attribute, and Outlook Autodiscover
+  probing. A full GAL dump reveals every employee's email address, job title,
+  department, and phone number.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1087/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1087.003 — Email Account Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate email accounts via LDAP mail attribute"
+    command: |
+      Write-Host "[PAS] Email account enumeration via LDAP:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              $searcher.Filter = "(&(objectClass=user)(mail=*))"
+              $searcher.PropertiesToLoad.AddRange(@("sAMAccountName","mail","displayName","department"))
+              $results = $searcher.FindAll()
+              Write-Host "  Accounts with email addresses: $($results.Count)"
+              $results | Select-Object -First 5 | ForEach-Object {
+                  $email = $_.Properties["mail"][0]
+                  $name  = $_.Properties["displayname"][0]
+                  Write-Host "  $name <$email>"
+              }
+          } catch { Write-Host "  LDAP query failed (no DC)" }
+      } else {
+          Write-Host "[PAS] Not domain-joined — Graph API simulation:"
+          Write-Host "[PAS] Real: GET https://graph.microsoft.com/v1.0/users?`$select=mail,displayName,department"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Graph API GAL dump — loopback pattern"
+    command: |
+      Write-Host "[PAS] Graph API GAL enumeration pattern (loopback):"
+      try {
+          $req = [System.Net.WebRequest]::Create(
+              "http://127.0.0.1/v1.0/users?`$select=mail,displayName&`$top=999")
+          $req.Headers.Add("Authorization","Bearer PAS_GRAPH_TOKEN")
+          $req.Timeout = 300
+          $req.GetResponse() | Out-Null
+      } catch {}
+      Write-Host "[PAS] Graph /users query telemetry generated"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — LDAP mail attribute query, Graph API /users enumeration from unexpected process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1087.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "LDAP query: objectClass=user with mail attribute from non-IT source"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains 'graph.microsoft.com/v1.0/users' and InitiatingProcessFileName == 'powershell.exe'"
+  - "Defender for Identity: 'User and IP address reconnaissance (SMB)' for on-premises GAL access"
+  - "CONTROL CHECK: Restrict GAL visibility — hide sensitive accounts (executives) from GAL"
+  - "CONTROL CHECK: Graph API User.ReadBasic.All permission is tenant-wide; audit apps holding it"

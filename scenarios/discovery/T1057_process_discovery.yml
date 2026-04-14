@@ -1,0 +1,82 @@
+id: T1057_process_discovery
+name: "Process Discovery"
+mitre_technique: "T1057"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate running processes to understand what software is active,
+  identify security tools to evade, detect sandbox/analysis environments, and
+  find processes to inject into. Methods: tasklist, Get-Process, wmic process,
+  ps (in WSL). Adversaries specifically look for: AV/EDR processes (MsMpEng,
+  CSFalconService, SentinelAgent), analysis tools (Wireshark, x64dbg, procmon),
+  and high-value processes to inject into (explorer.exe, svchost.exe).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1057/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1057 — Process Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate running processes via multiple methods"
+    command: |
+      Write-Host "[PAS] Process enumeration:"
+      Write-Host "[PAS] Method 1: tasklist"
+      tasklist /FO CSV 2>&1 | ConvertFrom-Csv -ErrorAction SilentlyContinue |
+          Select-Object -First 15 |
+          Select-Object 'Image Name','PID','Mem Usage' |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 2: wmic process"
+      $proc = Start-Process wmic.exe -ArgumentList "process list brief" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      Write-Host "[PAS] wmic process list brief — process event generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Identify security tools in process list — EDR/AV detection"
+    command: |
+      Write-Host "[PAS] Security tool process detection:"
+      $secProcesses = @(
+          "MsMpEng","MsSense","SenseCncProxy","MonitoringHost",  # Defender/MDE
+          "CSFalconService","falcon-sensor",                       # CrowdStrike
+          "SentinelAgent","SentinelServiceHost",                   # SentinelOne
+          "cb.exe","CbDefense",                                    # Carbon Black
+          "cyserver","CynetEPS",                                   # Cynet
+          "Sysmon","Sysmon64"                                      # Sysmon
+      )
+      $running = Get-Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+      foreach ($sp in $secProcesses) {
+          if ($running -contains $sp) {
+              Write-Host "  [SECURITY TOOL DETECTED] $sp"
+          }
+      }
+      Write-Host "[PAS] Security tool inventory complete"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — tasklist.exe, wmic process list from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1057 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: tasklist.exe, wmic.exe with process arguments from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('tasklist.exe','wmic.exe') and ProcessCommandLine contains 'process'"
+  - "MDE alert: 'Process enumeration by suspicious process'"
+  - "CONTROL CHECK: Tamper Protection prevents adversary from terminating MDE processes even after detection"
+  - "CONTROL CHECK: Correlate process enumeration with security tool targeting — a process that enumerates then kills AV is high fidelity"

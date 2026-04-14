@@ -1,0 +1,70 @@
+id: T1069.003_permission_groups_discovery_cloud
+name: "Permission Groups Discovery — Cloud Groups"
+mitre_technique: "T1069.003"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate Entra ID (Azure AD) groups and role assignments to map
+  cloud permission boundaries and identify high-privilege accounts. Methods:
+  Get-MgGroup, az ad group list, Graph API /v1.0/groups, and /v1.0/directoryRoles.
+  Privileged groups in Entra ID include: Global Administrators, Privileged Role
+  Administrators, Security Administrators, and custom RBAC groups controlling
+  Azure subscriptions. This is typically combined with T1087.004 cloud account
+  enumeration.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1069/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1069.003 — Cloud Group Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Entra ID groups and directory roles via Graph API"
+    command: |
+      Write-Host "[PAS] Cloud group enumeration (Graph API, loopback):"
+      $endpoints = @(
+          "http://127.0.0.1/v1.0/groups?`$select=displayName,description,members",
+          "http://127.0.0.1/v1.0/directoryRoles?`$expand=members",
+          "http://127.0.0.1/v1.0/roleManagement/directory/roleAssignments?`$expand=principal"
+      )
+      foreach ($ep in $endpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Graph query: $($ep.Split('?')[0])"
+      }
+
+      Write-Host "[PAS] Azure CLI equivalent:"
+      @("az ad group list --output table",
+        "az role definition list --output table") |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs ListGroups, Graph /groups /directoryRoles queries from unexpected app/IP"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1069.003 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'List groups' and InitiatedBy.app.displayName not in (approved_apps)"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains '/v1.0/groups' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Graph API GroupMember.Read.All is sensitive — audit all apps holding this permission"
+  - "CONTROL CHECK: PIM for all Entra ID privileged roles — no permanent assignment"

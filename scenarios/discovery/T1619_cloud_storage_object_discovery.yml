@@ -1,0 +1,89 @@
+id: T1619_cloud_storage_object_discovery
+name: "Cloud Storage Object Discovery"
+mitre_technique: "T1619"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate objects stored in cloud storage (Azure Blob Storage,
+  AWS S3, GCP Cloud Storage) to identify data worth collecting. After locating
+  storage accounts (T1580), adversaries list containers and blobs to find
+  database backups, configuration files, credentials, and sensitive documents.
+  Public buckets/containers can be enumerated without authentication. Authenticated
+  enumeration uses stolen credentials or managed identity tokens.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1619/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1619 — Cloud Storage Object Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Azure Blob Storage containers and objects"
+    command: |
+      Write-Host "[PAS] Cloud storage object discovery:"
+      $az = Get-Command az -ErrorAction SilentlyContinue
+      if ($az) {
+          Write-Host "[PAS] Azure CLI blob enumeration commands:"
+          @("az storage container list --account-name <account>",
+            "az storage blob list --container-name <container> --account-name <account>",
+            "az storage blob list --container-name backups --account-name prodsa") |
+              ForEach-Object { Write-Host "  $_" }
+      }
+
+      Write-Host "[PAS] Azure Blob REST API enumeration (loopback):"
+      $blobEndpoints = @(
+          "http://127.0.0.1/storageaccount/container1?restype=container&comp=list",
+          "http://127.0.0.1/storageaccount/backups?restype=container&comp=list",
+          "http://127.0.0.1/storageaccount?comp=list"
+      )
+      foreach ($ep in $blobEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization","Bearer PAS_STORAGE_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Blob list query: $ep"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for publicly accessible storage — no-auth enumeration"
+    command: |
+      Write-Host "[PAS] Public storage access check:"
+      Write-Host "[PAS] Real: curl https://<account>.blob.core.windows.net/<container>?comp=list"
+      Write-Host "[PAS] Public containers respond without Authorization header"
+      Write-Host "[PAS] AWS equivalent: aws s3 ls s3://bucket-name --no-sign-request"
+      try {
+          # Check if azcopy is available
+          $azcopy = Get-Command azcopy -ErrorAction SilentlyContinue
+          if ($azcopy) { Write-Host "  azcopy found — bulk blob download tool available" }
+      } catch {}
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Blob diagnostic logs — ListBlobs/ListContainers operations from unexpected IP or service principal"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1619 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Blob diagnostic logs: ListBlobs/ListContainers from unexpected service principal or IP"
+  - "Sentinel: StorageBlobLogs | where OperationName in ('ListBlobs','ListContainers') | summarize count() by CallerIpAddress, bin(TimeGenerated,5m) | where count_ > 50"
+  - "CONTROL CHECK: Enable blob storage diagnostic logging — without it, object enumeration is invisible"
+  - "CONTROL CHECK: Block public access on all storage accounts (Set-AzStorageAccount -AllowBlobPublicAccess `$false)"
+  - "CONTROL CHECK: Storage firewall — restrict blob access to known VNet/IP ranges; deny all by default"

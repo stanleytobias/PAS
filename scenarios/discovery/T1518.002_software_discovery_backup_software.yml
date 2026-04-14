@@ -1,0 +1,89 @@
+id: T1518.002_software_discovery_backup_software
+name: "Software Discovery — Backup Software Discovery"
+mitre_technique: "T1518.002"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate backup software and agents to understand recovery capabilities
+  before deploying ransomware or destructive payloads. Knowing what backup software
+  is present enables targeted deletion of backup catalogs and agent processes.
+  Common targets: Veeam, Backup Exec, Windows Server Backup, Azure Backup agent,
+  and shadow copy services. Ransomware groups enumerate backup tools as a precursor
+  to inhibit system recovery (T1490).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1518/002/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1518.002 — Backup Software Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate backup software via services, processes, and registry"
+    command: |
+      Write-Host "[PAS] Backup software enumeration:"
+      $backupServices = @(
+          "VeeamBackupSvc","VeeamDeploySvc","VeeamTransportSvc",  # Veeam
+          "BackupExecAgentAccelerator","beserver",                  # Backup Exec
+          "wbengine","SDRSVC",                                      # Windows Server Backup
+          "AzureBackup","MBAMService",                              # Azure Backup / MBAM
+          "SQLWriter","MSSQLSERVER"                                 # SQL VSS writer
+      )
+      $found = @()
+      foreach ($svc in $backupServices) {
+          $s = Get-Service $svc -ErrorAction SilentlyContinue
+          if ($s) {
+              $found += $svc
+              Write-Host "  [BACKUP SVC] $svc: $($s.Status)"
+          }
+      }
+
+      Write-Host "[PAS] Backup software in registry:"
+      $backupKeys = @(
+          "HKLM:\SOFTWARE\Veeam",
+          "HKLM:\SOFTWARE\Veritas",
+          "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\WindowsBackup"
+      )
+      foreach ($k in $backupKeys) {
+          if (Test-Path $k) { Write-Host "  [REGISTRY] $k" }
+      }
+
+      Write-Host "[PAS] Found $($found.Count) backup service(s) — ransomware would target these for termination"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check VSS shadow copies — backup recovery baseline"
+    command: |
+      Write-Host "[PAS] Shadow copy inventory:"
+      $shadows = vssadmin list shadows 2>&1
+      $count = ($shadows | Select-String "Shadow Copy ID").Count
+      Write-Host "  Existing shadow copies: $count"
+      Write-Host "[PAS] Ransomware: vssadmin delete shadows /all /quiet"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — backup service enumeration, vssadmin list shadows"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1518.002 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: vssadmin.exe list shadows from scripting process"
+  - "Service enumeration: Get-Service targeting Veeam/BackupExec/wbengine"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'vssadmin.exe' and ProcessCommandLine contains 'shadows'"
+  - "MDE alert: 'Backup software enumeration — potential ransomware precursor'"
+  - "CONTROL CHECK: Immutable/offsite backups unaffected by on-host backup agent termination"
+  - "CONTROL CHECK: Alert on vssadmin delete shadows — this is a critical ransomware pre-encryption signal"

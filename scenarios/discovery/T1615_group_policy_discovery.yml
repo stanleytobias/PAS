@@ -1,0 +1,76 @@
+id: T1615_group_policy_discovery
+name: "Group Policy Discovery"
+mitre_technique: "T1615"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate Group Policy Objects (GPOs) to understand security controls,
+  identify misconfigured policies, and find privilege escalation paths. GPOs reveal:
+  AppLocker/WDAC rules (what to bypass), software restriction policies, logon/logoff
+  scripts, password policies, drive mappings, and scheduled tasks. GPO enumeration
+  via gpresult, Get-GPO, or direct SYSVOL access is standard adversary tradecraft.
+  GPP passwords (T1552.006) are discovered through GPO enumeration.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1615/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1615 — Group Policy Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate applied GPOs via gpresult"
+    command: |
+      Write-Host "[PAS] Group Policy enumeration:"
+      Write-Host "[PAS] Method 1: gpresult /R (applied GPOs for current user/computer)"
+      $gp = Start-Process gpresult.exe -ArgumentList "/R /SCOPE COMPUTER" `
+          -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue
+      gpresult /R /SCOPE COMPUTER 2>&1 | Select-Object -First 30 |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate SYSVOL GPO policies path — direct GPO access"
+    command: |
+      Write-Host "[PAS] SYSVOL GPO path enumeration:"
+      $domain = $env:USERDNSDOMAIN
+      if ($domain) {
+          $sysvol = "\\$domain\SYSVOL\$domain\Policies"
+          Write-Host "  SYSVOL path: $sysvol"
+          if (Test-Path $sysvol -ErrorAction SilentlyContinue) {
+              $gpoDirs = Get-ChildItem $sysvol -Directory -ErrorAction SilentlyContinue
+              Write-Host "  GPO directories: $($gpoDirs.Count)"
+              Write-Host "  [PAS] Real attack: parse each GPO for scripts, preferences, credentials"
+          }
+      } else {
+          Write-Host "  Not domain-joined — SYSVOL not accessible"
+      }
+      Write-Host "[PAS] gpresult /X gpreport.xml saves full XML policy report"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — gpresult.exe execution, SYSVOL Policies path enumeration"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1615 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: gpresult.exe executed by non-admin or scripting process"
+  - "File event: SYSVOL \\domain\\SYSVOL\\domain\\Policies enumeration from workstation"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'gpresult.exe'"
+  - "Sentinel: DeviceFileEvents | where FolderPath contains 'SYSVOL' and FolderPath contains 'Policies'"
+  - "CONTROL CHECK: SYSVOL read access is unavoidable for domain members — focus on anomalous bulk access patterns"
+  - "CONTROL CHECK: GPP passwords (cpassword in Groups.xml) should not exist — deploy KB2962486 patch"

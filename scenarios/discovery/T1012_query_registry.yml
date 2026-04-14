@@ -1,0 +1,85 @@
+id: T1012_query_registry
+name: "Query Registry"
+mitre_technique: "T1012"
+mitre_tactic: "discovery"
+description: >
+  Adversaries query the Windows Registry to gather information about the system
+  configuration, installed software, security settings, and user preferences.
+  The registry is a rich source of intelligence: OS version and patch level,
+  installed applications and versions, mapped network drives, recently accessed
+  files (MRU lists), saved credentials, and security tool configurations.
+  Methods: reg query, Get-ItemProperty, reg.exe export, and direct Win32 API calls.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1012/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1012 — Query Registry simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Query key registry paths for reconnaissance information"
+    command: |
+      Write-Host "[PAS] Registry reconnaissance queries:"
+      $reconKeys = @{
+          "OS Version"        = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+          "Terminal Server"   = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+          "ComputerName"      = "HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName"
+          "WinLogon"          = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
+          "Recent Files (MRU)"= "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"
+          "Run Keys"          = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+          "TimeZone"          = "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation"
+      }
+      foreach ($name in $reconKeys.Keys) {
+          $key = $reconKeys[$name]
+          if (Test-Path $key) {
+              $props = Get-ItemProperty $key -ErrorAction SilentlyContinue
+              Write-Host "  [$name]: $key — accessible"
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "reg query commands — generates process telemetry"
+    command: |
+      Write-Host "[PAS] reg query command pattern:"
+      $queries = @(
+          "reg query HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion /v CurrentVersion",
+          "reg query HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs",
+          "reg query HKLM\SYSTEM\CurrentControlSet\Services /s"
+      )
+      foreach ($q in $queries) {
+          $args = $q -replace "^reg query ",""
+          Start-Process reg.exe -ArgumentList "query $args" `
+              -PassThru -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "[PAS] $q — process event generated"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — reg.exe query on system keys, bulk registry reads from powershell.exe"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1012 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: reg.exe with 'query' argument on sensitive key paths"
+  - "Registry event: bulk reads of HKLM system keys from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'reg.exe' and ProcessCommandLine contains 'query'"
+  - "Sentinel: DeviceRegistryEvents | summarize count() by InitiatingProcessFileName, bin(TimeGenerated,1m) | where count_ > 100"
+  - "MDE alert: 'Registry reconnaissance detected'"
+  - "CONTROL CHECK: Registry auditing on sensitive keys (LSA, Run, Winlogon) — Event ID 4663"

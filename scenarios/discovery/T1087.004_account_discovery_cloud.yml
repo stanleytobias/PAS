@@ -1,0 +1,70 @@
+id: T1087.004_account_discovery_cloud
+name: "Account Discovery — Cloud Account"
+mitre_technique: "T1087.004"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate cloud accounts in Entra ID, AWS IAM, or GCP IAM to map
+  identities, discover service principals, and identify high-privilege accounts
+  for targeting. In Entra ID: Get-MgUser, az ad user list, or direct Graph API
+  calls return all users, groups, service principals, and their role assignments.
+  This is typically one of the first steps after gaining cloud access — understanding
+  who has what permissions shapes all subsequent actions.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1087/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1087.004 — Cloud Account Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Entra ID users and service principals via Graph API"
+    command: |
+      Write-Host "[PAS] Cloud account enumeration:"
+      $graphEndpoints = @(
+          "http://127.0.0.1/v1.0/users?`$select=displayName,userPrincipalName,assignedLicenses",
+          "http://127.0.0.1/v1.0/servicePrincipals?`$top=100",
+          "http://127.0.0.1/v1.0/directoryRoles?`$expand=members"
+      )
+      foreach ($ep in $graphEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization","Bearer PAS_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] Graph query: $($ep.Split('?')[0])"
+      }
+
+      Write-Host "[PAS] Azure CLI equivalent commands:"
+      @("az ad user list --output table",
+        "az ad sp list --output table",
+        "az role assignment list --all") |
+          ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — AuditLogs ListUsers, Graph /users /servicePrincipals queries from unexpected app"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1087.004 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Sentinel: AuditLogs | where OperationName == 'List users' and InitiatedBy.app.displayName not in (approved_apps)"
+  - "Sentinel: DeviceNetworkEvents | where RemoteUrl contains '/v1.0/users' and InitiatingProcessFileName == 'powershell.exe'"
+  - "CONTROL CHECK: Graph API Directory.Read.All is a sensitive permission — audit all apps holding it"
+  - "CONTROL CHECK: Entra ID audit logs for bulk user enumeration patterns"

@@ -1,0 +1,81 @@
+id: T1622_debugger_evasion
+name: "Debugger Evasion"
+mitre_technique: "T1622"
+mitre_tactic: "discovery"
+description: >
+  Adversaries detect debuggers attached to their process to alter behaviour and
+  avoid analysis. Common Windows anti-debug checks: IsDebuggerPresent API,
+  CheckRemoteDebuggerPresent, NtQueryInformationProcess (ProcessDebugPort),
+  heap flag checks (NtGlobalFlag), and timing attacks (RDTSC delta). Malware
+  uses these checks to avoid dynamic analysis in sandboxes and analyst
+  environments. Detection generates API call telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1622/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1622 — Debugger Evasion detection simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Execute debugger presence checks via Win32 API"
+    command: |
+      Add-Type @"
+      using System;
+      using System.Runtime.InteropServices;
+      using System.Diagnostics;
+      public class PASDebugCheck {
+          [DllImport("kernel32.dll")] public static extern bool IsDebuggerPresent();
+          [DllImport("kernel32.dll")] public static extern bool CheckRemoteDebuggerPresent(
+              IntPtr hProcess, ref bool isDebuggerPresent);
+          [DllImport("ntdll.dll")]    public static extern int NtQueryInformationProcess(
+              IntPtr hProcess, uint infoClass, ref IntPtr info, uint size, ref uint retLen);
+          public const uint ProcessDebugPort = 7;
+      }
+"@
+      Write-Host "[PAS] Debugger presence checks:"
+
+      $localDebug = [PASDebugCheck]::IsDebuggerPresent()
+      Write-Host "  IsDebuggerPresent: $localDebug"
+
+      $remoteDebug = $false
+      [PASDebugCheck]::CheckRemoteDebuggerPresent(
+          [System.Diagnostics.Process]::GetCurrentProcess().Handle, [ref]$remoteDebug) | Out-Null
+      Write-Host "  CheckRemoteDebuggerPresent: $remoteDebug"
+
+      # NtQueryInformationProcess - ProcessDebugPort (7)
+      $info   = [IntPtr]::Zero
+      $retLen = 0u
+      $status = [PASDebugCheck]::NtQueryInformationProcess(
+          [System.Diagnostics.Process]::GetCurrentProcess().Handle,
+          [PASDebugCheck]::ProcessDebugPort, [ref]$info, [IntPtr]::Size, [ref]$retLen)
+      Write-Host "  NtQueryInformationProcess(ProcessDebugPort): $info (0=not debugged)"
+      Write-Host "[PAS] All three debugger check API calls generated — detectable via API monitoring"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — IsDebuggerPresent / CheckRemoteDebuggerPresent API calls from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1622 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: IsDebuggerPresent, CheckRemoteDebuggerPresent called from non-debugger process"
+  - "API: NtQueryInformationProcess with ProcessDebugPort (0x7) class"
+  - "MDE: DeviceEvents | where ActionType contains 'AntiDebug' or ActionType contains 'IsDebuggerPresent'"
+  - "Sentinel: correlate anti-debug calls with other sandbox evasion techniques (T1497) — combination is high fidelity"
+  - "CONTROL CHECK: Sandbox analysis — configure detonation environments to pass IsDebuggerPresent checks to observe evasive behaviour"

@@ -1,0 +1,71 @@
+id: T1614.001_system_location_system_language
+name: "System Location Discovery — System Language Discovery"
+mitre_technique: "T1614.001"
+mitre_tactic: "discovery"
+description: >
+  Adversaries specifically check the system language/locale to determine geographic
+  location for attack targeting decisions. Many ransomware families (REvil, Conti,
+  LockBit) check for Russian and CIS language settings and abort if detected —
+  a legal self-protection strategy. Methods: GetUserDefaultUILanguage Win32 API,
+  registry HKLM\SYSTEM\CurrentControlSet\Control\Nls\Language, and PowerShell
+  Get-WinSystemLocale. Language ID 0x0419 = Russian; detecting this causes abort.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1614/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1614.001 — System Language Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Query system language via API and registry"
+    command: |
+      Add-Type @"
+      using System.Runtime.InteropServices;
+      public class PASLocale {
+          [DllImport("kernel32.dll")] public static extern ushort GetUserDefaultUILanguage();
+          [DllImport("kernel32.dll")] public static extern ushort GetSystemDefaultUILanguage();
+          [DllImport("kernel32.dll")] public static extern int GetUserDefaultLCID();
+      }
+"@
+      Write-Host "[PAS] Language API calls:"
+      $userLang   = [PASLocale]::GetUserDefaultUILanguage()
+      $sysLang    = [PASLocale]::GetSystemDefaultUILanguage()
+      $lcid       = [PASLocale]::GetUserDefaultLCID()
+      Write-Host "  GetUserDefaultUILanguage: 0x$($userLang.ToString('X4')) ($userLang)"
+      Write-Host "  GetSystemDefaultUILanguage: 0x$($sysLang.ToString('X4')) ($sysLang)"
+      Write-Host "  GetUserDefaultLCID: $lcid"
+      Write-Host "[PAS] Ransomware abort codes: 0x0419=Russian 0x0422=Ukrainian 0x0423=Belarusian"
+
+      Write-Host "[PAS] Registry language check:"
+      $langKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Nls\Language"
+      $langVal = (Get-ItemProperty $langKey -Name InstallLanguage -ErrorAction SilentlyContinue).InstallLanguage
+      Write-Host "  InstallLanguage: $langVal"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — GetUserDefaultUILanguage API from scripting process, Nls\\Language registry read"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1614.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "API: GetUserDefaultUILanguage, GetSystemDefaultUILanguage from scripting process"
+  - "Registry: HKLM\\...\\Nls\\Language InstallLanguage read from unexpected process"
+  - "Sentinel: DeviceRegistryEvents | where RegistryKey contains 'Nls\\\\Language' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'Language/locale check — potential malware geofencing'"
+  - "CONTROL CHECK: Language-aware sandbox detonation — test samples with multiple locale VMs to bypass geofencing"

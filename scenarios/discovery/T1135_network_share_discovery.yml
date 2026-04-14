@@ -1,0 +1,73 @@
+id: T1135_network_share_discovery
+name: "Network Share Discovery"
+mitre_technique: "T1135"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate network shares to identify data sources for collection and
+  lateral movement staging. Methods: net view \\target, net share (local shares),
+  Get-SmbShare, and WMI Win32_Share. Adversaries look for: open administrative
+  shares (ADMIN$, C$), department file shares with sensitive data, and shares
+  with weak permissions. Network share discovery is typically an early step before
+  lateral data collection (T1039).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1135/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1135 — Network Share Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate local shares and remote shares via net"
+    command: |
+      Write-Host "[PAS] Network share enumeration:"
+      Write-Host "[PAS] Method 1: net share (local)"
+      net share 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: Get-SmbShare"
+      Get-SmbShare -ErrorAction SilentlyContinue |
+          Select-Object Name, Path, Description |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 3: net view (remote — loopback)"
+      net view \\127.0.0.1 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate shares via WMI — alternative detection path"
+    command: |
+      Write-Host "[PAS] WMI share enumeration:"
+      Get-WmiObject Win32_Share -ErrorAction SilentlyContinue |
+          Select-Object Name, Path, Type, Description |
+          Format-Table -AutoSize | Out-String | Write-Host
+      Write-Host "[PAS] Type 0=Disk, 1=Print, 2147483648=Admin disk (ADMIN$, C$)"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe view/share, WMI Win32_Share, SMB connections to enumerate shares"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1135 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: net.exe with 'view' or 'share' argument"
+  - "WMI query: Win32_Share from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'view'"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Win32_Share'"
+  - "MDE alert: 'Network share enumeration'"
+  - "CONTROL CHECK: Disable administrative shares on workstations via GPO (AutoShareWks=0)"
+  - "CONTROL CHECK: Share permissions — least privilege; audit all shares with 'Everyone' access"

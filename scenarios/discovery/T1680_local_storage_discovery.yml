@@ -1,0 +1,75 @@
+id: T1680_local_storage_discovery
+name: "Local Storage Discovery"
+mitre_technique: "T1680"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate local drives, disks, and volumes to understand available
+  storage — preparing for ransomware encryption, identifying backup drives to
+  destroy, or locating data repositories. Methods include Get-PSDrive, WMI
+  Win32_LogicalDisk, fsutil fsinfo drives, and direct volume enumeration via
+  Win32 APIs. Ransomware actors enumerate drives specifically to target all
+  attached storage including network mapped drives and USB devices.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1680/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1680 — Local Storage Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate drives and volumes via multiple methods"
+    command: |
+      Write-Host "[PAS] Local storage discovery:"
+      Write-Host "[PAS] Method 1: Get-PSDrive"
+      Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+          Select-Object Name, Root, Used, Free |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 2: WMI Win32_LogicalDisk"
+      Get-WmiObject Win32_LogicalDisk -ErrorAction SilentlyContinue |
+          Select-Object DeviceID, DriveType, Size, FreeSpace, VolumeName |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 3: fsutil fsinfo drives"
+      fsutil fsinfo drives 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate volume serial numbers — used by malware for environment fingerprinting"
+    command: |
+      Write-Host "[PAS] Volume serial number enumeration (fingerprinting):"
+      Get-WmiObject Win32_LogicalDisk -ErrorAction SilentlyContinue |
+          ForEach-Object {
+              Write-Host "  $($_.DeviceID) VolumeSerial=$($_.VolumeSerialNumber) Type=$($_.DriveType)"
+          }
+      Write-Host "[PAS] Ransomware uses drive list to enumerate all targets before encryption"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — fsutil.exe drives, WMI Win32_LogicalDisk from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1680 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: fsutil.exe with 'drives' or 'fsinfo' arguments"
+  - "WMI query: Win32_LogicalDisk from scripting process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'fsutil.exe' and ProcessCommandLine contains 'drives'"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Win32_LogicalDisk'"
+  - "MDE alert: 'Volume enumeration — potential ransomware preparation'"
+  - "CONTROL CHECK: Correlate drive enumeration with other ransomware precursors: shadow delete, inhibit recovery, bulk encryption"

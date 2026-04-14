@@ -1,0 +1,73 @@
+id: T1082_system_information_discovery
+name: "System Information Discovery"
+mitre_technique: "T1082"
+mitre_tactic: "discovery"
+description: >
+  Adversaries gather detailed OS and hardware information to understand the target
+  environment and select appropriate exploits and payloads. Methods: systeminfo,
+  Get-ComputerInfo, wmic os/computersystem, ver, hostname. Key data gathered:
+  OS version and patch level (exploit selection), architecture (x86/x64 payload
+  selection), RAM and CPU (environment fingerprinting), hotfixes installed (missing
+  patch identification), and domain membership.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1082/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1082 — System Information Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate system information via systeminfo and WMI"
+    command: |
+      Write-Host "[PAS] System information discovery:"
+      Write-Host "[PAS] Method 1: systeminfo"
+      $proc = Start-Process systeminfo.exe -PassThru -NoNewWindow -Wait `
+          -ErrorAction SilentlyContinue
+      systeminfo 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate via WMI and Get-ComputerInfo"
+    command: |
+      Write-Host "[PAS] Method 2: WMI system info"
+      $os = Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue
+      $cs = Get-WmiObject Win32_ComputerSystem   -ErrorAction SilentlyContinue
+      Write-Host "  OS:           $($os?.Caption) $($os?.Version)"
+      Write-Host "  Architecture: $($os?.OSArchitecture)"
+      Write-Host "  RAM:          $([Math]::Round($cs?.TotalPhysicalMemory/1GB,1)) GB"
+      Write-Host "  Domain:       $($cs?.Domain)"
+      Write-Host "  Hotfixes:     $(($os?.HotfixList | Measure-Object).Count) applied"
+
+      Write-Host "[PAS] Method 3: ver and hostname"
+      cmd /c ver 2>&1 | ForEach-Object { Write-Host "  $_" }
+      hostname 2>&1 | ForEach-Object { Write-Host "  Hostname: $_" }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — systeminfo.exe, WMI Win32_OperatingSystem query from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1082 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: systeminfo.exe execution from scripting context"
+  - "WMI query: Win32_OperatingSystem, Win32_ComputerSystem from unexpected process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'systeminfo.exe'"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Win32_OperatingSystem'"
+  - "MDE alert: 'System information enumeration'"
+  - "CONTROL CHECK: Patch cadence — systeminfo reveals missing hotfixes; adversary uses this for exploit selection"

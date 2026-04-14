@@ -1,0 +1,81 @@
+id: T1120_peripheral_device_discovery
+name: "Peripheral Device Discovery"
+mitre_technique: "T1120"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate peripheral devices to identify connected hardware that
+  may be useful for data collection (cameras, microphones, USB storage) or
+  to understand the physical environment. WMI Win32_PnPEntity, Get-PnpDevice,
+  and registry HKLM\SYSTEM\CurrentControlSet\Enum enumerate all connected devices.
+  Smart card readers indicate certificate-based auth. USB storage devices indicate
+  data transfer opportunities. Cameras and microphones indicate surveillance potential.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1120/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1120 — Peripheral Device Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate peripheral devices via WMI and Get-PnpDevice"
+    command: |
+      Write-Host "[PAS] Peripheral device enumeration:"
+      Get-PnpDevice -ErrorAction SilentlyContinue |
+          Where-Object { $_.Status -eq 'OK' } |
+          Select-Object Class, FriendlyName, Status |
+          Group-Object Class |
+          Sort-Object Count -Descending |
+          Select-Object -First 10 |
+          ForEach-Object { Write-Host "  $($_.Name): $($_.Count) device(s)" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Identify high-value peripheral categories"
+    command: |
+      Write-Host "[PAS] High-value peripheral categories:"
+      $categories = @{
+          "USB/Mass Storage" = "USB"
+          "Camera/Imaging"   = "Camera|Image"
+          "Smart Card"       = "Smart Card|Smartcard"
+          "Audio"            = "Audio|Sound|Microphone"
+          "Bluetooth"        = "Bluetooth"
+      }
+      foreach ($cat in $categories.Keys) {
+          $devices = Get-PnpDevice -ErrorAction SilentlyContinue |
+              Where-Object { $_.FriendlyName -match $categories[$cat] -and $_.Status -eq 'OK' }
+          if ($devices) {
+              Write-Host "  [$cat]:"
+              $devices | Select-Object -First 2 | ForEach-Object {
+                  Write-Host "    $($_.FriendlyName)"
+              }
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — WMI Win32_PnPEntity / Get-PnpDevice from scripting process"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1120 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "WMI query: Win32_PnPEntity from scripting process"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Win32_PnPEntity'"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'Get-PnpDevice'"
+  - "CONTROL CHECK: USB device control via MDE Device Control — block unapproved removable media"
+  - "CONTROL CHECK: Windows Privacy — restrict camera/microphone to approved apps only"

@@ -1,0 +1,80 @@
+id: T1518.001_software_discovery_security_software
+name: "Software Discovery — Security Software Discovery"
+mitre_technique: "T1518.001"
+mitre_tactic: "discovery"
+description: >
+  Adversaries specifically enumerate security software (AV, EDR, SIEM agents,
+  DLP, host firewall, vulnerability scanners) to select appropriate evasion
+  techniques and identify blind spots. Methods: WMI SecurityCenter2 namespace,
+  registry enumeration of known security product keys, service enumeration for
+  security service names, and process list inspection. Knowing which EDR is
+  present determines which evasion techniques are viable.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1518/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1518.001 — Security Software Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate security products via WMI SecurityCenter2"
+    command: |
+      Write-Host "[PAS] Security software via WMI SecurityCenter2:"
+      Get-WmiObject -Namespace root\SecurityCenter2 -Class AntiVirusProduct `
+          -ErrorAction SilentlyContinue |
+          Select-Object displayName, productState, pathToSignedProductExe |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Get-WmiObject -Namespace root\SecurityCenter2 -Class FirewallProduct `
+          -ErrorAction SilentlyContinue |
+          Select-Object displayName, productState |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate security services and registry keys"
+    command: |
+      Write-Host "[PAS] Security service enumeration:"
+      $secServices = @(
+          "WinDefend","Sense","WdNisSvc",              # Windows Defender / MDE
+          "CSFalconService",                            # CrowdStrike
+          "SentinelAgent","SentinelStaticEngine",       # SentinelOne
+          "CarbonBlack","cbstream",                     # Carbon Black
+          "cylancesvc",                                 # Cylance
+          "McAfeeFramework","masvc",                    # McAfee
+          "Sysmon","Sysmon64"                           # Sysmon
+      )
+      foreach ($svc in $secServices) {
+          $s = Get-Service $svc -ErrorAction SilentlyContinue
+          if ($s) { Write-Host "  [FOUND] $svc: $($s.Status)" }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — WMI SecurityCenter2 query, security product service enumeration"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1518.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "WMI query: root\\SecurityCenter2 AntiVirusProduct from scripting process"
+  - "Process event: Get-Service targeting known security product service names"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'SecurityCenter2'"
+  - "MDE alert: 'Security product enumeration'"
+  - "CONTROL CHECK: Deploy multiple layers — adversary knowing about one layer does not expose all controls"
+  - "CONTROL CHECK: Tamper Protection on MDE — prevents security product from being disabled even after discovery"

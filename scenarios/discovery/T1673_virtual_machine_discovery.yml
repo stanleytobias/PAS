@@ -1,0 +1,93 @@
+id: T1673_virtual_machine_discovery
+name: "Virtual Machine Discovery"
+mitre_technique: "T1673"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate virtual machines running on a hypervisor host after gaining
+  access. On Windows, Hyper-V hosts expose VM inventory via Get-VM, WMI Msvm_*
+  classes, and the Hyper-V Manager. ESXi hypervisors use esxcli and vim-cmd.
+  Discovering hosted VMs allows adversaries to expand scope — targeting the guest
+  VMs for lateral movement or attacking the hypervisor itself for maximum impact.
+  VM discovery also helps malware detect if it is inside a VM (sandbox evasion).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1673/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1673 — Virtual Machine Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Hyper-V VMs and hypervisor presence"
+    command: |
+      Write-Host "[PAS] Virtual machine discovery:"
+
+      # Check for Hyper-V role
+      $hypervFeature = Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V `
+          -ErrorAction SilentlyContinue
+      Write-Host "  Hyper-V feature: $($hypervFeature?.State ?? 'Not available')"
+
+      # Try Get-VM (requires Hyper-V PowerShell module)
+      $hvModule = Get-Module Hyper-V -ListAvailable -ErrorAction SilentlyContinue
+      if ($hvModule) {
+          Write-Host "  Hyper-V module available — enumerating VMs:"
+          Get-VM -ErrorAction SilentlyContinue |
+              Select-Object Name, State, CPUUsage, MemoryAssigned |
+              Format-Table -AutoSize | Out-String | Write-Host
+      } else {
+          Write-Host "  Hyper-V module not available on this host"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for VMware/VirtualBox hypervisor presence"
+    command: |
+      Write-Host "[PAS] Hypervisor presence checks:"
+      # Check for hypervisor via WMI
+      $bios = Get-WmiObject Win32_BIOS -ErrorAction SilentlyContinue
+      $cs   = Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue
+      Write-Host "  BIOS Manufacturer: $($bios?.Manufacturer)"
+      Write-Host "  System Model: $($cs?.Model)"
+      Write-Host "  Hypervisor Present (WMI): $($cs?.HypervisorPresent)"
+
+      # Check VMware/VirtualBox registry keys
+      @("HKLM:\SOFTWARE\VMware, Inc.","HKLM:\SOFTWARE\Oracle\VirtualBox Guest Additions") |
+          ForEach-Object {
+              if (Test-Path $_) { Write-Host "  [HYPERVISOR] Registry: $_" }
+          }
+
+      # Check esxcli / vim-cmd availability (ESXi host)
+      @("esxcli","vim-cmd") | ForEach-Object {
+          $cmd = Get-Command $_ -ErrorAction SilentlyContinue
+          if ($cmd) { Write-Host "  [ESXi] $_ found: $($cmd.Source)" }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Get-VM Hyper-V enumeration, WMI Msvm_ queries, esxcli/vim-cmd execution"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1673 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: esxcli or vim-cmd execution (ESXi host indicator)"
+  - "WMI query: Msvm_* classes (Hyper-V enumeration)"
+  - "Script block logging: Get-VM from unexpected context"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('esxcli','vim-cmd')"
+  - "Sentinel: DeviceEvents | where ActionType == 'WmiQuery' and AdditionalFields contains 'Msvm_'"
+  - "CONTROL CHECK: Hypervisor management access — restrict Hyper-V/vCenter access to dedicated admin accounts on PAWs"
+  - "CONTROL CHECK: Compromised hypervisor = all guest VMs compromised; treat hypervisor as Tier 0"

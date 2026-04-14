@@ -1,0 +1,66 @@
+id: T1614_system_location_discovery
+name: "System Location Discovery"
+mitre_technique: "T1614"
+mitre_tactic: "discovery"
+description: >
+  Adversaries determine the geographical location of a victim host to decide whether
+  to proceed with the attack — many nation-state malware families skip execution in
+  their home country to avoid attribution. Methods: time zone query (tzutil /g),
+  system locale (Get-WinSystemLocale), keyboard layout, and IP geolocation checks.
+  Malware may also query the Windows MUI (Multilingual User Interface) language ID
+  to detect CIS/Eastern European systems and abort.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1614/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1614 — System Location Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate geographic location indicators"
+    command: |
+      Write-Host "[PAS] System location discovery:"
+      Write-Host "[PAS] Time zone:"
+      tzutil /g 2>&1 | ForEach-Object { Write-Host "  TZ: $_" }
+
+      Write-Host "[PAS] System locale:"
+      Get-WinSystemLocale -ErrorAction SilentlyContinue |
+          Select-Object Name, DisplayName |
+          ForEach-Object { Write-Host "  Locale: $($_.DisplayName) [$($_.Name)]" }
+
+      Write-Host "[PAS] Keyboard layout:"
+      Get-WinUserLanguageList -ErrorAction SilentlyContinue |
+          ForEach-Object { Write-Host "  Language: $($_.LanguageTag)" }
+
+      Write-Host "[PAS] GeoID (Windows geographic location):"
+      $geoId = Get-WinHomeLocation -ErrorAction SilentlyContinue
+      Write-Host "  GeoID: $($geoId?.GeoId) [$($geoId?.HomeLocation)]"
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — tzutil.exe, Get-WinSystemLocale in script block logs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1614 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: tzutil.exe execution from scripting process"
+  - "Script block logging: Get-WinSystemLocale, Get-WinHomeLocation in unexpected context"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'tzutil.exe' and InitiatingProcessFileName == 'powershell.exe'"
+  - "MDE alert: 'System locale enumeration — possible malware geofencing check'"
+  - "CONTROL CHECK: Locale-based malware may skip execution in unexpected locales — test with non-English locale VMs"

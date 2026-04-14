@@ -1,0 +1,79 @@
+id: T1069.001_permission_groups_discovery_local
+name: "Permission Groups Discovery — Local Groups"
+mitre_technique: "T1069.001"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate local groups and their memberships to identify privilege
+  escalation paths and understand what access the compromised account has.
+  Key targets: local Administrators group (who has admin?), Remote Desktop Users
+  (who can RDP?), Remote Management Users (who can WinRM?), and Backup Operators
+  (who can read all files?). Methods: net localgroup, Get-LocalGroup,
+  Get-LocalGroupMember, WMI Win32_GroupUser.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1069/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1069.001 — Local Group Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate local groups and high-value memberships"
+    command: |
+      Write-Host "[PAS] Local group enumeration:"
+      Write-Host "[PAS] All local groups:"
+      net localgroup 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] High-value group memberships:"
+      @("Administrators","Remote Desktop Users","Remote Management Users",
+        "Backup Operators","Power Users") | ForEach-Object {
+          $grp = $_
+          $members = net localgroup "$grp" 2>&1 |
+              Select-String -Pattern "^[^-\s]" |
+              Where-Object { $_ -notmatch "Command|Members|member|^$|The command" }
+          if ($members) {
+              Write-Host "  [$grp]:"
+              $members | ForEach-Object { Write-Host "    $($_.Line.Trim())" }
+          }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enumerate via Get-LocalGroupMember — PowerShell method"
+    command: |
+      Write-Host "[PAS] Get-LocalGroupMember (PowerShell):"
+      Get-LocalGroup -ErrorAction SilentlyContinue | ForEach-Object {
+          $grp  = $_
+          $mems = Get-LocalGroupMember -Group $grp.Name -ErrorAction SilentlyContinue
+          if ($mems) {
+              Write-Host "  $($grp.Name): $($mems.Name -join ', ')"
+          }
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe localgroup, Get-LocalGroupMember in script block logs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1069.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: net.exe with 'localgroup' argument"
+  - "Script block logging: Get-LocalGroupMember execution from unexpected process"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'localgroup'"
+  - "MDE alert: 'Local group enumeration'"
+  - "CONTROL CHECK: Local Administrators group should contain only Domain\\IT-Admins and LAPS account, never user accounts"

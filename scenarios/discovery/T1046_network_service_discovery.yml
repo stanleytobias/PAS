@@ -1,0 +1,77 @@
+id: T1046_network_service_discovery
+name: "Network Service Discovery"
+mitre_technique: "T1046"
+mitre_tactic: "discovery"
+description: >
+  Adversaries scan the network to identify open ports and running services on
+  remote hosts. This reveals: available lateral movement targets (RDP 3389,
+  WinRM 5985, SMB 445), vulnerable services (unpatched web apps on 80/443/8080),
+  and management interfaces (SSH 22, SNMP 161). On Windows, port scanning can be
+  done with Test-NetConnection, Invoke-PortScan, or by invoking nmap/masscan.
+  This simulation uses loopback-only scans to generate the telemetry.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1046/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1046 — Network Service Discovery simulation (loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Port scan loopback — generates connection attempt telemetry"
+    command: |
+      Write-Host "[PAS] Network service discovery (loopback only):"
+      $commonPorts = @(21,22,23,25,53,80,135,139,443,445,1433,3306,3389,5985,5986,8080,8443)
+
+      Write-Host "[PAS] Scanning loopback for common service ports:"
+      foreach ($port in $commonPorts) {
+          try {
+              $tcp = New-Object System.Net.Sockets.TcpClient
+              $result = $tcp.BeginConnect("127.0.0.1", $port, $null, $null)
+              $open   = $result.AsyncWaitHandle.WaitOne(200, $false)
+              $tcp.Close()
+              if ($open) { Write-Host "  [OPEN]   127.0.0.1:$port" }
+          } catch {}
+      }
+      Write-Host "[PAS] Port scan complete — connection attempt telemetry generated"
+
+  - step: 3
+    type: exec_powershell
+    description: "Scan using Test-NetConnection — generates network event telemetry"
+    command: |
+      Write-Host "[PAS] Test-NetConnection scan pattern:"
+      @(445, 3389, 5985) | ForEach-Object {
+          $result = Test-NetConnection -ComputerName 127.0.0.1 -Port $_ `
+              -InformationLevel Quiet -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+          Write-Host "  127.0.0.1:$_ - $(if ($result) {'Open'} else {'Closed/Filtered'})"
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — rapid sequential TCP connections to multiple ports, Test-NetConnection burst"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1046 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Network event: rapid sequential TCP SYN connections to multiple ports from single source"
+  - "Process event: nmap.exe, masscan.exe, or Invoke-PortScan pattern"
+  - "Sentinel: DeviceNetworkEvents | summarize PortCount=dcount(RemotePort) by DeviceName, bin(TimeGenerated,1m) | where PortCount > 10"
+  - "Sentinel: DeviceProcessEvents | where ProcessCommandLine contains 'Test-NetConnection' and ProcessCommandLine contains '445'"
+  - "MDE alert: 'Network port scan detected'"
+  - "CONTROL CHECK: Network segmentation — workstations should not reach server ports directly"
+  - "CONTROL CHECK: Host-based firewall on all endpoints — reduces port scan effectiveness"

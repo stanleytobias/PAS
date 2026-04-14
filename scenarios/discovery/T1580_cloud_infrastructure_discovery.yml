@@ -1,0 +1,78 @@
+id: T1580_cloud_infrastructure_discovery
+name: "Cloud Infrastructure Discovery"
+mitre_technique: "T1580"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate cloud infrastructure resources — VMs, storage accounts,
+  databases, networks, snapshots — after gaining cloud access. In Azure: az vm list,
+  Get-AzVM, az storage account list, az network vnet list. These commands map the
+  entire cloud estate, revealing high-value targets, backup snapshots that can be
+  exfiltrated, and misconfigured resources. Discovery is typically done with
+  Reader-level permissions on the subscription — available to any authenticated
+  cloud principal.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1580/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1580 — Cloud Infrastructure Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate Azure infrastructure via CLI and REST API"
+    command: |
+      Write-Host "[PAS] Cloud infrastructure discovery:"
+      $az = Get-Command az -ErrorAction SilentlyContinue
+      if ($az) {
+          Write-Host "[PAS] Azure CLI found — enumerating infrastructure:"
+          @("az vm list --output table",
+            "az storage account list --output table",
+            "az network vnet list --output table",
+            "az sql server list --output table",
+            "az snapshot list --output table") |
+              ForEach-Object { Write-Host "  CMD: $_" }
+      }
+
+      Write-Host "[PAS] Azure REST API enumeration pattern (loopback):"
+      $mgmtEndpoints = @(
+          "http://127.0.0.1/subscriptions/{sub}/resourceGroups",
+          "http://127.0.0.1/subscriptions/{sub}/providers/Microsoft.Compute/virtualMachines",
+          "http://127.0.0.1/subscriptions/{sub}/providers/Microsoft.Storage/storageAccounts"
+      )
+      foreach ($ep in $mgmtEndpoints) {
+          try {
+              $req = [System.Net.WebRequest]::Create($ep)
+              $req.Headers.Add("Authorization","Bearer PAS_MGMT_TOKEN")
+              $req.Timeout = 300
+              $req.GetResponse() | Out-Null
+          } catch {}
+          Write-Host "[PAS] ARM API query: $ep"
+      }
+
+  - step: 3
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Azure Monitor — ARM activity log: bulk List* operations across resource types from unexpected principal"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1580 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Azure Activity Log: bulk List* operations (ListVirtualMachines, ListStorageAccounts) from service principal"
+  - "Sentinel: AzureActivity | where OperationNameValue contains 'Microsoft.Compute/virtualMachines/read' | summarize count() by Caller, bin(TimeGenerated,5m) | where count_ > 10"
+  - "CONTROL CHECK: Reader role on subscription exposes full infrastructure inventory — audit all principals with subscription-level Reader"
+  - "CONTROL CHECK: Resource locks on critical resources — prevents deletion even with Owner access"
+  - "CONTROL CHECK: Azure Policy — deny public exposure of storage accounts; reduces value of discovery"

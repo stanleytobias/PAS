@@ -1,0 +1,79 @@
+id: T1087.001_account_discovery_local
+name: "Account Discovery — Local Account"
+mitre_technique: "T1087.001"
+mitre_tactic: "discovery"
+description: >
+  Adversaries enumerate local accounts to identify potential targets for privilege
+  escalation, lateral movement, or credential attacks. On Windows, local accounts
+  are enumerated via net user, Get-LocalUser, wmic useraccount, and direct SAM
+  registry enumeration. Adversaries look for: built-in admin account status, service
+  accounts with interactive logon rights, disabled accounts that may still hold
+  cached credentials, and stale accounts that may have weak passwords.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1087/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1087.001 — Local Account Discovery simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate local accounts via multiple methods"
+    command: |
+      Write-Host "[PAS] Local account enumeration:"
+
+      Write-Host "[PAS] Method 1: net user"
+      net user 2>&1 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Method 2: Get-LocalUser"
+      Get-LocalUser -ErrorAction SilentlyContinue |
+          Select-Object Name, Enabled, LastLogon, PasswordLastSet |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+      Write-Host "[PAS] Method 3: WMI Win32_UserAccount"
+      Get-WmiObject Win32_UserAccount -Filter "LocalAccount=True" `
+          -ErrorAction SilentlyContinue |
+          Select-Object Name, Disabled, Lockout, PasswordRequired |
+          Format-Table -AutoSize | Out-String | Write-Host
+
+  - step: 3
+    type: exec_powershell
+    description: "Check built-in Administrator account — high-value discovery target"
+    command: |
+      Write-Host "[PAS] Built-in Administrator account status:"
+      $admin = Get-LocalUser -Name "Administrator" -ErrorAction SilentlyContinue
+      Write-Host "  Administrator enabled: $($admin?.Enabled)"
+      Write-Host "  Last logon: $($admin?.LastLogon)"
+      $guest = Get-LocalUser -Name "Guest" -ErrorAction SilentlyContinue
+      Write-Host "  Guest enabled: $($guest?.Enabled)"
+      Write-Host "[PAS] Disabled built-in admin is a control check signal"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — net.exe/wmic.exe with user enumeration arguments, Get-LocalUser in script block logs"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1087.001 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Process event: net.exe with 'user' argument, wmic.exe with 'useraccount' query"
+  - "Script block logging (4104): Get-LocalUser execution from unexpected context"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'net.exe' and ProcessCommandLine contains 'user'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'wmic.exe' and ProcessCommandLine contains 'useraccount'"
+  - "MDE alert: 'Local account enumeration detected'"
+  - "CONTROL CHECK: Rename/disable built-in Administrator account — reduces guessable target surface"
+  - "CONTROL CHECK: LAPS — unique local admin passwords mean enumerated accounts cannot be used for lateral movement"

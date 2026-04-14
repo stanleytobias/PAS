@@ -1,0 +1,63 @@
+id: T1538_cloud_service_dashboard
+name: "Cloud Service Dashboard"
+mitre_technique: "T1538"
+mitre_tactic: "discovery"
+description: >
+  Adversaries use cloud management portals (Azure Portal, AWS Console, GCP Console)
+  with stolen credentials to visually enumerate cloud resources. The portal provides
+  an intuitive interface for discovering all services, configurations, and deployed
+  resources. Unlike CLI/API access, portal usage may appear in sign-in logs but
+  individual resource browsing actions may be less prominently logged. Detection
+  relies on sign-in anomalies (new IP, device, location) when portal access occurs.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1538/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Technique context"
+    message: "T1538 — Cloud Service Dashboard: adversary uses Azure Portal GUI with stolen credentials to enumerate cloud resources"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for portal session indicators on this host"
+    command: |
+      Write-Host "[PAS] Cloud portal session check:"
+      $portalCookies = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Network\Cookies"
+      if (Test-Path $portalCookies) {
+          Write-Host "  Edge cookie store present — portal sessions may be cached"
+          Write-Host "  Real attack: steal ESTSAUTH cookie -> replay in attacker browser"
+      }
+      Write-Host "[PAS] Portal access generates Entra ID sign-in log entries"
+      Write-Host "[PAS] Detection: sign-in to portal.azure.com from new IP/device"
+
+  - step: 3
+    type: marker
+    description: "Portal access anomaly check"
+    message: "CONTROL CHECK: Alert on Azure Portal sign-in from new IP, new country, or non-compliant device. Portal access = full visibility into cloud estate."
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Entra sign-in logs — portal.azure.com logon from unexpected IP/device/location"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1538 cleanup complete — marker-only scenario"
+
+analyst_checklist:
+  - "Sentinel: SigninLogs | where AppDisplayName == 'Azure Portal' and DeviceDetail.isCompliant == false"
+  - "Sentinel: SigninLogs | where AppDisplayName == 'Azure Portal' and LocationDetails.countryOrRegion != expected_country"
+  - "CONTROL CHECK: Conditional Access — require compliant device and MFA for Azure Portal access"
+  - "CONTROL CHECK: Privileged Identity Management — admin portal access requires just-in-time elevation"
+  - "CONTROL CHECK: Continuous Access Evaluation — revokes portal session if risk detected mid-session"
