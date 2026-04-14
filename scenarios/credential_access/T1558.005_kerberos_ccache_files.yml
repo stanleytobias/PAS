@@ -1,0 +1,110 @@
+id: T1558.005_kerberos_ccache_files
+name: "Steal or Forge Kerberos Tickets — Ccache Files"
+mitre_technique: "T1558.005"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries steal Kerberos credential cache (ccache) files to reuse active
+  Kerberos sessions. On Windows, Kerberos tickets are stored in LSASS memory and
+  can be exported with Mimikatz sekurlsa::tickets /export. On Linux/macOS (or WSL),
+  ccache files at /tmp/krb5cc_* can be directly copied. The stolen tickets can be
+  injected into another session (pass-the-ticket) to authenticate as the original
+  user. Tickets are valid until they expire (typically 10 hours for TGTs).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1558/005/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1558.005 — Kerberos ccache file theft simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "List current Kerberos tickets — klist enumeration"
+    command: |
+      Write-Host "[PAS] Current Kerberos ticket cache:"
+      $tickets = klist 2>&1
+      $tickets | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
+
+      Write-Host "[PAS] Ticket theft targets:"
+      Write-Host "  TGTs (krbtgt) — most valuable; allows requesting any service ticket"
+      Write-Host "  TGS (service tickets) — limited to specific service"
+
+  - step: 3
+    type: exec_powershell
+    description: "Search for ccache files in WSL and temp locations"
+    command: |
+      Write-Host "[PAS] Ccache file search:"
+      $ccachePaths = @(
+          "$env:TEMP",
+          "$env:LOCALAPPDATA\Temp",
+          "C:\Windows\Temp"
+      )
+      foreach ($p in $ccachePaths) {
+          $files = Get-ChildItem $p -Filter "krb5cc_*" -ErrorAction SilentlyContinue
+          if ($files) {
+              Write-Host "  Found ccache files in $p :"
+              $files | ForEach-Object { Write-Host "    $($_.Name) ($($_.Length) bytes)" }
+          }
+      }
+
+      # Check for WSL ccache files
+      $wslPaths = @("\\wsl$\Ubuntu\tmp","\\wsl$\Debian\tmp")
+      foreach ($p in $wslPaths) {
+          if (Test-Path $p -ErrorAction SilentlyContinue) {
+              $files = Get-ChildItem $p -Filter "krb5cc_*" -ErrorAction SilentlyContinue
+              if ($files) {
+                  Write-Host "  WSL ccache in $p : $($files.Count) file(s)"
+              }
+          }
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate ticket export via Rubeus dump pattern"
+    command: |
+      Write-Host "[PAS] Ticket export simulation:"
+      Write-Host "[PAS] Real: Rubeus.exe dump — exports all tickets as base64 to stdout"
+      Write-Host "[PAS] Real: Mimikatz sekurlsa::tickets /export — writes .kirbi files"
+
+      # Create a marker .kirbi file representing a stolen ticket
+      $kirbiMarker = "$env:TEMP\PAS_T1558_005_admin_krbtgt.kirbi"
+      Set-Content $kirbiMarker "PAS-T1558.005-KERBEROS-TICKET-MARKER"
+      Write-Host "[PAS] Ticket export marker: $kirbiMarker"
+      Write-Host "[PAS] Real pass-the-ticket: Rubeus.exe ptt /ticket:<base64>"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — .kirbi files in TEMP, klist.exe execution, sekurlsa::tickets in script block logs"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove ticket artefacts"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1558_005_admin_krbtgt.kirbi" -Force -ErrorAction SilentlyContinue
+      Get-ChildItem $env:TEMP -Filter "*.kirbi" -ErrorAction SilentlyContinue | Remove-Item -Force
+      Write-Host "[PAS][Cleanup] Kerberos ticket artefacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1558.005 cleanup complete"
+
+analyst_checklist:
+  - "File event: .kirbi files created in TEMP by non-system process"
+  - "Process event: Rubeus.exe execution — any Rubeus execution on an endpoint should alert immediately"
+  - "Script block logging: 'sekurlsa::tickets' or 'kerberos::ptt' in PowerShell"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.kirbi'"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'Rubeus.exe'"
+  - "CONTROL CHECK: ASR rule — 'Block credential stealing from Windows local security authority subsystem'"
+  - "CONTROL CHECK: Short Kerberos ticket lifetime (4 hours) reduces the stolen-ticket replay window"

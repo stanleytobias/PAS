@@ -1,0 +1,92 @@
+id: T1111_mfa_interception
+name: "Multi-Factor Authentication Interception"
+mitre_technique: "T1111"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries intercept MFA codes to bypass multi-factor authentication. Methods:
+  SIM swapping (convincing mobile carrier to transfer victim's number to attacker's
+  SIM — adversary then receives SMS OTPs), SS7 network exploitation to intercept
+  SMS messages in transit, real-time phishing (AiTM proxy captures OTP as it is
+  typed), and man-in-the-browser attacks that intercept OTP before submission.
+  SMS-based MFA is the most vulnerable; TOTP apps are harder; FIDO2/phishing-
+  resistant MFA is immune to all these attacks.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1111/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1111 — MFA Interception simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check MFA method types registered — identify weak MFA exposure"
+    command: |
+      Write-Host "[PAS] MFA method vulnerability assessment:"
+      $weakMfaMethods = @(
+          "SMS OTP             — VULNERABLE to SIM swap, SS7 intercept",
+          "Voice call OTP      — VULNERABLE to call forwarding, SS7",
+          "Email OTP           — VULNERABLE to email account compromise",
+          "TOTP app (Authy/GA) — MODERATE: phishing-resistant but not AiTM-resistant",
+          "Microsoft Authenticator push — VULNERABLE to MFA fatigue (T1621)",
+          "FIDO2/Windows Hello — STRONG: phishing and AiTM resistant"
+      )
+      $weakMfaMethods | ForEach-Object { Write-Host "  $_" }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate SIM swap reconnaissance — check phone number registration"
+    command: |
+      Write-Host "[PAS] SIM swap attack pattern:"
+      Write-Host "[PAS] Real attack: social-engineer mobile carrier to port victim phone number"
+      Write-Host "[PAS] Adversary then receives all SMS messages including OTPs"
+      Write-Host ""
+      Write-Host "[PAS] Detection indicators:"
+      Write-Host "  - Victim reports sudden loss of mobile service"
+      Write-Host "  - MFA phone number changed in Entra ID (audit event)"
+      Write-Host "  - Authentication from new device immediately after phone number change"
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate AiTM real-time OTP interception pattern (Evilginx2)"
+    command: |
+      Write-Host "[PAS] Real-time OTP interception via AiTM proxy:"
+      Write-Host "[PAS] Evilginx2/Modlishka flow:"
+      Write-Host "  1. Victim phished to attacker's proxy (evilginx.attacker.com)"
+      Write-Host "  2. Proxy forwards to real M365 login page"
+      Write-Host "  3. Victim enters creds + MFA code"
+      Write-Host "  4. Proxy captures session cookie BEFORE passing to victim"
+      Write-Host "  5. Adversary replays session cookie — MFA is bypassed"
+      Write-Host ""
+      Write-Host "[PAS] Generating DNS lookup for known phishing infrastructure pattern:"
+      try { [System.Net.Dns]::GetHostAddresses("evilginx.127.0.0.1.nip.io") | Out-Null } catch {}
+      Write-Host "[PAS] AiTM proxy DNS resolution pattern generated"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Sentinel — Entra ID phone number changed then immediate auth from new device; AiTM phishing domains"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1111 cleanup complete — no persistent artifacts"
+
+analyst_checklist:
+  - "Entra ID audit: 'User registered security info' — phone number changed"
+  - "Entra ID: Authentication from new device within minutes of phone number change"
+  - "Sentinel: AuditLogs | where OperationName == 'User registered security info' and TargetResources contains 'phone'"
+  - "Defender for Cloud Apps: 'Activity from anonymous IP after phone MFA change'"
+  - "CONTROL CHECK: Require re-authentication to register new MFA methods — 'Require re-authentication on MFA registration'"
+  - "CONTROL CHECK: Migrate SMS/voice MFA to Microsoft Authenticator with Number Matching + FIDO2"
+  - "CONTROL CHECK: Phishing-resistant MFA (FIDO2/Windows Hello) is immune to SIM swap and AiTM"

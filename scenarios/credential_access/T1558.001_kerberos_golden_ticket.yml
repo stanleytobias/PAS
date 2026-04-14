@@ -1,0 +1,93 @@
+id: T1558.001_steal_forge_kerberos_tickets_golden_ticket
+name: "Steal or Forge Kerberos Tickets — Golden Ticket"
+mitre_technique: "T1558.001"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries who obtain the KRBTGT account's NTLM hash can forge Kerberos
+  Ticket-Granting Tickets (TGTs) for any user, with any group membership, and any
+  validity period. The forged TGT (Golden Ticket) is presented to a KDC which issues
+  legitimate service tickets — without checking the user's actual credentials.
+  Golden Tickets survive password resets of user accounts (only rotating KRBTGT twice
+  invalidates them) and can be valid for years. Detection relies on anomalous Kerberos
+  ticket characteristics: user accounts not in AD, unusual group memberships,
+  abnormally long ticket lifetimes.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1558/001/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1558.001 — Golden Ticket simulation (KRBTGT access and ticket request telemetry)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check KRBTGT account metadata — the Golden Ticket prerequisite"
+    command: |
+      Write-Host "[PAS] KRBTGT account status check:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          Write-Host "[PAS] KRBTGT hash acquisition requires DCSync or NTDS dump"
+          Write-Host "[PAS] Golden Ticket creation: mimikatz kerberos::golden /user:Administrator"
+          Write-Host "      /domain:corp.local /sid:S-1-5-21-... /krbtgt:<hash> /id:500"
+          Write-Host ""
+          Write-Host "[PAS] Checking KRBTGT password age (should be rotated recently):"
+          try {
+              $dc = $env:LOGONSERVER -replace '\\', ''
+              $ldap = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$dc")
+              $search = New-Object System.DirectoryServices.DirectorySearcher($ldap)
+              $search.Filter = "(sAMAccountName=krbtgt)"
+              $search.PropertiesToLoad.Add("pwdLastSet") | Out-Null
+              $result = $search.FindOne()
+              if ($result) {
+                  $pwdSet = [datetime]::FromFileTime($result.Properties["pwdLastSet"][0])
+                  $age = (Get-Date) - $pwdSet
+                  Write-Host "  KRBTGT password last set: $($pwdSet.ToString('yyyy-MM-dd')) ($([int]$age.TotalDays) days ago)"
+                  if ($age.TotalDays -gt 180) {
+                      Write-Host "  [RISK] KRBTGT password >180 days old — rotate immediately"
+                  }
+              }
+          } catch { Write-Host "  LDAP query failed (no DC reachable)" }
+      } else {
+          Write-Host "[PAS] Not domain-joined — Golden Ticket targets domain environments"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate Kerberos ticket injection pattern — klist and kinit telemetry"
+    command: |
+      Write-Host "[PAS] Kerberos ticket inspection:"
+      klist 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "  $_" }
+      Write-Host ""
+      Write-Host "[PAS] Golden Ticket detection signals:"
+      Write-Host "  - Ticket with unusually long validity (10+ years)"
+      Write-Host "  - Ticket for user not in Active Directory"
+      Write-Host "  - Ticket with SID 500 (RID) but not tied to real account"
+      Write-Host "  - Event ID 4768 (TGT request) with PAC validation failure"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event ID 4768 anomalies, Defender for Identity Golden Ticket alert"
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No persistent artifacts"
+    message: "T1558.001 cleanup complete — no persistent artefacts"
+
+analyst_checklist:
+  - "Defender for Identity: 'Forged PAC (MS14-068)' and 'Golden ticket usage' alerts"
+  - "Event ID 4768: TGT requested with unusual encryption type or PAC validation failure on DC"
+  - "Sentinel: SecurityEvent | where EventID == 4768 and TicketEncryptionType == '0x17' and AccountName not in (domain_users)"
+  - "CONTROL CHECK: Rotate KRBTGT password twice, 24 hours apart — invalidates all existing Golden Tickets"
+  - "CONTROL CHECK: Rotate KRBTGT every 180 days as standard practice"
+  - "CONTROL CHECK: Defender for Identity deployed on ALL DCs — Golden Ticket detection requires DC-side telemetry"

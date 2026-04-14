@@ -1,0 +1,128 @@
+id: T1649_steal_or_forge_authentication_certificates
+name: "Steal or Forge Authentication Certificates"
+mitre_technique: "T1649"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries steal or forge digital certificates used for authentication. On Windows,
+  user and machine certificates are stored in the certificate store (certmgr.msc).
+  Certificates with private keys can be exported to .pfx files and used to authenticate
+  as the certificate holder. AD CS (Active Directory Certificate Services) ESC attacks
+  allow low-privileged users to request certificates for other users, effectively
+  forging credentials. Stolen certificates often outlive their associated user account
+  and are not revoked during incident response.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1649/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1649 — Certificate theft and forge simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Enumerate exportable certificates in current user store"
+    command: |
+      Write-Host "[PAS] Certificate store enumeration — looking for exportable certs with private keys:"
+      Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+          Where-Object { $_.HasPrivateKey } |
+          ForEach-Object {
+              $exportable = $false
+              try {
+                  $pk = $_.PrivateKey
+                  $exportable = $pk?.ExportPolicy -match "Exportable"
+              } catch {}
+              Write-Host "  Subject: $($_.Subject)"
+              Write-Host "    Thumbprint: $($_.Thumbprint)"
+              Write-Host "    Expiry: $($_.NotAfter)"
+              Write-Host "    Exportable: $exportable"
+              if ($_.EnhancedKeyUsageList | Where-Object { $_.FriendlyName -match "Client Auth|Smart Card" }) {
+                  Write-Host "    [HIGH VALUE] Client authentication certificate"
+              }
+          }
+
+  - step: 3
+    type: exec_powershell
+    description: "Simulate certificate export via certutil — generates process telemetry"
+    command: |
+      Write-Host "[PAS] Certificate export simulation:"
+      $pfxPath = "$env:TEMP\PAS_T1649_cert_export.pfx"
+
+      # Try to export a non-sensitive cert (self-signed if any exist)
+      $cert = Get-ChildItem Cert:\CurrentUser\My | Where-Object {
+          $_.HasPrivateKey -and $_.Subject -match "CN=PAS" } | Select-Object -First 1
+
+      if (-not $cert) {
+          # Create a test self-signed cert to export
+          $cert = New-SelfSignedCertificate -Subject "CN=PAS_T1649_Test" `
+              -CertStoreLocation Cert:\CurrentUser\My `
+              -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(1) `
+              -ErrorAction SilentlyContinue
+      }
+
+      if ($cert) {
+          $pwd = ConvertTo-SecureString "PAS-CertPass!" -AsPlainText -Force
+          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pwd `
+              -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "[PAS] Certificate exported to: $pfxPath"
+          Write-Host "[PAS] certutil.exe process event: certutil -exportpfx -p password My $($cert.Thumbprint) cert.pfx"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Simulate AD CS ESC1 exploitation pattern — certreq for another user"
+    command: |
+      Write-Host "[PAS] AD CS ESC1 exploitation pattern:"
+      Write-Host "[PAS] ESC1: certificate template allows SAN + client auth + low-priv enrollment"
+      Write-Host "[PAS] Real: certreq -new req.inf cert.cer (req.inf has SubjectAltName=upn:admin@domain)"
+      Write-Host "[PAS] Result: certificate authenticates as admin user — MFA bypassed"
+      Write-Host ""
+      $certutil = Get-Command certutil -ErrorAction SilentlyContinue
+      if ($certutil) {
+          # List CA — generates telemetry for CA enumeration
+          $proc = Start-Process certutil.exe -ArgumentList "-CATemplates" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 500
+          if ($proc -and -not $proc.HasExited) {
+              $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host "[PAS] certutil.exe -CATemplates executed — AD CS enumeration telemetry"
+      }
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — certutil.exe -exportpfx, Export-PfxCertificate, .pfx file created in TEMP"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove exported certificate and test cert"
+    command: |
+      Remove-Item "$env:TEMP\PAS_T1649_cert_export.pfx" -Force -ErrorAction SilentlyContinue
+      Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq "CN=PAS_T1649_Test" } |
+          Remove-Item -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Exported certificate and test cert removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1649 cleanup complete"
+
+analyst_checklist:
+  - "Process event: certutil.exe -exportpfx or Export-PfxCertificate by non-PKI process"
+  - "File event: .pfx or .p12 file created in TEMP"
+  - "Sentinel: DeviceProcessEvents | where FileName == 'certutil.exe' and ProcessCommandLine contains 'exportpfx'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.pfx' and FolderPath contains 'Temp'"
+  - "AD CS audit: certificate requested with SAN not matching requestor identity — ESC1 indicator"
+  - "CONTROL CHECK: Disable exportable private keys on client auth templates — set to non-exportable"
+  - "CONTROL CHECK: AD CS ESC hardening — remove SAN capability from low-priv templates; use Certify/Locksmith to audit"
+  - "CONTROL CHECK: Certificate revocation on user offboarding — certificates persist after account deletion"

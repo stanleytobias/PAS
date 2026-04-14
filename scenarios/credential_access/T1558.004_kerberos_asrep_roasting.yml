@@ -1,0 +1,92 @@
+id: T1558.004_kerberos_asrep_roasting
+name: "Steal or Forge Kerberos Tickets — AS-REP Roasting"
+mitre_technique: "T1558.004"
+mitre_tactic: "credential_access"
+description: >
+  AS-REP Roasting targets accounts that have Kerberos pre-authentication disabled
+  (the DONT_REQ_PREAUTH flag, userAccountControl bit 4194304). Without pre-auth,
+  any unauthenticated attacker can request an AS-REP for those accounts — the
+  response includes data encrypted with the account's password hash, which can be
+  cracked offline. Common in misconfigured environments or legacy application
+  accounts. Event ID 4768 fires but with a different pre-auth type (0).
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1558/004/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1558.004 — AS-REP Roasting simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Find accounts with pre-authentication disabled — AS-REP Roasting targets"
+    command: |
+      Write-Host "[PAS] AS-REP Roasting target enumeration:"
+      $isDomain = (Get-WmiObject Win32_ComputerSystem -ErrorAction SilentlyContinue).PartOfDomain
+      if ($isDomain) {
+          try {
+              $searcher = New-Object System.DirectoryServices.DirectorySearcher
+              # userAccountControl bit 4194304 = DONT_REQ_PREAUTH
+              $searcher.Filter = "(&(objectCategory=user)(userAccountControl:1.2.840.113556.1.4.803:=4194304))"
+              $searcher.PropertiesToLoad.Add("sAMAccountName") | Out-Null
+              $results = $searcher.FindAll()
+              if ($results.Count -gt 0) {
+                  Write-Host "  [RISK] Accounts with pre-auth DISABLED: $($results.Count)"
+                  $results | ForEach-Object {
+                      Write-Host "  AS-REP Roastable: $($_.Properties['samaccountname'][0])"
+                  }
+              } else {
+                  Write-Host "  [GOOD] No accounts with pre-authentication disabled"
+              }
+          } catch { Write-Host "  LDAP query failed (no DC)" }
+      } else {
+          Write-Host "[PAS] Not domain-joined — AS-REP Roasting targets domain accounts"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Create a test account with pre-auth disabled — simulates vulnerable state"
+    command: |
+      Write-Host "[PAS] Simulating AS-REP vulnerable account state:"
+      $testAcct = "PAS_T1558_004_nopreauthtest"
+      New-LocalUser -Name $testAcct -Password (
+          ConvertTo-SecureString "PAS-WeakPass1" -AsPlainText -Force) `
+          -PasswordNeverExpires $true -ErrorAction SilentlyContinue | Out-Null
+      Write-Host "[PAS] Test account created: $testAcct"
+      Write-Host "[PAS] On domain: Set-ADAccountControl -Identity $testAcct -DoesNotRequirePreAuth `$true"
+      Write-Host "[PAS] Crack: hashcat -m 18200 asrep_hashes.txt rockyou.txt"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — Event 4768 with PreAuthType 0 (no pre-auth), LDAP query for DONT_REQ_PREAUTH flag"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test account"
+    command: |
+      Remove-LocalUser -Name "PAS_T1558_004_nopreauthtest" -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test account removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1558.004 cleanup complete"
+
+analyst_checklist:
+  - "Event ID 4768: TGT request with PreAuthType = 0 (no pre-authentication)"
+  - "LDAP query for userAccountControl with DONT_REQ_PREAUTH bit — enumeration step"
+  - "Sentinel: SecurityEvent | where EventID == 4768 and PreAuthType == '0'"
+  - "Defender for Identity: 'Account enumeration reconnaissance' and 'AS-REP roasting'"
+  - "CONTROL CHECK: Require Kerberos pre-authentication on ALL accounts — enable via: Set-ADUser -DoesNotRequirePreAuth `$false"
+  - "CONTROL CHECK: Run quarterly: Get-ADUser -Filter {DoesNotRequirePreAuth -eq `$true} — any result is a risk finding"

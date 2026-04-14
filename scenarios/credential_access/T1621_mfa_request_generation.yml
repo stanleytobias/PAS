@@ -1,0 +1,95 @@
+id: T1621_mfa_request_generation
+name: "Multi-Factor Authentication Request Generation"
+mitre_technique: "T1621"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries generate repeated MFA push notifications to the victim's device in
+  hopes the victim approves one out of fatigue or confusion (MFA push bombing /
+  MFA fatigue). With valid stolen credentials, an adversary triggers many
+  authentication requests. If the victim approves any push, the adversary gains
+  access. Microsoft Authenticator's Number Matching feature requires the user to
+  type a number displayed on-screen — eliminating approval by accident.
+  This simulation generates the rapid authentication attempt pattern.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1621/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1621 — MFA Request Generation (push bombing) simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Simulate rapid authentication attempts that trigger MFA push notifications"
+    command: |
+      Write-Host "[PAS] MFA push bombing simulation:"
+      Write-Host "[PAS] Real attack: automated script authenticates with valid stolen password"
+      Write-Host "[PAS] Each authentication attempt triggers a push notification to victim's device"
+      Write-Host "[PAS] Goal: victim approves one push out of confusion or fatigue"
+
+      # Simulate rapid loopback auth attempts (these don't trigger real MFA but generate auth telemetry)
+      $target = "127.0.0.1"
+      $user   = "PAS_T1621_testuser"
+      New-LocalUser -Name $user -Password (
+          ConvertTo-SecureString "PAS-Kx9#mPass!" -AsPlainText -Force) `
+          -PasswordNeverExpires $true -ErrorAction SilentlyContinue | Out-Null
+
+      Write-Host "[PAS] Generating rapid auth attempt burst (5 attempts, 300ms interval):"
+      1..5 | ForEach-Object {
+          net use \\$target\IPC$ /user:$user "PAS-Kx9#mPass!" 2>&1 | Out-Null
+          net use \\$target\IPC$ /delete 2>&1 | Out-Null
+          Write-Host "[PAS]   Auth attempt $_ — would trigger MFA push notification"
+          Start-Sleep -Milliseconds 300
+      }
+      Write-Host "[PAS] Push bombing burst complete"
+
+  - step: 3
+    type: exec_powershell
+    description: "Check for Number Matching and Additional Context MFA controls"
+    command: |
+      Write-Host "[PAS] MFA fatigue control check:"
+      Write-Host "[PAS] Microsoft Authenticator mitigations:"
+      @(
+          "Number Matching — user must type displayed number to approve (defeats fat-finger approval)",
+          "Additional Context — shows app name and location in push notification",
+          "Fraud Alert — user can report unexpected pushes (blocks account + notifies SOC)"
+      ) | ForEach-Object { Write-Host "  $_" }
+      Write-Host ""
+      Write-Host "[PAS] Check Entra ID Authentication Methods policies for these settings"
+
+  - step: 4
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 5
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Entra ID sign-in log — multiple MFA prompts in rapid succession for same user, MFA fraud report"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove test account and connections"
+    command: |
+      net use \\127.0.0.1\IPC$ /delete 2>&1 | Out-Null
+      Remove-LocalUser -Name "PAS_T1621_testuser" -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Test account and connections removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1621 cleanup complete"
+
+analyst_checklist:
+  - "Entra ID: multiple MFA prompts (>3) for same user in 5 minutes — MFA fatigue pattern"
+  - "Entra ID: MFA Fraud Alert reported — user denied unexpected push"
+  - "Sentinel: SigninLogs | where AuthenticationDetails contains 'MFA' | summarize count() by UserPrincipalName, bin(TimeGenerated,5m) | where count_ > 5"
+  - "Defender for Identity: 'Suspected MFA push bombing attack' alert"
+  - "CONTROL CHECK: Enable Number Matching for Microsoft Authenticator — prevents accidental approval"
+  - "CONTROL CHECK: Enable MFA Fraud Alert — user reports trigger account block + SOC notification"
+  - "CONTROL CHECK: Migrate to FIDO2 — phishing-resistant MFA has no push notification to bomb"

@@ -1,0 +1,113 @@
+id: T1040_network_sniffing
+name: "Network Sniffing"
+mitre_technique: "T1040"
+mitre_tactic: "credential_access"
+description: >
+  Adversaries place a network interface into promiscuous mode to capture all network
+  traffic, including authentication material transmitted in cleartext or weakly
+  encrypted protocols. Targets: NTLM authentication in cleartext (HTTP, FTP, SMTP
+  without TLS), Kerberos tickets on wire, LDAP bind credentials, and legacy protocols
+  (Telnet, FTP, HTTP basic auth). On Windows, packet capture requires WinPcap/Npcap
+  or the raw socket API. Detection relies on monitoring NIC driver-level promiscuous
+  mode changes and unexpected pcap tool execution.
+author: stanleytobias
+created: "2026-01-01"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1040/
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "Starting T1040 — Network Sniffing simulation"
+
+  - step: 2
+    type: exec_powershell
+    description: "Check for packet capture libraries and tools"
+    command: |
+      Write-Host "[PAS] Network sniffing capability check:"
+      $sniffTools = @{
+          "Wireshark"    = "Wireshark.exe"
+          "tshark"       = "tshark.exe"
+          "tcpdump"      = "tcpdump.exe"
+          "Npcap"        = "C:\Windows\System32\Npcap"
+          "WinPcap"      = "C:\Windows\System32\wpcap.dll"
+          "pktmon"       = "pktmon.exe"  # Built-in Windows packet monitor
+      }
+      foreach ($tool in $sniffTools.Keys) {
+          $found = Get-Command $sniffTools[$tool] -ErrorAction SilentlyContinue
+          if (-not $found -and $sniffTools[$tool] -match '\\') {
+              $found = Test-Path $sniffTools[$tool]
+          }
+          if ($found) { Write-Host "  FOUND: $tool" }
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Enable promiscuous mode simulation via pktmon — built-in Windows tool"
+    command: |
+      Write-Host "[PAS] Network sniffing via pktmon (built-in Windows packet monitor):"
+      $pktmon = Get-Command pktmon -ErrorAction SilentlyContinue
+      if ($pktmon) {
+          # Start a brief pktmon capture — generates driver-level telemetry
+          $capFile = "$env:TEMP\PAS_T1040_capture.etl"
+          $proc = Start-Process pktmon.exe `
+              -ArgumentList "start --capture --pkt-size 0 --log-file $capFile" `
+              -PassThru -NoNewWindow -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          pktmon stop 2>&1 | Out-Null
+          Write-Host "[PAS] pktmon capture started and stopped — driver telemetry generated"
+          Write-Host "[PAS] Capture file: $capFile"
+      } else {
+          Write-Host "[PAS] pktmon not available — documenting pattern"
+          Write-Host "[PAS] Real: wireshark / tshark -i eth0 -w capture.pcap"
+      }
+
+  - step: 4
+    type: exec_powershell
+    description: "Check NIC for promiscuous mode status"
+    command: |
+      Write-Host "[PAS] NIC promiscuous mode check:"
+      Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" } |
+          ForEach-Object {
+              $stats = Get-NetAdapterStatistics -Name $_.Name -ErrorAction SilentlyContinue
+              Write-Host "  Adapter: $($_.Name) [$($_.InterfaceDescription)]"
+              Write-Host "  Promiscuous mode would be visible in driver stats"
+          }
+      Write-Host "[PAS] Real detection: Sysmon Event ID 3 + unusual raw socket binding"
+
+  - step: 5
+    type: sleep
+    description: "Allow telemetry to flush"
+    seconds: 3
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check SIEM — pktmon/Wireshark/tshark process events, NIC promiscuous mode change"
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Stop pktmon and remove capture file"
+    command: |
+      pktmon stop 2>&1 | Out-Null
+      Remove-Item "$env:TEMP\PAS_T1040_capture.etl" -Force -ErrorAction SilentlyContinue
+      Remove-Item "$env:TEMP\PktMon.etl" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Packet capture stopped and files removed"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "T1040 cleanup complete"
+
+analyst_checklist:
+  - "Process event: wireshark.exe, tshark.exe, pktmon.exe, tcpdump.exe executed by non-admin"
+  - "File event: .pcap or .etl capture file written to user directories"
+  - "Sentinel: DeviceProcessEvents | where FileName in ('tshark.exe','Wireshark.exe','pktmon.exe') and AccountName !contains 'admin'"
+  - "Sentinel: DeviceFileEvents | where FileName endswith '.pcap' and InitiatingProcessFileName == 'tshark.exe'"
+  - "MDE alert: 'Network sniffing tool executed'"
+  - "CONTROL CHECK: Enforce TLS everywhere — sniffed traffic is useless if encrypted"
+  - "CONTROL CHECK: Disable legacy cleartext protocols (Telnet, FTP, HTTP auth, LDAP non-TLS)"
+  - "CONTROL CHECK: 802.1X port authentication — limits where an adversary can place a sniffer"
