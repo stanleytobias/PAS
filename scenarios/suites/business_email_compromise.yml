@@ -43,13 +43,13 @@ scenarios:
   - step: 5
     technique: "T1114.002"
     tactic: "collection"
-    scenario_file: "collection/T1114.002_email_collection_remote_email_collection.yml"
+    scenario_file: "collection/T1114.002_email_collection_remote.yml"
     rationale: "Read inbox of compromised account — identify pending wire transfers or invoices to intercept"
 
   - step: 6
     technique: "T1098.002"
     tactic: "persistence"
-    scenario_file: "persistence/T1098.002_additional_email_delegate_permissions.yml"
+    scenario_file: "persistence/T1098.002_account_manipulation_email_delegate.yml"
     rationale: "Create inbox rule to auto-forward finance-related emails and hide replies — maintains access while remaining covert"
 
   - step: 7
