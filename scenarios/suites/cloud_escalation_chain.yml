@@ -74,7 +74,7 @@ scenarios:
   - step: 10
     technique: "T1098.002"
     tactic: "persistence"
-    scenario_file: "persistence/T1098.002_additional_email_delegate_permissions.yml"
+    scenario_file: "persistence/T1098.002_account_manipulation_email_delegate.yml"
     rationale: "Grant FullAccess mailbox delegation on executive accounts for persistent email access"
 
 analyst_narrative: >
