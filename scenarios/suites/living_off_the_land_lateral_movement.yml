@@ -73,7 +73,7 @@ scenarios:
   - step: 10
     technique: "T1070.001"
     tactic: "defense_evasion"
-    scenario_file: "defense_evasion/T1070.001_indicator_removal_clear_windows_event_logs.yml"
+    scenario_file: "defense_evasion/T1070.001_clear_windows_event_logs.yml"
     rationale: "wevtutil cl — cover tracks by clearing event logs using built-in Windows event utility"
 
 analyst_narrative: >
