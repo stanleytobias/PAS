@@ -74,7 +74,7 @@ scenarios:
   - step: 10
     technique: "T1070.001"
     tactic: "defense_evasion"
-    scenario_file: "defense_evasion/T1070.001_indicator_removal_clear_windows_event_logs.yml"
+    scenario_file: "defense_evasion/T1070.001_clear_windows_event_logs.yml"
     rationale: "Clear Security event log on DC to remove evidence of DCSync and ticket operations"
 
 analyst_narrative: >
