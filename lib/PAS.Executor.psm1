@@ -181,8 +181,9 @@ function Invoke-PASSuite {
         [switch]$HuntMode
     )
 
-    $suiteDir  = Split-Path $SuitePath -Parent
-    $scenarios = @($Suite['scenarios'])
+    $suiteDir       = Split-Path $SuitePath -Parent
+    $scenarioRoot   = Split-Path $suiteDir  -Parent
+    $scenarios      = @($Suite['scenarios'])
 
     Write-PASBanner "SUITE -- $($Suite['name'])"
     Write-PASInfo "Total scenarios : $($scenarios.Count)"
@@ -193,8 +194,25 @@ function Invoke-PASSuite {
 
     foreach ($entry in $scenarios) {
         $idx++
-        $path = if ([System.IO.Path]::IsPathRooted($entry)) { $entry }
-                else { Join-Path $suiteDir $entry }
+
+        # Suite entries may be plain string paths or structured objects with a
+        # scenario_file field (see SCENARIO_SCHEMA.md). Structured entry paths
+        # are relative to the scenarios/ root, not the suite's own directory.
+        if ($entry -is [string]) {
+            $rel  = $entry
+            $base = $suiteDir
+        } else {
+            $rel  = $entry['scenario_file']
+            $base = $scenarioRoot
+        }
+
+        if (-not $rel) {
+            Write-PASWarn "  Suite entry $idx has no scenario_file -- skipping"
+            continue
+        }
+
+        $path = if ([System.IO.Path]::IsPathRooted($rel)) { $rel }
+                else { Join-Path $base $rel }
 
         Write-PASInfo "[$idx/$($scenarios.Count)] $([System.IO.Path]::GetFileName($path))"
 
