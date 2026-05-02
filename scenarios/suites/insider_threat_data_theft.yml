@@ -29,48 +29,54 @@ scenarios:
     rationale: "Enumerate network shares across the environment — map all accessible data sources"
 
   - step: 3
-    technique: "T1213"
+    technique: "T1213.002"
     tactic: "collection"
-    scenario_file: "collection/T1213_data_from_information_repositories.yml"
-    rationale: "Access SharePoint document libraries and internal wikis — collect sensitive business documents"
+    scenario_file: "collection/T1213.002_data_from_info_repos_sharepoint.yml"
+    rationale: "Access SharePoint document libraries — collect sensitive business documents (contracts, M&A, pricing)"
 
   - step: 4
+    technique: "T1213.001"
+    tactic: "collection"
+    scenario_file: "collection/T1213.001_data_from_info_repos_confluence.yml"
+    rationale: "Access Confluence wikis — collect internal documentation, runbooks, and architecture details"
+
+  - step: 5
     technique: "T1039"
     tactic: "collection"
     scenario_file: "collection/T1039_data_from_network_shared_drive.yml"
     rationale: "Bulk copy files from network shares to local staging directory — mass collection"
 
-  - step: 5
+  - step: 6
     technique: "T1074.001"
     tactic: "collection"
     scenario_file: "collection/T1074.001_data_staged_local.yml"
     rationale: "Stage collected data in a local directory, compress and archive before exfiltration"
 
-  - step: 6
+  - step: 7
     technique: "T1560.001"
     tactic: "collection"
     scenario_file: "collection/T1560.001_archive_collected_data_utility.yml"
     rationale: "Archive staged data into encrypted ZIP — reduces transfer size and defeats content inspection"
 
-  - step: 7
+  - step: 8
     technique: "T1052.001"
     tactic: "exfiltration"
     scenario_file: "exfiltration/T1052.001_exfiltration_over_usb.yml"
     rationale: "Copy archive to USB drive — physical exfiltration bypasses all network DLP controls"
 
-  - step: 8
+  - step: 9
     technique: "T1567.002"
     tactic: "exfiltration"
     scenario_file: "exfiltration/T1567.002_exfil_to_cloud_storage.yml"
     rationale: "Upload archive to personal cloud storage (Dropbox, personal OneDrive) — network exfiltration path"
 
-  - step: 9
+  - step: 10
     technique: "T1029"
     tactic: "exfiltration"
     scenario_file: "exfiltration/T1029_scheduled_transfer.yml"
     rationale: "Schedule recurring small uploads to avoid volume-based DLP thresholds — low-and-slow exfil"
 
-  - step: 10
+  - step: 11
     technique: "T1565.001"
     tactic: "impact"
     scenario_file: "impact/T1565.001_data_manipulation_stored.yml"
@@ -84,30 +90,30 @@ analyst_narrative: >
   (copying 10GB of files in one session when the baseline is 100MB), temporal
   anomalies (after-hours access), destination anomalies (uploading to personal
   cloud storage), and policy violations (USB usage where Device Control should
-  block it). Steps 7 and 8 are the primary technical detection points — USB
-  insertion (Event 6416) and cloud upload volume. Step 9 (scheduled transfer)
+  block it). Steps 8 and 9 are the primary technical detection points — USB
+  insertion (Event 6416) and cloud upload volume. Step 10 (scheduled transfer)
   is designed specifically to evade these detections; cumulative session volume
-  tracking is required. Step 10 (data manipulation) may never be detected if
+  tracking is required. Step 11 (data manipulation) may never be detected if
   access logs are not reviewed — file integrity monitoring is the control.
 
 detection_chain:
   - "Steps 1-2: recursive dir and net view — low severity, context-dependent"
-  - "Steps 3-4: bulk file access from single account >2x baseline — medium severity"
-  - "Step 5: large archive creation in user TEMP or non-standard directory — medium severity"
-  - "Step 6: encrypted archive (password-protected ZIP) created from staging dir — HIGH SEVERITY"
-  - "Step 7: USB insertion + bulk file copy to removable drive — CRITICAL (DLP violation)"
-  - "Step 8: upload to personal cloud storage domain — HIGH SEVERITY"
-  - "Step 9: recurring scheduled small uploads — detected only by cumulative session volume"
-  - "Step 10: config/log file modification outside change window — medium severity"
+  - "Steps 3-5: bulk file access from single account >2x baseline (SharePoint, Confluence, file shares) — medium severity"
+  - "Step 6: large archive creation in user TEMP or non-standard directory — medium severity"
+  - "Step 7: encrypted archive (password-protected ZIP) created from staging dir — HIGH SEVERITY"
+  - "Step 8: USB insertion + bulk file copy to removable drive — CRITICAL (DLP violation)"
+  - "Step 9: upload to personal cloud storage domain — HIGH SEVERITY"
+  - "Step 10: recurring scheduled small uploads — detected only by cumulative session volume"
+  - "Step 11: config/log file modification outside change window — medium severity"
   - "UEBA correlation: bulk file access + archive creation + USB/cloud upload = data theft chain"
 
 coverage_notes: >
   Tactics covered: Discovery, Collection, Exfiltration, Impact.
   Key detection dependency: MDE Device Control must be configured to audit or
-  block USB storage — without it, step 7 is completely invisible.
+  block USB storage — without it, step 8 is completely invisible.
   Key detection dependency: web proxy must log and alert on uploads to personal
   cloud storage domains (dropbox.com, personal onedrive.live.com).
-  Key gap: step 9 (low-and-slow scheduled transfer) requires cumulative session
+  Key gap: step 10 (low-and-slow scheduled transfer) requires cumulative session
   volume tracking — per-transfer DLP thresholds will not fire.
   Tuning note: bulk file access alerts have HIGH false-positive rate in environments
   with legitimate batch processing — tune to fire only on interactive user sessions
