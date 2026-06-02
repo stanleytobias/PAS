@@ -1,17 +1,17 @@
 # From Gap to Deployed Detection — Sigma Workflow
 
-When you record a `GAP` or `BLIND_SPOT` verdict, PAS automatically generates
+When you record a `GAP`, `BLIND_SPOT`, or `PARTIAL` verdict, PAS automatically generates
 a Sigma rule scaffold. This guide walks you through taking that scaffold to a
 deployed, validated detection in Sentinel.
 
 ## What PAS Generates
 
-After a GAP/BLIND_SPOT verdict, PAS creates a file in `results\sigma\`:
+After a GAP, BLIND_SPOT, or PARTIAL verdict, PAS creates a file in `results\sigma\`:
 
 ```
 results\
   sigma\
-    T1053.005_scheduled_task_pas.yml
+    T1053.005_scheduled_task_windows_pas.yml
 ```
 
 The scaffold is pre-populated with:
@@ -75,7 +75,7 @@ pip install sigma-cli
 Check the rule:
 
 ```bash
-sigma check results\sigma\T1053.005_scheduled_task_pas.yml
+sigma check results\sigma\T1053.005_scheduled_task_windows_pas.yml
 ```
 
 Fix any reported errors before converting.
@@ -85,11 +85,11 @@ Fix any reported errors before converting.
 ```bash
 # Microsoft 365 Defender / MDE Advanced Hunting
 sigma convert -t microsoft365defender -p windows \
-    results\sigma\T1053.005_scheduled_task_pas.yml
+    results\sigma\T1053.005_scheduled_task_windows_pas.yml
 
 # Microsoft Sentinel (via Uncoder or sigma-cli)
 sigma convert -t sentinel -p windows \
-    results\sigma\T1053.005_scheduled_task_pas.yml
+    results\sigma\T1053.005_scheduled_task_windows_pas.yml
 ```
 
 Alternatively, paste the Sigma YAML into [Uncoder.io](https://uncoder.io) for
@@ -108,7 +108,7 @@ a web-based conversion with no tooling required.
 Re-run the PAS scenario that generated the gap:
 
 ```powershell
-.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 ```
 
 Check whether the new Sentinel rule fired. Enter your verdict.

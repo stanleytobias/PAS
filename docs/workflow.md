@@ -52,14 +52,17 @@ Pick a starting point based on what matters to you:
 
 ```powershell
 # Single technique
-.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 
 # Full tactic
 .\pas_runner.ps1 -Tactic persistence -Out results\persistence\
 
 # Pre-built threat scenario
-.\pas_runner.ps1 -Suite scenarios\suites\detection_coverage_v1.yml
+.\pas_runner.ps1 -Suite scenarios\suites\ransomware_pre_encryption_chain.yml
 ```
+
+> Live runs ask you to type `RUN` to confirm before executing. Add `-Force` to skip the
+> prompt for scripted or unattended runs.
 
 ### 3. Check Your SIEM and EDR
 
@@ -116,7 +119,7 @@ This classification is the most important output — it tells you what action to
 After fixing a gap, re-run the same scenario:
 
 ```powershell
-.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 ```
 
 The new result file will record the updated verdict. Your coverage report improves.
@@ -127,7 +130,7 @@ The new result file will record the updated verdict. Your coverage report improv
 .\pas_runner.ps1 -Report -Out results\
 ```
 
-Opens an HTML report showing your coverage across all tactics and techniques.
+Generates an HTML report (open the printed file path in your browser) showing your coverage across all tactics and techniques.
 
 ## Tactic Sweep Pattern
 

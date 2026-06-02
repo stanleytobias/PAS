@@ -21,7 +21,7 @@ to look and what to query. Vague checklist items produce useless verdicts.
 ```
 T<technique_id>_<short_name>.yml
 
-T1053.005_scheduled_task.yml
+T1053.005_scheduled_task_windows.yml
 T1059.001_powershell_encoded.yml
 T1003.001_lsass_handle.yml
 ```
@@ -138,7 +138,7 @@ Fix all schema errors before submitting. The full field reference is in
 # Dry run first — verify step order and types look right
 .\pas_runner.ps1 -DryRun -Scenario scenarios\<tactic>\<your_scenario>.yml
 
-# Live run in your lab VM
+# Live run in your lab VM -- PAS prompts you to type RUN (add -Force to skip)
 .\pas_runner.ps1 -Scenario scenarios\<tactic>\<your_scenario>.yml
 ```
 

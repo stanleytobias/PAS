@@ -15,14 +15,17 @@ interrupted by the analyst checklist prompt.
 
 ```powershell
 # Single scenario in hunt mode
-.\pas_runner.ps1 -Scenario scenarios\lateral_movement\T1021.002_smb_admin_shares.yml -HuntMode
+.\pas_runner.ps1 -Scenario scenarios\lateral_movement\T1021.002_remote_services_smb_admin_shares.yml -HuntMode
 
 # Full tactic in hunt mode
 .\pas_runner.ps1 -Tactic discovery -HuntMode -Out results\hunts\
 
 # Suite in hunt mode
-.\pas_runner.ps1 -Suite scenarios\suites\detection_coverage_v1.yml -HuntMode -Out results\hunts\
+.\pas_runner.ps1 -Suite scenarios\suites\living_off_the_land_lateral_movement.yml -HuntMode -Out results\hunts\
 ```
+
+> Hunt mode executes real behaviour, so PAS asks you to type `RUN` to confirm. For scripted
+> or unattended hunts add `-Force` (see the blind-hunt example below).
 
 ## What Happens
 
@@ -37,11 +40,9 @@ interrupted by the analyst checklist prompt.
 ```
 ============================================================
   HUNT ARTIFACT GENERATED
-  T1021.002 — SMB/Windows Admin Shares
 ============================================================
-
-Artifacts generated. Go hunt in your SIEM.
-Suggested queries from analyst checklist:
+Artifacts generated for: T1021.002 — SMB/Windows Admin Shares
+Go hunt in your SIEM. Suggested queries from the analyst checklist:
 
   - Process event: net.exe or net1.exe with 'use' and admin share (C$, ADMIN$, IPC$)
   - Process event: cmd.exe or powershell.exe spawning net.exe
@@ -57,11 +58,14 @@ what you ran, then have them identify the techniques from the SIEM data alone.
 
 ```powershell
 # Operator runs this (analysts don't see the command)
-.\pas_runner.ps1 -Tactic lateral_movement -HuntMode -Quiet -Out results\exercise\
+.\pas_runner.ps1 -Tactic lateral_movement -HuntMode -Quiet -Force -Out results\exercise\
 
 # Analysts hunt in SIEM for 30-60 minutes
 # Debrief: compare findings to result JSONs in results\exercise\
 ```
+
+`-Force` is required for unattended runs — without it the live-execution confirmation
+prompt would block the script.
 
 ## Hunt Runs in Coverage Reports
 

@@ -64,7 +64,7 @@ cd PAS
 4. You check your SIEM and EDR for the expected telemetry
 5. You enter a verdict at the interactive prompt
 6. PAS saves a result JSON
-7. On GAP or BLIND_SPOT — PAS auto-generates a Sigma rule scaffold
+7. On GAP, BLIND_SPOT, or PARTIAL — PAS auto-generates a Sigma rule scaffold
 8. Edit the scaffold, convert to KQL, deploy to Sentinel, re-run to confirm
 9. Run -Report to see your full coverage matrix as HTML
 ```
