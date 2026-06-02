@@ -14,7 +14,7 @@ function Invoke-PASScenario {
 
     $runId    = "pas-$(Get-Date -Format 'yyyyMMdd')-$(Get-Random -Minimum 100 -Maximum 999)"
     $runStart = Get-Date
-    $mode     = if ($HuntMode) { 'HUNT' } elseif ($DryRun) { 'DRY-RUN' } else { 'VALIDATE' }
+    $mode     = if ($HuntMode) { 'HUNT' } elseif ($DryRun) { 'DRY-RUN' } else { 'LIVE' }
 
     Write-PASBanner "$($Scenario['name'])  [$mode]"
     Write-PASInfo "Run ID    : $runId"
@@ -254,17 +254,35 @@ function Invoke-PASSuite {
     Write-PASInfo ""
 }
 
+# Ensures a registry PSDrive exists for the given hive. PowerShell only mounts
+# HKLM: and HKCU: by default; HKCR/HKU/HKCC must be created before they can be used.
+function Initialize-PASRegHive {
+    param([Parameter(Mandatory)][string]$Hive)
+    $roots = @{
+        HKLM = 'HKEY_LOCAL_MACHINE'; HKCU = 'HKEY_CURRENT_USER'
+        HKCR = 'HKEY_CLASSES_ROOT';  HKU  = 'HKEY_USERS'; HKCC = 'HKEY_CURRENT_CONFIG'
+    }
+    if ($roots.ContainsKey($Hive) -and
+        -not (Get-PSDrive -Name $Hive -PSProvider Registry -ErrorAction SilentlyContinue)) {
+        New-PSDrive -Name $Hive -PSProvider Registry -Root $roots[$Hive] `
+                    -Scope Global -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+
 function Invoke-PASStep {
     param([Parameter(Mandatory)][object]$Step)
 
     switch ($Step['type']) {
 
         'exec' {
-            $bin  = $Step['binary']
-            $args = if ($Step['args']) { $Step['args'] } else { '' }
-            $proc = Start-Process -FilePath $bin -ArgumentList $args `
-                                  -PassThru -Wait -NoNewWindow -ErrorAction SilentlyContinue
-            return [PSCustomObject]@{ Command = "$bin $args"; ExitCode = $proc.ExitCode }
+            $bin    = $Step['binary']
+            $spArgs = @{ FilePath = $bin; PassThru = $true; Wait = $true
+                         NoNewWindow = $true; ErrorAction = 'SilentlyContinue' }
+            # Only pass -ArgumentList when there are args; an empty string throws.
+            if ($Step['args']) { $spArgs['ArgumentList'] = $Step['args'] }
+            $proc = Start-Process @spArgs
+            $code = if ($proc) { $proc.ExitCode } else { $null }
+            return [PSCustomObject]@{ Command = "$bin $($Step['args'])".Trim(); ExitCode = $code }
         }
 
         'exec_powershell' {
@@ -273,7 +291,8 @@ function Invoke-PASStep {
             $proc    = Start-Process powershell.exe `
                            -ArgumentList "-NonInteractive -NoProfile -EncodedCommand $encoded" `
                            -PassThru -Wait -NoNewWindow -ErrorAction SilentlyContinue
-            return [PSCustomObject]@{ Command = "powershell.exe [encoded]"; ExitCode = $proc.ExitCode }
+            $code    = if ($proc) { $proc.ExitCode } else { $null }
+            return [PSCustomObject]@{ Command = "powershell.exe [encoded]"; ExitCode = $code }
         }
 
         'exec_wmi' {
@@ -318,6 +337,7 @@ function Invoke-PASStep {
         }
 
         'reg_write' {
+            Initialize-PASRegHive -Hive $Step['hive']
             $p = "$($Step['hive']):\$($Step['key'])"
             if (-not (Test-Path $p)) { New-Item -Path $p -Force | Out-Null }
             $t = if ($Step['value_type']) { $Step['value_type'] } else { 'String' }
@@ -326,6 +346,7 @@ function Invoke-PASStep {
         }
 
         'reg_delete' {
+            Initialize-PASRegHive -Hive $Step['hive']
             $p = "$($Step['hive']):\$($Step['key'])"
             if ($Step['value_name']) {
                 Remove-ItemProperty -Path $p -Name $Step['value_name'] -ErrorAction SilentlyContinue

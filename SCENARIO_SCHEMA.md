@@ -270,6 +270,20 @@ analyst_checklist:
 
 ---
 
+## Quoting & Gotchas
+
+The bundled YAML parser follows the YAML 1.2 core schema. A few things to know:
+
+- **Booleans** are only `true` / `false`. Words like `yes`, `no`, `on`, `off` are treated as
+  plain strings (no "Norway problem" coercion). Quote a value if you need it literal.
+- **Ambiguous scalars** (a value that is just a number, or `true`/`false`) should be quoted
+  when you mean them as text, e.g. `value_data: "0"`.
+- **Block scalars** support `|`, `>`, and chomping / indentation indicators (`|-`, `|+`, `>-`, `|2`).
+- **Comments** are stripped only on their own line. An inline `# ...` after a value is kept as
+  part of the value, so avoid trailing comments on `command:` / `args:` lines.
+
+---
+
 ## Complete Example
 
 ```yaml

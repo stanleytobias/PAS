@@ -51,10 +51,14 @@ function Parse-YamlValue {
 
     $v = $Raw.Trim()
 
-    # Block scalar -- literal (|) or folded (>)
-    if ($v -eq '|' -or $v -eq '>') {
-        $fold = ($v -eq '>')
-        $script:_yaml_pos++
+    # Block scalar -- literal (|) or folded (>), with optional chomping (-, +)
+    # and/or indentation indicator (e.g. |-, >+, |2). All forms are recognised.
+    if ($v -match '^[|>][-+0-9]*$') {
+        $fold  = $v.StartsWith('>')
+        $chomp = if ($v.Contains('+')) { '+' } elseif ($v.Contains('-')) { '-' } else { '' }
+        # Do NOT advance $script:_yaml_pos here -- the caller (Parse-YamlMapping) has
+        # already advanced past the "key:" line. A second advance silently drops the
+        # first line of the block.
         $blockLines = @()
         $inHereStr  = $false
         $hereStrEnd = $null
@@ -82,7 +86,9 @@ function Parse-YamlValue {
             } else { break }
         }
         if ($fold) { return ($blockLines -join ' ').Trim() }
-        return ($blockLines -join "`r`n").TrimEnd()
+        $text = ($blockLines -join "`r`n")
+        if ($chomp -eq '+') { return $text }   # keep: preserve trailing newlines
+        return $text.TrimEnd()                  # clip / strip
     }
 
     # Sequence inline: [a, b, c]
@@ -94,9 +100,10 @@ function Parse-YamlValue {
     if ($v -match '^"(.*)"$') { return $Matches[1] }
     if ($v -match "^'(.*)'$") { return $Matches[1] }
 
-    # Booleans
-    if ($v -in @('true','yes','on'))  { return $true  }
-    if ($v -in @('false','no','off')) { return $false }
+    # Booleans -- YAML 1.2 core schema only (true/false), NOT yes/no/on/off, to avoid
+    # the "Norway problem" silently coercing string values like NO/off into booleans.
+    if ($v -ieq 'true')  { return $true  }
+    if ($v -ieq 'false') { return $false }
 
     # Null
     if ($v -in @('null','~','')) { return $null }

@@ -92,7 +92,7 @@ description: >
   PAS verdict: $verdict. $gapNote
 references:
   - https://attack.mitre.org/techniques/$($technique -replace '\.', '/')/ 
-  - https://github.com/stanleytobias/PracticalAttackSim-Runner
+  - https://github.com/stanleytobias/PAS
 author: stanleytobias
 date: $dateOnly
 tags:
