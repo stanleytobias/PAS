@@ -1,6 +1,13 @@
 # PAS.Report.psm1
 # Generates an HTML detection coverage report from PAS result JSON files.
 
+# Minimal HTML-encoder so analyst-supplied notes / detection names / scenario names
+# cannot break the report layout or inject markup.
+function ConvertTo-PASHtml {
+    param([object]$Value)
+    [System.Net.WebUtility]::HtmlEncode([string]$Value)
+}
+
 function New-PASReport {
     param(
         [Parameter(Mandatory)] [string]$ResultsDir,
@@ -15,7 +22,6 @@ function New-PASReport {
     }
 
     $generatedAt = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $valRuns     = @($results | Where-Object { $_.mode -ne 'HUNT' })
     $coveragePct = if ($summary.Total -gt 0) {
         [Math]::Round(($summary.Covered + $summary.Partial * 0.5) / [Math]::Max(1, ($summary.Total - $summary.HuntRuns)) * 100, 1)
     } else { 0 }
@@ -32,9 +38,9 @@ function New-PASReport {
             default         { 'badge-pending' }
         }
         $sigma    = if ($r.sigma_rule_path) { "<span class='sigma-tag'>Sigma</span>" } else { '' }
-        $gapType  = if ($r.outcome.gap_type)        { "<span class='gap-type'>$($r.outcome.gap_type)</span>" } else { '' }
-        $detName  = if ($r.outcome.detection_name)  { $r.outcome.detection_name } else { '--' }
-        $notes    = if ($r.outcome.notes)            { $r.outcome.notes }           else { '' }
+        $gapType  = if ($r.outcome.gap_type)        { "<span class='gap-type'>$(ConvertTo-PASHtml $r.outcome.gap_type)</span>" } else { '' }
+        $detName  = if ($r.outcome.detection_name)  { ConvertTo-PASHtml $r.outcome.detection_name } else { '--' }
+        $notes    = if ($r.outcome.notes)            { ConvertTo-PASHtml $r.outcome.notes }          else { '' }
         $modeTag  = if ($r.mode -eq 'HUNT')     { "<span class='mode-tag hunt'>HUNT</span>" }
                     elseif ($r.mode -eq 'DRY-RUN') { "<span class='mode-tag dry'>DRY</span>" }
                     else { '' }
@@ -45,7 +51,7 @@ function New-PASReport {
         <tr>
           <td class="tactic">$($r.mitre_tactic)</td>
           <td class="technique"><a href="$techUrl" target="_blank">$($r.mitre_technique)</a></td>
-          <td>$($r.scenario_name) $modeTag</td>
+          <td>$(ConvertTo-PASHtml $r.scenario_name) $modeTag</td>
           <td><span class="badge $bc">$v</span> $gapType</td>
           <td>$detName</td>
           <td class="notes">$notes</td>

@@ -49,19 +49,19 @@
     Use when generating telemetry for threat hunting rather than detection validation.
 
 .EXAMPLE
-    .\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+    .\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 
 .EXAMPLE
     .\pas_runner.ps1 -Tactic persistence -Out results\persistence\
 
 .EXAMPLE
-    .\pas_runner.ps1 -Suite scenarios\suites\ransomware_precursor.yml
+    .\pas_runner.ps1 -Suite scenarios\suites\ransomware_pre_encryption_chain.yml
 
 .EXAMPLE
-    .\pas_runner.ps1 -Scenario scenarios\discovery\T1082_system_info.yml -HuntMode
+    .\pas_runner.ps1 -Scenario scenarios\discovery\T1082_system_information_discovery.yml -HuntMode
 
 .EXAMPLE
-    .\pas_runner.ps1 -DryRun -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+    .\pas_runner.ps1 -DryRun -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 
 .EXAMPLE
     .\pas_runner.ps1 -Validate
@@ -72,7 +72,7 @@
 .NOTES
     Run as Administrator for scenarios requiring elevated privileges.
     Always run in an isolated lab VM -- never on production systems.
-    GitHub: https://github.com/stanleytobias/PracticalAttackSim-Runner
+    GitHub: https://github.com/stanleytobias/PAS
 #>
 
 [CmdletBinding(DefaultParameterSetName = 'Scenario')]
@@ -93,9 +93,11 @@ param(
     [switch]$Validate,
 
     [string]$Out = '.\results',
+    [string]$LogFile,
     [switch]$DryRun,
     [switch]$Quiet,
-    [switch]$HuntMode
+    [switch]$HuntMode,
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
@@ -124,10 +126,24 @@ foreach ($mod in $modules) {
     Import-Module $modPath -Force
 }
 
-Set-PASLogging -Quiet:$Quiet -Verbose:($PSBoundParameters.ContainsKey('Verbose'))
+Set-PASLogging -Quiet:$Quiet -Verbose:($PSBoundParameters.ContainsKey('Verbose')) -LogFile $LogFile
 
 if (-not (Test-Path $Out)) {
     New-Item -ItemType Directory -Path $Out -Force | Out-Null
+}
+
+# ── Safety gate: require confirmation before any LIVE execution ────────────────
+$executes = $PSCmdlet.ParameterSetName -in @('Scenario', 'Suite', 'Tactic')
+if ($executes -and -not $DryRun -and -not $Force) {
+    Write-Host ""
+    Write-Host ('!' * 72) -ForegroundColor Red
+    Write-Host "  LIVE EXECUTION -- PAS will run real attack behaviour on THIS host." -ForegroundColor Red
+    Write-Host "  Run ONLY in an isolated lab VM.  -DryRun previews; -Force skips this prompt." -ForegroundColor Yellow
+    Write-Host ('!' * 72) -ForegroundColor Red
+    if ((Read-Host "  Type RUN to proceed") -ne 'RUN') {
+        Write-PASInfo "Aborted -- no steps executed."
+        exit 0
+    }
 }
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
@@ -230,6 +246,26 @@ switch ($PSCmdlet.ParameterSetName) {
                     }
                 } catch {
                     Write-PASError "  ERR   $($f.Name) -- $_"
+                    $fail++
+                }
+            }
+
+            # Suites -- structure + every referenced scenario file must resolve
+            $suiteFiles = Get-ChildItem (Join-Path $PAS_ROOT 'scenarios\suites') -Filter '*.yml' -ErrorAction SilentlyContinue
+            foreach ($sf in $suiteFiles | Sort-Object FullName) {
+                try {
+                    $suiteObj = Import-PASYaml -Path $sf.FullName
+                    $sv       = Test-PASSuiteSchema -Suite $suiteObj -SuitePath $sf.FullName
+                    if ($sv.Valid) {
+                        Write-PASOk  "  PASS  $($sf.Name) (suite)"
+                        $pass++
+                    } else {
+                        Write-PASError "  FAIL  $($sf.Name) (suite)"
+                        $sv.Errors | ForEach-Object { Write-PASError "        - $_" }
+                        $fail++
+                    }
+                } catch {
+                    Write-PASError "  ERR   $($sf.Name) (suite) -- $_"
                     $fail++
                 }
             }

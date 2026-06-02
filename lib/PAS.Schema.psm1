@@ -98,7 +98,7 @@ function Test-PASStep {
 
     if (-not $Step) { return }
 
-    if (-not $Step['step']) {
+    if (-not $Step.Contains('step') -or $null -eq $Step['step']) {
         $errs += "[$Context] Step missing required field 'step' (integer)"
     }
     if (-not $Step['type']) {
@@ -122,8 +122,16 @@ function Test-PASStep {
                 $errs += "[$Context] Step $($Step['step']) (exec_powershell) missing required field 'command'"
             }
         }
+        'exec_wmi' {
+            if (-not $Step['wmi_class']) { $errs += "[$Context] Step $($Step['step']) (exec_wmi) missing 'wmi_class'" }
+            if (-not $Step['method'])    { $errs += "[$Context] Step $($Step['step']) (exec_wmi) missing 'method'" }
+        }
+        'exec_com' {
+            if (-not $Step['com_progid']) { $errs += "[$Context] Step $($Step['step']) (exec_com) missing 'com_progid'" }
+            if (-not $Step['method'])     { $errs += "[$Context] Step $($Step['step']) (exec_com) missing 'method'" }
+        }
         'sleep' {
-            if (-not $Step['seconds']) {
+            if (-not $Step.Contains('seconds') -or $null -eq $Step['seconds']) {
                 $errs += "[$Context] Step $($Step['step']) (sleep) missing required field 'seconds'"
             }
         }
@@ -143,7 +151,7 @@ function Test-PASStep {
             if (-not $Step['hive'])       { $errs += "[$Context] Step $($Step['step']) (reg_write) missing 'hive'" }
             if (-not $Step['key'])        { $errs += "[$Context] Step $($Step['step']) (reg_write) missing 'key'" }
             if (-not $Step['value_name']) { $errs += "[$Context] Step $($Step['step']) (reg_write) missing 'value_name'" }
-            if (-not $Step['value_data']) { $errs += "[$Context] Step $($Step['step']) (reg_write) missing 'value_data'" }
+            if (-not $Step.Contains('value_data') -or $null -eq $Step['value_data']) { $errs += "[$Context] Step $($Step['step']) (reg_write) missing 'value_data'" }
         }
         'reg_delete' {
             if (-not $Step['hive']) { $errs += "[$Context] Step $($Step['step']) (reg_delete) missing 'hive'" }
@@ -154,4 +162,45 @@ function Test-PASStep {
     return $errs
 }
 
-Export-ModuleMember -Function Test-PASSchema
+# Validates a suite object: required fields + that every referenced scenario file exists.
+# Mirrors the path-resolution rules in Invoke-PASSuite (string entries are relative to the
+# suite's own dir; object entries' scenario_file is relative to the scenarios/ root).
+function Test-PASSuiteSchema {
+    param(
+        [Parameter(Mandatory)] [object]$Suite,
+        [Parameter(Mandatory)] [string]$SuitePath
+    )
+
+    $errors = @()
+    if (-not $Suite['name']) { $errors += "Suite missing required field: 'name'" }
+
+    $entries = @()
+    if ($Suite['scenarios']) { $entries = @($Suite['scenarios']) }
+    else { $errors += "Suite missing required field: 'scenarios'" }
+
+    $suiteDir     = Split-Path $SuitePath -Parent
+    $scenarioRoot = Split-Path $suiteDir  -Parent
+
+    $i = 0
+    foreach ($entry in $entries) {
+        $i++
+        if ($entry -is [string]) { $rel = $entry;                  $base = $suiteDir }
+        else                     { $rel = $entry['scenario_file']; $base = $scenarioRoot }
+
+        if (-not $rel) {
+            $errors += "Suite entry $i has no scenario path ('scenario_file')"
+            continue
+        }
+        $path = if ([System.IO.Path]::IsPathRooted($rel)) { $rel } else { Join-Path $base $rel }
+        if (-not (Test-Path $path)) {
+            $errors += "Suite entry $i references missing scenario: $rel"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Valid  = ($errors.Count -eq 0)
+        Errors = $errors
+    }
+}
+
+Export-ModuleMember -Function Test-PASSchema, Test-PASSuiteSchema
