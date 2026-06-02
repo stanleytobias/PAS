@@ -21,16 +21,19 @@ No installation, no dependencies. PAS is pure PowerShell — just clone and run.
 Start with a dry run to see exactly what a scenario will do without executing anything:
 
 ```powershell
-.\pas_runner.ps1 -DryRun -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -DryRun -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 ```
 
 Every step will be printed with its type and description. Nothing touches the system.
 
-## Your First Validation Run
+## Your First Live Run
 
 ```powershell
-.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 ```
+
+Because this runs real attack behaviour, PAS shows a red warning and asks you to type
+`RUN` to confirm before anything executes. (Add `-Force` to skip the prompt for automation.)
 
 PAS will:
 1. Print a banner with technique and tactic
@@ -49,6 +52,16 @@ Before running anything, check all scenario files parse and conform to the schem
 ```powershell
 .\pas_runner.ps1 -Validate
 ```
+
+## Useful Flags
+
+| Flag | Effect |
+|---|---|
+| `-DryRun` | Print every step without executing anything — safe to run anywhere |
+| `-Force` | Skip the live-execution confirmation prompt (for automation) |
+| `-Quiet` | Suppress non-essential output (pair with `-Force` for unattended runs) |
+| `-LogFile <path>` | Append a timestamped run log to a file |
+| `-HuntMode` | Generate artifacts and skip the verdict prompt |
 
 ## Next Steps
 
