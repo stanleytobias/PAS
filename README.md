@@ -38,13 +38,13 @@ cd PAS
 .\pas_runner.ps1 -Validate
 
 # Run a single scenario
-.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task.yml
+.\pas_runner.ps1 -Scenario scenarios\persistence\T1053.005_scheduled_task_windows.yml
 
 # Run all scenarios for a tactic
 .\pas_runner.ps1 -Tactic persistence -Out results\persistence\
 
 # Run a pre-built suite
-.\pas_runner.ps1 -Suite scenarios\suites\detection_coverage_v1.yml
+.\pas_runner.ps1 -Suite scenarios\suites\ransomware_pre_encryption_chain.yml
 
 # Hunt mode — generate artifacts, skip verdict prompt
 .\pas_runner.ps1 -Scenario scenarios\reconnaissance\T1595.001_scanning_ip_blocks.yml -HuntMode
