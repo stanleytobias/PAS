@@ -1,0 +1,56 @@
+id: T1505.003_asr_block_webshell_creation
+name: "ASR — Block Webshell Creation for Servers"
+mitre_technique: "T1505.003"
+mitre_tactic: "persistence"
+description: >
+  Tests the Microsoft Defender ASR rule "Block Webshell creation for Servers" (GUID
+  a8f5898e-1dc8-49a9-9878-85004b8a61e6). Blocks writing web shells into web-accessible
+  directories on Exchange / IIS servers. REQUIRES a server role (Exchange or IIS) — the
+  rule targets server web roots and is not applicable to workstations. This scenario
+  reports the rule's mode and documents the benign trigger. Read docs/asr_testing.md.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1505/003/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context and requirement"
+    message: "ASR test — Block webshell creation (a8f5898e). REQUIRES an Exchange/IIS server. Documented trigger below. Lab server VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = 'a8f5898e-1dc8-49a9-9878-85004b8a61e6'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured (or not applicable off-server) — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented benign trigger (requires server)"
+    message: "Trigger: on an Exchange/IIS server, have the web worker (w3wp.exe) write a benign .aspx/.ashx into a web-accessible path (inetpub\\wwwroot or an Exchange FrontEnd vDir). Writing script content into a server web root fires the rule."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After the server-side write, check Defender log + MDE for a webshell-creation ASR event (a8f5898e)."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "Delete the benign .aspx/.ashx you wrote into the web root for the trigger."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID a8f5898e-1dc8-49a9-9878-85004b8a61e6"
+  - "File event: script (.aspx/.ashx/.php) written into a web root by w3wp.exe / UMWorkerProcess.exe"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'Webshell'"
+  - "CONTROL CHECK: server-only rule — confirm the host is Exchange/IIS; Audit yields 1122, Block yields 1121"

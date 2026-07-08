@@ -1,0 +1,95 @@
+id: T1204.002_asr_block_untrusted_executable
+name: "ASR — Block Untrusted/Low-Prevalence Executable"
+mitre_technique: "T1204.002"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block executable files from running unless
+  they meet a prevalence, age, or trusted-list criterion" (GUID
+  01443614-cd74-433a-b99e-2ecdc07bfc25). This rule blocks brand-new, rarely-seen
+  executables. The scenario compiles a unique source (embedding a random marker so the
+  PE hash is novel) with the on-box .NET Framework compiler and runs it. REQUIRES
+  cloud-delivered protection to enforce (prevalence is a cloud lookup). In Block mode
+  the new exe is denied (Event 1121); in Audit it runs (Event 1122). PowerShell-free
+  equivalent: run_asr_tests.cmd untrusted. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "ASR test — Block untrusted/low-prevalence exe (01443614). Compiles+runs a novel benign exe. Needs cloud protection. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — cloud protection and this rule's configured action"
+    command: |
+      $id = '01443614-cd74-433a-b99e-2ecdc07bfc25'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      try { $pp = Get-MpPreference; Write-Host "[PAS][ASR] CloudProtection MAPSReporting=$($pp.MAPSReporting) (0=off means this rule cannot enforce)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — compile a novel (low-prevalence) benign exe on-box and run it"
+    command: |
+      $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+      if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
+      if (-not (Test-Path $csc)) { Write-Host "[PAS][ASR] csc.exe not found — cannot build test exe."; return }
+      $uniq = "PAS-$(Get-Random)-$(Get-Date -Format yyyyMMddHHmmssfff)"
+      $cs   = "$env:TEMP\pas_unique.cs"
+      $exe  = "$env:TEMP\pas_unique.exe"
+      Set-Content -Path $cs -Encoding Ascii -Value "class P{static void Main(){System.Console.WriteLine(`"$uniq`");}}"
+      & $csc /nologo /out:$exe $cs | Out-Null
+      Write-Host "[PAS][ASR] Running novel exe (marker $uniq)"
+      try {
+          & $exe | Out-Null
+          Write-Host "[PAS][ASR] Ran -> Audit/Disabled (expect Event 1122). Block prevents execution (Event 1121)."
+      } catch {
+          Write-Host "[PAS][ASR] Execution blocked: $_ -> consistent with a BLOCK (Event 1121)."
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow the ASR event to flush"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender log for 1121/1122 on this rule"
+    command: |
+      $id = '01443614-cd74-433a-b99e-2ecdc07bfc25'
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1121,1122; StartTime=(Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $id })
+          if ($mine.Count -gt 0) { $mine | Select-Object -First 3 | ForEach-Object { $k = if ($_.Id -eq 1121){'BLOCKED'}else{'AUDITED'}; Write-Host "[PAS][ASR] $k ($($_.Id)) $($_.TimeCreated)" } }
+          else { Write-Host "[PAS][ASR] No 1121/1122 for this GUID (rule off, no cloud protection, or not flushed)." }
+      } catch { Write-Host "[PAS][ASR] Event query failed: $_" }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE — an untrusted-executable ASR event (01443614) should be visible if cloud protection is on."
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove the compiled test artifacts"
+    command: |
+      Remove-Item "$env:TEMP\pas_unique.cs","$env:TEMP\pas_unique.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed compiled test exe and source."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID 01443614-cd74-433a-b99e-2ecdc07bfc25"
+  - "Precondition: cloud-delivered protection (MAPS) must be enabled — this rule cannot enforce without it"
+  - "Process event: execution of a freshly-created, never-before-seen executable from %TEMP%"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'Untrusted'"
+  - "CONTROL CHECK: if this rule blocks the compiled helper used by other tests (e.g. asr_lsass.exe), add it to the trusted list or test that rule with 01443614 temporarily disabled"

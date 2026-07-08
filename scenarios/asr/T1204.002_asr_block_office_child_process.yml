@@ -1,0 +1,57 @@
+id: T1204.002_asr_block_office_child_process
+name: "ASR — Block All Office Applications from Creating Child Processes"
+mitre_technique: "T1204.002"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block all Office applications from creating
+  child processes" (GUID d4f940ab-401b-4efc-aadc-ad5f3c50688a) — the flagship ASR rule.
+  Macro malware spawns cmd/powershell/other processes from Word, Excel, PowerPoint,
+  etc. REQUIRES Microsoft Office. This scenario reports the rule's configured mode and
+  documents the exact benign trigger; it cannot fully automate without Office and a
+  prepared macro-enabled document. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context and requirement"
+    message: "ASR test — Block Office child process (d4f940ab). REQUIRES Microsoft Office. Documented trigger below. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = 'd4f940ab-401b-4efc-aadc-ad5f3c50688a'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented benign trigger (requires Office)"
+    message: "Trigger: create a .docm whose AutoOpen (or Document_Open) macro runs Shell of calc.exe, enable macros, and open it in Word. winword.exe spawning calc.exe fires the rule. Excel/PowerPoint work the same way."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After running the macro doc, check Defender log + MDE for an Office-child-process ASR event (d4f940ab)."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "Delete the .docm test document you created for the trigger. No artifacts created by this scenario itself."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID d4f940ab-401b-4efc-aadc-ad5f3c50688a"
+  - "Process event: winword.exe / excel.exe / powerpnt.exe as parent of calc.exe (or cmd/powershell)"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'OfficeChildProcess'"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121; Not Configured yields neither"

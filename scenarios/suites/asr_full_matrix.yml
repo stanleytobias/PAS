@@ -1,0 +1,123 @@
+id: suite_asr_full_matrix
+name: "Defender ASR Full Rule Matrix (all 19)"
+description: >
+  Runs every Microsoft Defender ASR rule scenario for a complete coverage matrix.
+  Three tiers: (1) automatable — benign script/native payload, no external app;
+  (2) environment-dependent — need Office / Adobe / Outlook / USB / a server, so they
+  report the rule's configured mode and document the exact trigger; (3) no-safe-trigger —
+  ransomware ML, vulnerable-driver BYOVD, and Safe Mode reboot, which ship as
+  marker-forward documentation scenarios. Every scenario runs its preflight and produces
+  a result JSON, so -Report renders the full 19-rule matrix even where the trigger needs
+  hardware you do not have. For an actual enforcement test, run the automatable subset via
+  scenarios/suites/asr_validation.yml (or tools/asr-native/ under Constrained Language
+  Mode). See docs/asr_testing.md.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+scenarios:
+  - step: 1
+    technique: "T1047"
+    tactic: "execution"
+    scenario_file: "asr/T1047_asr_block_psexec_wmi_child_process.yml"
+    rationale: "d1e49aac — PsExec/WMI child process. Automatable."
+  - step: 2
+    technique: "T1003.001"
+    tactic: "credential_access"
+    scenario_file: "asr/T1003.001_asr_block_lsass_credential_theft.yml"
+    rationale: "9e6c4e1f — LSASS credential theft. Automatable."
+  - step: 3
+    technique: "T1546.003"
+    tactic: "persistence"
+    scenario_file: "asr/T1546.003_asr_block_wmi_event_subscription_persistence.yml"
+    rationale: "e6db77e5 — WMI event subscription persistence. Automatable (admin)."
+  - step: 4
+    technique: "T1027"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1027_asr_block_obfuscated_script.yml"
+    rationale: "5beb7efe — obfuscated scripts. Automatable (heuristic)."
+  - step: 5
+    technique: "T1059.007"
+    tactic: "execution"
+    scenario_file: "asr/T1059.007_asr_block_script_launch_downloaded_exe.yml"
+    rationale: "d3e037e1 — script launches downloaded exe. Automatable."
+  - step: 6
+    technique: "T1036.003"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1036.003_asr_block_copied_system_tool.yml"
+    rationale: "c0033c00 — copied/impersonated system tool (preview). Automatable."
+  - step: 7
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_untrusted_executable.yml"
+    rationale: "01443614 — untrusted/low-prevalence exe. Automatable (needs cloud)."
+
+  - step: 8
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_office_child_process.yml"
+    rationale: "d4f940ab — Office child process. Requires Office."
+  - step: 9
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_office_executable_content.yml"
+    rationale: "3b576869 — Office creates executable content. Requires Office."
+  - step: 10
+    technique: "T1055"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1055_asr_block_office_process_injection.yml"
+    rationale: "75668c1f — Office process injection. Requires Office."
+  - step: 11
+    technique: "T1106"
+    tactic: "execution"
+    scenario_file: "asr/T1106_asr_block_office_macro_win32_api.yml"
+    rationale: "92e97fa1 — Win32 API from Office macro. Requires Office."
+  - step: 12
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_office_comm_child_process.yml"
+    rationale: "26190899 — Outlook child process. Requires Outlook."
+  - step: 13
+    technique: "T1566.001"
+    tactic: "initial_access"
+    scenario_file: "asr/T1566.001_asr_block_email_executable_content.yml"
+    rationale: "be9ba2d9 — executable content from email. Requires email/webmail origin."
+  - step: 14
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_adobe_reader_child_process.yml"
+    rationale: "7674ba52 — Adobe Reader child process. Requires Adobe Reader."
+  - step: 15
+    technique: "T1091"
+    tactic: "lateral_movement"
+    scenario_file: "asr/T1091_asr_block_untrusted_process_usb.yml"
+    rationale: "b2b3f03d — untrusted/unsigned process from USB. Requires removable media."
+  - step: 16
+    technique: "T1505.003"
+    tactic: "persistence"
+    scenario_file: "asr/T1505.003_asr_block_webshell_creation.yml"
+    rationale: "a8f5898e — webshell creation. Requires Exchange/IIS server."
+
+  - step: 17
+    technique: "T1068"
+    tactic: "privilege_escalation"
+    scenario_file: "asr/T1068_asr_block_vulnerable_signed_driver.yml"
+    rationale: "56a863a9 — vulnerable signed driver (BYOVD). No safe trigger."
+  - step: 18
+    technique: "T1486"
+    tactic: "impact"
+    scenario_file: "asr/T1486_asr_advanced_ransomware_protection.yml"
+    rationale: "c1db55ab — advanced ransomware protection. ML/cloud; no safe trigger."
+  - step: 19
+    technique: "T1562.009"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1562.009_asr_block_safe_mode_reboot.yml"
+    rationale: "33ddedf1 — Safe Mode reboot (preview). Disruptive; documented only."
+
+coverage_notes: >
+  All 19 published ASR rules (as of 2026-07). Tier 1 (steps 1-7) actually enforces and
+  emits 1121/1122 events. Tiers 2-3 primarily validate configuration and document the
+  trigger. Re-run tier 1 in Audit then Block per docs/asr_testing.md; treat tier 2-3
+  results as configuration checks, not enforcement proof.

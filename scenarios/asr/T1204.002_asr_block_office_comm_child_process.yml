@@ -1,0 +1,56 @@
+id: T1204.002_asr_block_office_comm_child_process
+name: "ASR — Block Office Communication Application from Creating Child Processes"
+mitre_technique: "T1204.002"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block Office communication application from
+  creating child processes" (GUID 26190899-1602-49e8-8b27-eb1d0a1ce869), i.e. Outlook
+  spawning child processes. REQUIRES Microsoft Outlook. This scenario reports the rule's
+  configured mode and documents the exact benign trigger; it cannot fully automate
+  without Outlook. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context and requirement"
+    message: "ASR test — Block Outlook child process (26190899). REQUIRES Microsoft Outlook. Documented trigger below. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = '26190899-1602-49e8-8b27-eb1d0a1ce869'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented benign trigger (requires Outlook)"
+    message: "Trigger: cause Outlook to spawn a child process — e.g., an Outlook VBA macro (ThisOutlookSession) that runs Shell of calc.exe, or a malicious custom form action. outlook.exe spawning calc.exe fires the rule."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After the Outlook trigger, check Defender log + MDE for an Outlook-child-process ASR event (26190899)."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "Remove any Outlook macro/form you created for the trigger."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID 26190899-1602-49e8-8b27-eb1d0a1ce869"
+  - "Process event: outlook.exe as parent of calc.exe (or cmd/powershell)"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'OfficeCommApp'"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121"

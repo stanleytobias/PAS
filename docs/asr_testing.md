@@ -156,21 +156,26 @@ Run one:
 
 ## Rule → behavior → verification map
 
-Shipped scenarios are marked ✅. The rest use the exact same pattern — copy a
-shipped file, swap the GUID in the preflight/postflight, and replace the trigger
-step. Rules marked **env** need a specific app/hardware present (Office, Adobe,
-Outlook, a USB device, a vulnerable driver) so they can't be triggered with a
-pure PowerShell payload.
+All 19 rules ship as scenarios in `scenarios/asr/`, in three tiers:
+**auto** — triggerable with a benign script/native payload, no external app;
+**env** — needs a specific app/hardware (Office, Adobe, Outlook, USB, server), so
+the scenario reports the rule's configured mode and documents the exact trigger;
+**doc** — no safe benign trigger (ransomware ML, vulnerable-driver BYOVD, Safe
+Mode reboot), shipped as marker scenarios with control-validation guidance. The
+seven **auto** rules also have PowerShell-free equivalents in `tools/asr-native/`
+for Constrained Language Mode hosts. Run the auto set via
+`scenarios/suites/asr_validation.yml`; run all 19 for a coverage matrix via
+`scenarios/suites/asr_full_matrix.yml`.
 
-| ASR rule | GUID | Safe benign trigger | MDE ActionType (Blocked/Audited) | Shipped |
+| ASR rule | GUID | Safe benign trigger | MDE ActionType (Blocked/Audited) | Tier |
 |---|---|---|---|---|
-| Block process creations from PsExec and WMI | `d1e49aac-8f56-4280-b9ba-993a6d77406c` | `Win32_Process.Create("cmd /c exit")` | `AsrPsexecWmiChildProcess…` | ✅ |
-| Block credential stealing from LSASS | `9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2` | `OpenProcess(VM_READ)` on lsass, close immediately — **no dump** | `AsrLsassCredentialTheft…` | ✅ |
-| Block persistence through WMI event subscription | `e6db77e5-3df2-4cf1-b95a-636979351e5b` | Create `__EventFilter`+`CommandLineEventConsumer`+binding, remove at once | `AsrPersistenceThroughWmi…` | ✅ |
-| Block execution of potentially obfuscated scripts | `5beb7efe-fd9a-4556-801d-275e5ffc04cc` | Run a heavily obfuscated but benign `.ps1`/`.vbs` (heuristic — may not fire every time) | `AsrObfuscatedScript…` | — |
-| Block JS/VBScript from launching downloaded exe | `d3e037e1-3eb8-44c8-a917-57927947596d` | `.js` via `WScript.Shell.Run` of a MOTW-tagged benign `.exe` | `AsrScriptExecutableDownload…` | — |
-| Block executable files unless prevalence/age/trusted-list | `01443614-cd74-433a-b99e-2ecdc07bfc25` | Compile+run a brand-new benign exe (needs cloud protection) | `AsrUntrustedExecutable…` | — |
-| Block use of copied or impersonated system tools *(preview)* | `c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb` | Copy `calc.exe` → `svchost.exe`, run it | `AsrAbusedSystemTool…` | — |
+| Block process creations from PsExec and WMI | `d1e49aac-8f56-4280-b9ba-993a6d77406c` | `Win32_Process.Create("cmd /c exit")` | `AsrPsexecWmiChildProcess…` | auto |
+| Block credential stealing from LSASS | `9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2` | `OpenProcess(VM_READ)` on lsass, close immediately — **no dump** | `AsrLsassCredentialTheft…` | auto |
+| Block persistence through WMI event subscription | `e6db77e5-3df2-4cf1-b95a-636979351e5b` | Create `__EventFilter`+`CommandLineEventConsumer`+binding, remove at once | `AsrPersistenceThroughWmi…` | auto |
+| Block execution of potentially obfuscated scripts | `5beb7efe-fd9a-4556-801d-275e5ffc04cc` | Run a heavily obfuscated but benign script (heuristic — may not fire every time) | `AsrObfuscatedScript…` | auto |
+| Block JS/VBScript from launching downloaded exe | `d3e037e1-3eb8-44c8-a917-57927947596d` | `.js` via `WScript.Shell.Run` of a MOTW-tagged benign `.exe` | `AsrScriptExecutableDownload…` | auto |
+| Block executable files unless prevalence/age/trusted-list | `01443614-cd74-433a-b99e-2ecdc07bfc25` | Compile+run a brand-new benign exe (needs cloud protection) | `AsrUntrustedExecutable…` | auto |
+| Block use of copied or impersonated system tools *(preview)* | `c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb` | Copy `hostname.exe` → `svchost.exe`, run it | `AsrAbusedSystemTool…` | auto |
 | Block all Office apps from creating child processes | `d4f940ab-401b-4efc-aadc-ad5f3c50688a` | Word/Excel macro spawns `calc` | `AsrOfficeChildProcess…` | env |
 | Block Office apps from creating executable content | `3b576869-a4ec-4529-8536-b80a7769e899` | Office macro writes an `.exe` | `AsrExecutableOfficeContent…` | env |
 | Block Office apps from injecting into other processes | `75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84` | Office macro injects into another process | `AsrOfficeProcessInjection…` | env |
@@ -179,10 +184,10 @@ pure PowerShell payload.
 | Block executable content from email/webmail | `be9ba2d9-53ea-4cdc-84e5-9b1eeee46550` | Launch a benign exe saved from Outlook/webmail | `AsrExecutableEmailContent…` | env |
 | Block Adobe Reader from creating child processes | `7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c` | Adobe Reader spawns `calc` | `AsrAdobeReaderChildProcess…` | env |
 | Block untrusted/unsigned processes from USB | `b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4` | Run an unsigned exe from removable media | `AsrUntrustedUsbProcess…` | env |
-| Block abuse of exploited vulnerable signed drivers | `56a863a9-875e-4185-98a7-b882c64b5ce9` | Load a known-vulnerable signed driver | `AsrVulnerableSignedDriver…` | env |
-| Use advanced protection against ransomware | `c1db55ab-c21a-4637-bb3f-a12568109d35` | ML/cloud — no clean benign trigger | `AsrRansomware…` | env |
-| Block Webshell creation for Servers | `a8f5898e-1dc8-49a9-9878-85004b8a61e6` | Exchange/IIS server only | `AsrWebshellCreation…` | env |
-| Block rebooting machine in Safe Mode *(preview)* | `33ddedf1-c6e0-47cb-833e-de6133960387` | `bcdedit /set safeboot` (disruptive) | confirm in tenant | env |
+| Block Webshell creation for Servers | `a8f5898e-1dc8-49a9-9878-85004b8a61e6` | Exchange/IIS server web-root write | `AsrWebshellCreation…` | env |
+| Block abuse of exploited vulnerable signed drivers | `56a863a9-875e-4185-98a7-b882c64b5ce9` | Load a known-vulnerable signed driver — **no safe trigger** | `AsrVulnerableSignedDriver…` | doc |
+| Use advanced protection against ransomware | `c1db55ab-c21a-4637-bb3f-a12568109d35` | ML/cloud — **no clean benign trigger** | `AsrRansomware…` | doc |
+| Block rebooting machine in Safe Mode *(preview)* | `33ddedf1-c6e0-47cb-833e-de6133960387` | `bcdedit /set safeboot` (**disruptive**) | confirm in tenant | doc |
 
 Confirm exact ActionType strings against your own tenant with the
 `startswith "Asr"` query — Microsoft occasionally renames them, and the local
