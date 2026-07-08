@@ -65,6 +65,27 @@ then the runner tails the last Defender ASR events. Set the target rule to Audit
 first, confirm **Event 1122**, then Block and confirm **Event 1121** — same as the
 PowerShell scenarios (`../../docs/asr_testing.md`).
 
+## GPO blocks the scripts? Use the exe
+
+If Group Policy blocks Windows Script Host or `.cmd`/`.vbs`/`.js` (AppLocker script
+rules), compile `asr_trigger.cs` to a single self-contained exe — no script engine
+involved:
+
+```bat
+%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo ^
+  /out:asr_trigger.exe /r:System.Management.dll asr_trigger.cs
+asr_trigger.exe [wmi|lsass|persist|copytool|untrusted|all]
+```
+
+It covers the 5 rules a native process can trigger (`wmi`, `lsass`, `persist`,
+`copytool`, `untrusted`). The two script-engine rules (`obfus` 5beb7efe, `scriptexe`
+d3e037e1) can't be exercised without a script host, so they're out on a
+script-blocked box. Rename a copy to `asr_<rule>.exe` (e.g. `asr_wmi.exe`) to
+double-click a single rule — the exe reads its own filename. Output goes to the
+console and `%TEMP%\pas_asr_trigger.log`. If the exe is *also* blocked, your policy
+is application control (WDAC/AppLocker exe rules), not just scripts, and you'd need
+a signed or allow-listed binary.
+
 ## Verification (also PowerShell-free)
 
 ```bat
