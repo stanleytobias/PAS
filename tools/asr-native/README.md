@@ -86,6 +86,11 @@ console and `%TEMP%\pas_asr_trigger.log`. If the exe is *also* blocked, your pol
 is application control (WDAC/AppLocker exe rules), not just scripts, and you'd need
 a signed or allow-listed binary.
 
+Prebuilt copies are committed under [`bin/`](bin/) — `asr_trigger.exe` plus the
+per-rule `asr_<rule>.exe` files — for target machines without a compiler. They are
+unsigned; some AV/EDR may flag them since they exercise attack behaviors. Rebuild
+from `asr_trigger.cs` if you'd rather not trust the committed binaries.
+
 ## Verification (also PowerShell-free)
 
 ```bat
