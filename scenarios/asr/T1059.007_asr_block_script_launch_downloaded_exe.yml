@@ -1,0 +1,90 @@
+id: T1059.007_asr_block_script_launch_downloaded_exe
+name: "ASR — Block JS/VBScript from Launching Downloaded Executable Content"
+mitre_technique: "T1059.007"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block JavaScript or VBScript from launching
+  downloaded executable content" (GUID d3e037e1-3eb8-44c8-a917-57927947596d). A common
+  malware pattern: a script dropped by a browser/email uses WScript.Shell.Run to launch
+  a downloaded (Mark-of-the-Web) executable. This scenario stages a benign MOTW-tagged
+  copy of hostname.exe, then runs a .js (via cscript) that launches it. In Block mode
+  the launch is denied (Event 1121); in Audit it runs (Event 1122). PowerShell-free
+  equivalent: tools/asr-native/asr_script_downloaded_exe.js. Read docs/asr_testing.md.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1059/007/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "ASR test — Block script launching downloaded exe (d3e037e1). Benign MOTW-tagged hostname.exe launched by a .js. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = 'd3e037e1-3eb8-44c8-a917-57927947596d'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — stage a MOTW exe and launch it from a JScript via cscript"
+    command: |
+      $exe = "$env:TEMP\pas_dl.exe"
+      Copy-Item "$env:WINDIR\System32\hostname.exe" $exe -Force
+      Set-Content -Path "$exe`:Zone.Identifier" -Value "[ZoneTransfer]`r`nZoneId=3" -Encoding Ascii
+      $js = "$env:TEMP\pas_launch.js"
+      Set-Content -Path $js -Encoding Ascii -Value @'
+      var sh = new ActiveXObject("WScript.Shell");
+      var exe = sh.Environment("Process")("TEMP") + "\\pas_dl.exe";
+      try { sh.Run('"' + exe + '"', 0, true); WScript.Echo("[PAS][ASR] launched (audit/disabled)"); }
+      catch (e) { WScript.Echo("[PAS][ASR] launch blocked 0x" + (e.number>>>0).toString(16)); }
+'@
+      Write-Host "[PAS][ASR] Running cscript to launch the MOTW executable..."
+      & cscript.exe //nologo $js
+
+  - step: 4
+    type: sleep
+    description: "Allow the ASR event to flush"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender log for 1121/1122 on this rule"
+    command: |
+      $id = 'd3e037e1-3eb8-44c8-a917-57927947596d'
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1121,1122; StartTime=(Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $id })
+          if ($mine.Count -gt 0) { $mine | Select-Object -First 3 | ForEach-Object { $k = if ($_.Id -eq 1121){'BLOCKED'}else{'AUDITED'}; Write-Host "[PAS][ASR] $k ($($_.Id)) $($_.TimeCreated)" } }
+          else { Write-Host "[PAS][ASR] No 1121/1122 for this GUID." }
+      } catch { Write-Host "[PAS][ASR] Event query failed: $_" }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE — a script-launch-downloaded-exe ASR event (d3e037e1) should be visible."
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove staged exe and script"
+    command: |
+      Remove-Item "$env:TEMP\pas_dl.exe","$env:TEMP\pas_launch.js" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed staged MOTW exe and launcher script."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID d3e037e1-3eb8-44c8-a917-57927947596d"
+  - "Process event: cscript.exe (or wscript.exe) as parent of the launched executable"
+  - "File event: executable with Zone.Identifier ADS (Mark-of-the-Web) launched by a script host"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'ScriptExecutable'"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121"

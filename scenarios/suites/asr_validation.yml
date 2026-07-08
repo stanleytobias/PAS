@@ -1,0 +1,97 @@
+id: suite_asr_validation
+name: "Defender ASR Rule Validation"
+description: >
+  Validates that Microsoft Defender Attack Surface Reduction (ASR) rules are
+  configured, enforcing, and visible to your detection pipeline. Unlike a detection
+  suite, this exercises a PREVENTIVE control: each scenario reports the target rule's
+  configured mode, performs a benign behavior that matches the rule, and tails the
+  Defender Operational log for Event ID 1121 (block) or 1122 (audit). Run every rule
+  in Audit first (behavior completes, 1122 logs, nothing breaks), confirm the event
+  reaches your SIEM/MDE, then promote to Block and re-run to confirm 1121. See
+  docs/asr_testing.md for the full methodology and the rule → behavior map.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-deployment
+
+scenarios:
+  - step: 1
+    technique: "T1047"
+    tactic: "execution"
+    scenario_file: "asr/T1047_asr_block_psexec_wmi_child_process.yml"
+    rationale: "WMI Win32_Process.Create child process — exercises 'Block process creations from PsExec and WMI' (d1e49aac). Deterministic, offline, benign cmd payload."
+
+  - step: 2
+    technique: "T1003.001"
+    tactic: "credential_access"
+    scenario_file: "asr/T1003.001_asr_block_lsass_credential_theft.yml"
+    rationale: "OpenProcess(PROCESS_VM_READ) on lsass then immediate close — exercises 'Block credential stealing from LSASS' (9e6c4e1f). No dump, no read; the handle request is the trigger."
+
+  - step: 3
+    technique: "T1546.003"
+    tactic: "persistence"
+    scenario_file: "asr/T1546.003_asr_block_wmi_event_subscription_persistence.yml"
+    rationale: "Register + immediately remove a benign WMI event subscription — exercises 'Block persistence through WMI event subscription' (e6db77e5). Requires Admin; rule supports no exclusions."
+
+  - step: 4
+    technique: "T1027"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1027_asr_block_obfuscated_script.yml"
+    rationale: "Obfuscated PowerShell scanned by AMSI — exercises 'Block obfuscated scripts' (5beb7efe). Heuristic; may not fire every run."
+
+  - step: 5
+    technique: "T1059.007"
+    tactic: "execution"
+    scenario_file: "asr/T1059.007_asr_block_script_launch_downloaded_exe.yml"
+    rationale: "JScript launches a Mark-of-the-Web exe — exercises 'Block JS/VBScript launching downloaded exe' (d3e037e1)."
+
+  - step: 6
+    technique: "T1036.003"
+    tactic: "defense_evasion"
+    scenario_file: "asr/T1036.003_asr_block_copied_system_tool.yml"
+    rationale: "Copied/renamed system tool run — exercises 'Block copied/impersonated system tools' (c0033c00, preview)."
+
+  - step: 7
+    technique: "T1204.002"
+    tactic: "execution"
+    scenario_file: "asr/T1204.002_asr_block_untrusted_executable.yml"
+    rationale: "Freshly-compiled novel exe — exercises 'Block untrusted/low-prevalence executables' (01443614). Requires cloud-delivered protection."
+
+analyst_narrative: >
+  These seven rules are the ones triggerable with a benign script or native payload and
+  no external app or hardware — the deterministic offline core (steps 1-3) plus the
+  heuristic (obfuscated scripts) and cloud-dependent (untrusted executable) automatable
+  rules (steps 4-7) — ideal for proving the end-to-end pipeline before you tackle the
+  rules that need Office, Adobe, Outlook, USB media, or a server. Interpretation differs
+  from a detection suite: a step that the runner records as "failed" in Block mode is
+  the control WORKING, not a scenario bug (each scenario's trigger step says so
+  explicitly). Read each scenario's preflight output first — if a rule is Not
+  Configured or Defender is Passive, a "no event" result is a BLIND_SPOT for the rule's
+  configuration, not evidence the rule is broken. The decisive question this suite
+  answers is not "did the behavior get blocked" (Defender's job) but "did the 1121/1122
+  event reach my SIEM/MDE with rule context" (your pipeline's job).
+
+detection_chain:
+  - "Preflight (every scenario): Get-MpComputerStatus AMRunningMode=Normal + RealTimeProtectionEnabled=True; target GUID present in AttackSurfaceReductionRules_Ids with action Audit(2) or Block(1)"
+  - "Step 1: Defender 1121/1122 for d1e49aac + cmd.exe parented to WmiPrvSE.exe"
+  - "Step 2: Defender 1121/1122 for 9e6c4e1f + powershell.exe requesting PROCESS_VM_READ on lsass.exe"
+  - "Step 3: Defender 1121/1122 for e6db77e5 + CommandLineEventConsumer creation in root\\subscription"
+  - "Step 4: Defender 1121/1122 for 5beb7efe (heuristic — correlate with AMSI 4104 decoded content)"
+  - "Step 5: Defender 1121/1122 for d3e037e1 + cscript.exe launching a MOTW-tagged exe"
+  - "Step 6: Defender 1121/1122 for c0033c00 + svchost.exe image running from %TEMP%"
+  - "Step 7: Defender 1121/1122 for 01443614 (requires cloud protection) + novel exe from %TEMP%"
+  - "Pipeline check: each of the above ALSO present in MDE DeviceEvents (ActionType startswith 'Asr') and/or Sentinel — local-only means PARTIAL"
+
+coverage_notes: >
+  This suite runs the 7 automatable ASR rules (benign script/native payload, no external
+  app). All 19 ASR rules now have a scenario in scenarios/asr/ — the other 12 are
+  environment-dependent (Office: d4f940ab, 3b576869, 75668c1f, 92e97fa1, 26190899; Adobe:
+  7674ba52; email: be9ba2d9; USB: b2b3f03d; webshell/server: a8f5898e) or have no safe
+  benign trigger (vulnerable driver 56a863a9, ransomware c1db55ab, Safe Mode reboot
+  33ddedf1). Those ship as marker-forward scenarios that report the rule's configured mode
+  and document the exact trigger. To run the full set for coverage reporting use
+  scenarios/suites/asr_full_matrix.yml. PowerShell-free equivalents of the 7 automatable
+  rules live in tools/asr-native/ for Constrained Language Mode hosts. See
+  docs/asr_testing.md.

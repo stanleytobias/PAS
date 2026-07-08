@@ -1,0 +1,92 @@
+id: T1027_asr_block_obfuscated_script
+name: "ASR — Block Execution of Potentially Obfuscated Scripts"
+mitre_technique: "T1027"
+mitre_tactic: "defense_evasion"
+description: >
+  Tests the Microsoft Defender ASR rule "Block execution of potentially obfuscated
+  scripts" (GUID 5beb7efe-fd9a-4556-801d-275e5ffc04cc). Windows Script Host and
+  PowerShell are AMSI-integrated, so obfuscated PowerShell/JScript/VBScript is scanned
+  by the engine that backs this rule. This scenario runs a benign but obfuscated
+  PowerShell payload (char-code construction + dynamic scriptblock) that decodes to a
+  harmless marker. NOTE: this rule is heuristic — AMSI scores obfuscation — so it may
+  not fire on every payload. A "no event" result here is not proof the rule is off.
+  PowerShell-free equivalent: tools/asr-native/asr_obfuscated_script.js. Read
+  docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1027/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "ASR test — Block obfuscated scripts (5beb7efe). Benign obfuscated PowerShell decoding to a marker. Heuristic rule. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = '5beb7efe-fd9a-4556-801d-275e5ffc04cc'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) {
+          $m = @{ '0'='Disabled'; '1'='Block'; '2'='Audit'; '6'='Warn' }
+          $a = "$($p.AttackSurfaceReductionRules_Actions[$i])"
+          Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))"
+      } else {
+          Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first (docs/asr_testing.md)."
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — execute a benign, obfuscated PowerShell payload"
+    command: |
+      Write-Host "[PAS][ASR] Building an obfuscated command (char-code + dynamic scriptblock)."
+      $verb = [char]87+[char]114+[char]105+[char]116+[char]101+[char]45+[char]72+[char]111+[char]115+[char]116
+      $payload = "$verb 'PAS-ASR-OBFUSC'"
+      try {
+          & ([scriptblock]::Create($payload))
+          Write-Host "[PAS][ASR] Obfuscated payload ran -> Audit/Disabled (expect Event 1122). Block prevents execution (Event 1121)."
+      } catch {
+          Write-Host "[PAS][ASR] Execution blocked: $_ -> consistent with a BLOCK (Event 1121)."
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow the ASR event to flush"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender log for 1121/1122 on this rule"
+    command: |
+      $id = '5beb7efe-fd9a-4556-801d-275e5ffc04cc'
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1121,1122; StartTime=(Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $id })
+          if ($mine.Count -gt 0) { $mine | Select-Object -First 3 | ForEach-Object { $k = if ($_.Id -eq 1121){'BLOCKED'}else{'AUDITED'}; Write-Host "[PAS][ASR] $k ($($_.Id)) $($_.TimeCreated)" } }
+          else { Write-Host "[PAS][ASR] No 1121/1122 for this GUID (rule off, heuristic did not score it, or not flushed)." }
+      } catch { Write-Host "[PAS][ASR] Event query failed: $_" }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE (ActionType startswith 'Asr'). Obfuscation rule is heuristic — try re-running if it did not score."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "No cleanup required"
+    message: "ASR obfuscated-script test created no artifacts."
+
+analyst_checklist:
+  - "Defender event: Microsoft-Windows-Windows Defender/Operational Event ID 1121/1122 referencing GUID 5beb7efe-fd9a-4556-801d-275e5ffc04cc"
+  - "AMSI / Script Block Logging (Event ID 4104): the decoded payload content, regardless of obfuscation"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'Obfuscated'"
+  - "NOTE: heuristic rule — correlate with AMSI score; a non-fire does not mean the rule is disabled (confirm via preflight action)"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121, Not Configured yields neither"

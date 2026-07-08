@@ -1,0 +1,88 @@
+id: T1036.003_asr_block_copied_system_tool
+name: "ASR — Block Use of Copied or Impersonated System Tools"
+mitre_technique: "T1036.003"
+mitre_tactic: "defense_evasion"
+description: >
+  Tests the Microsoft Defender ASR rule "Block use of copied or impersonated system
+  tools" (GUID c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb, preview). Adversaries copy a
+  legitimate system binary to a new name/location to evade name-based detections and
+  blend in (e.g., a renamed LOLBin). This scenario copies hostname.exe to
+  %TEMP%\svchost.exe (impersonating a system process name) and runs it. In Block mode
+  execution is denied (Event 1121); in Audit it runs (Event 1122). This is a preview
+  rule — confirm it is available in your build. PowerShell-free equivalent:
+  run_asr_tests.cmd copytool. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1036/003/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context"
+    message: "ASR test — Block copied/impersonated system tools (c0033c00, preview). hostname.exe copied to svchost.exe and run. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = 'c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured (or unavailable in this build) — set Audit or Block first." }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — copy a system tool to an impersonating name and run it"
+    command: |
+      $dst = "$env:TEMP\svchost.exe"
+      Copy-Item "$env:WINDIR\System32\hostname.exe" $dst -Force
+      Write-Host "[PAS][ASR] Running copied/renamed system tool: $dst"
+      try {
+          & $dst | Out-Null
+          Write-Host "[PAS][ASR] Ran -> Audit/Disabled (expect Event 1122). Block prevents execution (Event 1121)."
+      } catch {
+          Write-Host "[PAS][ASR] Execution blocked: $_ -> consistent with a BLOCK (Event 1121)."
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow the ASR event to flush"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender log for 1121/1122 on this rule"
+    command: |
+      $id = 'c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb'
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1121,1122; StartTime=(Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $id })
+          if ($mine.Count -gt 0) { $mine | Select-Object -First 3 | ForEach-Object { $k = if ($_.Id -eq 1121){'BLOCKED'}else{'AUDITED'}; Write-Host "[PAS][ASR] $k ($($_.Id)) $($_.TimeCreated)" } }
+          else { Write-Host "[PAS][ASR] No 1121/1122 for this GUID (rule off/unavailable or not flushed)." }
+      } catch { Write-Host "[PAS][ASR] Event query failed: $_" }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE — a copied-system-tool ASR event (c0033c00) should be visible."
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove the copied tool"
+    command: |
+      Remove-Item "$env:TEMP\svchost.exe" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed copied system tool."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb"
+  - "Process event: an image named svchost.exe running from %TEMP% (not C:\\Windows\\System32) — impersonation indicator"
+  - "File event: a signed Microsoft system binary copied to a non-system path under a system-tool name"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'System'"
+  - "CONTROL CHECK: preview rule — confirm availability in your build; Audit yields 1122, Block yields 1121"

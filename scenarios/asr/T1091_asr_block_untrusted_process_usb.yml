@@ -1,0 +1,56 @@
+id: T1091_asr_block_untrusted_process_usb
+name: "ASR — Block Untrusted and Unsigned Processes That Run from USB"
+mitre_technique: "T1091"
+mitre_tactic: "lateral_movement"
+description: >
+  Tests the Microsoft Defender ASR rule "Block untrusted and unsigned processes that run
+  from USB" (GUID b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4). Blocks unsigned/untrusted
+  executables and scripts running from removable media. REQUIRES removable media (a USB
+  device, or a VHDX attached as a removable disk). This scenario reports the rule's mode
+  and documents the trigger. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1091/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context and requirement"
+    message: "ASR test — Block untrusted/unsigned process from USB (b2b3f03d). REQUIRES removable media. Documented trigger below. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = 'b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented benign trigger (requires removable media)"
+    message: "Trigger: place an unsigned benign exe (e.g. the compiled asr_lsass.exe, or any self-built exe) on a USB drive or a VHDX attached as removable, then run it from that drive letter. An unsigned process from removable media fires the rule."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After running the unsigned exe from removable media, check Defender log + MDE for a USB-untrusted-process ASR event (b2b3f03d)."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "Remove the test exe from the removable media / detach the VHDX you used for the trigger."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4"
+  - "Process event: execution of an unsigned image whose path is on a removable/USB volume"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'UntrustedUsbProcess'"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121"

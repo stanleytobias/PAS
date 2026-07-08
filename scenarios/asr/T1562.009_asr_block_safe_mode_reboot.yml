@@ -1,0 +1,58 @@
+id: T1562.009_asr_block_safe_mode_reboot
+name: "ASR — Block Rebooting Machine in Safe Mode"
+mitre_technique: "T1562.009"
+mitre_tactic: "defense_evasion"
+description: >
+  Documents the Microsoft Defender ASR rule "Block rebooting machine in Safe Mode"
+  (GUID 33ddedf1-c6e0-47cb-833e-de6133960387, preview). Adversaries reboot into Safe
+  Mode where many security products (including Defender) do not load, then act freely.
+  The rule blocks the bcdedit safeboot configuration. A live trigger is DISRUPTIVE — if
+  the safeboot flag is set and not reverted, the host reboots into Safe Mode — so this
+  ships as a documentation/marker scenario. Do NOT auto-execute the trigger. Read
+  docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1562/009/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context — disruptive, do not auto-run"
+    message: "ASR rule — Block Safe Mode reboot (33ddedf1, preview). Trigger is DISRUPTIVE. Documentation/marker scenario — do not auto-execute. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = '33ddedf1-c6e0-47cb-833e-de6133960387'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured (or unavailable in this build) — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented trigger (manual, disruptive)"
+    message: "Trigger (MANUAL, snapshot the VM first): run bcdedit /set {current} safeboot minimal from an elevated prompt. In Block mode the change is denied (Event 1121). In Audit it is allowed — immediately revert with bcdedit /deletevalue {current} safeboot before rebooting, or the host boots into Safe Mode."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After the manual bcdedit attempt, check Defender log + MDE for a Safe-Mode-reboot ASR event (33ddedf1). Verify the safeboot flag is cleared."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "If you ran the manual trigger, ensure safeboot is cleared: bcdedit /deletevalue {current} safeboot. Marker scenario creates no artifacts itself."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID 33ddedf1-c6e0-47cb-833e-de6133960387"
+  - "Process event: bcdedit.exe with 'safeboot' in the command line"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' | where InitiatingProcessCommandLine contains 'safeboot'"
+  - "CONTROL CHECK: preview rule — confirm availability; verify the safeboot BCD element was not persisted after testing"

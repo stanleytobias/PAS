@@ -1,0 +1,56 @@
+id: T1204.002_asr_block_office_executable_content
+name: "ASR — Block Office Applications from Creating Executable Content"
+mitre_technique: "T1204.002"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block Office applications from creating
+  executable content" (GUID 3b576869-a4ec-4529-8536-b80a7769e899). Macro droppers write
+  an executable (.exe/.dll/.scr) or script to disk. REQUIRES Microsoft Office. This
+  scenario reports the rule's configured mode and documents the exact benign trigger;
+  it cannot fully automate without Office and a prepared macro. Read docs/asr_testing.md.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1204/002/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Context and requirement"
+    message: "ASR test — Block Office executable content (3b576869). REQUIRES Microsoft Office. Documented trigger below. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — this rule's configured action"
+    command: |
+      $id = '3b576869-a4ec-4529-8536-b80a7769e899'
+      try { $mp = Get-MpComputerStatus; Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode) RTP=$($mp.RealTimeProtectionEnabled)" } catch {}
+      $p = Get-MpPreference
+      $ids = @($p.AttackSurfaceReductionRules_Ids) | ForEach-Object { "$_".ToLower() }
+      $i = [array]::IndexOf($ids, $id)
+      if ($i -ge 0) { $m=@{'0'='Disabled';'1'='Block';'2'='Audit';'6'='Warn'}; $a="$($p.AttackSurfaceReductionRules_Actions[$i])"; Write-Host "[PAS][ASR] Rule $id action: $a ($($m[$a]))" }
+      else { Write-Host "[PAS][ASR] WARNING: rule $id NOT configured — set Audit or Block first." }
+
+  - step: 3
+    type: marker
+    description: "Documented benign trigger (requires Office)"
+    message: "Trigger: a macro that writes a benign .exe to disk (e.g., via FileSystemObject or ADODB.Stream to the user profile). Office creating executable content on disk fires the rule."
+
+  - step: 4
+    type: marker
+    description: "Post-execution prompt"
+    message: "After running the macro, check Defender log + MDE for an Office-executable-content ASR event (3b576869)."
+
+cleanup:
+  - step: 1
+    type: marker
+    description: "Cleanup guidance"
+    message: "Delete any test document and dropped file you created for the trigger."
+
+analyst_checklist:
+  - "Defender event: Event ID 1121/1122 referencing GUID 3b576869-a4ec-4529-8536-b80a7769e899"
+  - "File event: executable/script written to disk with an Office app (winword/excel/powerpnt) as the initiating process"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'ExecutableOfficeContent'"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121"
