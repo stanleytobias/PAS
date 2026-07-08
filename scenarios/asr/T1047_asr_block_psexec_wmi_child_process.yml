@@ -1,0 +1,134 @@
+id: T1047_asr_block_psexec_wmi_child_process
+name: "ASR — Block Process Creations from PsExec and WMI Commands"
+mitre_technique: "T1047"
+mitre_tactic: "execution"
+description: >
+  Tests the Microsoft Defender ASR rule "Block process creations originating from
+  PsExec and WMI commands" (GUID d1e49aac-8f56-4280-b9ba-993a6d77406c). Adversaries
+  spawn processes via WMI Win32_Process.Create so the child parents to WmiPrvSE.exe
+  instead of their shell, breaking process ancestry. This scenario reproduces that
+  benign-payload-only: it asks WMI to launch cmd.exe /c exit. In Audit mode the child
+  runs and Defender logs Event ID 1122; in Block mode WMI process creation is denied
+  and Defender logs Event ID 1121. The preflight step reports the rule's configured
+  mode so a non-block result is interpretable. Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1047/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context and safety note"
+    message: "ASR test — Block PsExec/WMI child process (d1e49aac). Benign payload: WMI launches cmd.exe /c exit. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — Defender running mode, RTP, and this rule's configured action"
+    command: |
+      $ruleId   = 'd1e49aac-8f56-4280-b9ba-993a6d77406c'
+      $ruleName = 'Block process creations from PsExec and WMI commands'
+      Write-Host "[PAS][ASR] Preflight for: $ruleName"
+      Write-Host "[PAS][ASR] Rule GUID: $ruleId"
+      try {
+          $mp = Get-MpComputerStatus
+          Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode)  RealTimeProtection=$($mp.RealTimeProtectionEnabled)"
+          if ($mp.AMRunningMode -ne 'Normal') {
+              Write-Host "[PAS][ASR] WARNING: Defender is not the active AV (mode $($mp.AMRunningMode)) — ASR rules will NOT enforce."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Get-MpComputerStatus unavailable: $_"
+      }
+      try {
+          $pref = Get-MpPreference
+          $ids  = @($pref.AttackSurfaceReductionRules_Ids)  | ForEach-Object { "$_".ToLower() }
+          $acts = @($pref.AttackSurfaceReductionRules_Actions)
+          $idx  = [array]::IndexOf($ids, $ruleId.ToLower())
+          if ($idx -ge 0) {
+              $map = @{ '0'='Disabled'; '1'='Block'; '2'='Audit'; '6'='Warn' }
+              $a   = "$($acts[$idx])"
+              Write-Host "[PAS][ASR] Configured action: $a ($($map[$a]))"
+          } else {
+              Write-Host "[PAS][ASR] WARNING: rule is NOT configured on this host. A non-block result is EXPECTED and does not mean the control failed. Set it to Audit or Block first (see docs/asr_testing.md)."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Get-MpPreference unavailable: $_"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — create a child process via WMI Win32_Process.Create (benign cmd.exe /c exit)"
+    command: |
+      $outFile = "$env:TEMP\pas_asr_wmi.txt"
+      Write-Host "[PAS][ASR] Requesting WMI Win32_Process.Create -> cmd.exe /c echo (parent will be WmiPrvSE.exe)"
+      try {
+          $wmi = [wmiclass]"Win32_Process"
+          $r   = $wmi.Create("cmd.exe /c echo PAS_ASR_WMI_CHILD > `"$outFile`"")
+          $rv  = $r.ReturnValue
+          if ($rv -eq 0) {
+              Write-Host "[PAS][ASR] WMI create succeeded (ReturnValue=0, PID=$($r.ProcessId)). Expected in AUDIT/Disabled — Event 1122 if audited."
+          } else {
+              Write-Host "[PAS][ASR] WMI create returned $rv (non-zero). Consistent with a BLOCK — expect Event 1121."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] WMI create threw: $_"
+          Write-Host "[PAS][ASR] An exception here is consistent with the rule BLOCKING the process creation (this is success for a Block-mode test)."
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow the WMI child and ASR event to flush"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender Operational log for 1121/1122 on this rule"
+    command: |
+      $ruleId = 'd1e49aac-8f56-4280-b9ba-993a6d77406c'
+      Write-Host "[PAS][ASR] Checking Microsoft-Windows-Windows Defender/Operational for ASR events (1121=Block, 1122=Audit) in the last 5 minutes..."
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{
+                    LogName   = 'Microsoft-Windows-Windows Defender/Operational'
+                    Id        = 1121,1122
+                    StartTime = (Get-Date).AddMinutes(-5)
+                } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $ruleId })
+          if ($mine.Count -gt 0) {
+              foreach ($e in $mine | Select-Object -First 5) {
+                  $kind = if ($e.Id -eq 1121) { 'BLOCKED (1121)' } else { 'AUDITED (1122)' }
+                  Write-Host "[PAS][ASR] $kind at $($e.TimeCreated): $(($e.Message -split "`r?`n")[0])"
+              }
+          } else {
+              Write-Host "[PAS][ASR] No 1121/1122 events for this GUID. Rule not enabled, behavior did not match, or events not yet flushed."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Event query failed: $_"
+      }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE — a PsExec/WMI ASR event (1121 or 1122) for GUID d1e49aac should be visible now."
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove the WMI child's output artifact"
+    command: |
+      Remove-Item "$env:TEMP\pas_asr_wmi.txt" -Force -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed pas_asr_wmi.txt (if it was created)"
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "ASR PsExec/WMI test cleanup complete — no persistent artifacts."
+
+analyst_checklist:
+  - "Defender event: Microsoft-Windows-Windows Defender/Operational Event ID 1121 (block) or 1122 (audit) referencing GUID d1e49aac-8f56-4280-b9ba-993a6d77406c"
+  - "Process event: cmd.exe with parent WmiPrvSE.exe — the behavior the rule targets"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'PsexecWmi'"
+  - "MDE Advanced Hunting (robust): DeviceEvents | where Timestamp > ago(1h) | where ActionType startswith 'Asr' | project Timestamp, ActionType, FileName, InitiatingProcessFileName"
+  - "Sentinel/SIEM: is the Defender Operational channel (or MDE DeviceEvents) actually ingested? If 1121/1122 is local-only, that is a PARTIAL — the pipeline is the gap, not the rule"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122, Block yields 1121; Not Configured yields neither (BLIND_SPOT, not a rule failure)"

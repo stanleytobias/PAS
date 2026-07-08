@@ -1,0 +1,157 @@
+id: T1546.003_asr_block_wmi_event_subscription_persistence
+name: "ASR — Block Persistence Through WMI Event Subscription"
+mitre_technique: "T1546.003"
+mitre_tactic: "persistence"
+description: >
+  Tests the Microsoft Defender ASR rule "Block persistence through WMI event
+  subscription" (GUID e6db77e5-3df2-4cf1-b95a-636979351e5b). Adversaries register a
+  permanent WMI event subscription — an __EventFilter, a CommandLineEventConsumer, and
+  a __FilterToConsumerBinding in root\subscription — so a payload runs on a trigger
+  (logon, time, process start), surviving reboots and living entirely in the WMI
+  repository. This scenario registers a benign subscription whose consumer is calc.exe,
+  then removes all three objects immediately so it never fires. Defender's ASR rule
+  inspects the subscription creation: Audit logs Event ID 1122, Block denies creation
+  and logs Event ID 1121. This rule supports no exclusions — factor that into rollout.
+  Requires Administrator (writes to root\subscription). Read docs/asr_testing.md first.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://attack.mitre.org/techniques/T1546/003/
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+
+steps:
+  - step: 1
+    type: marker
+    description: "Pre-execution context and safety note"
+    message: "ASR test — Block WMI event subscription persistence (e6db77e5). Registers then immediately removes a benign calc subscription. Requires Admin. Lab VM only."
+
+  - step: 2
+    type: exec_powershell
+    description: "ASR preflight — Defender running mode, RTP, and this rule's configured action"
+    command: |
+      $ruleId   = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+      $ruleName = 'Block persistence through WMI event subscription'
+      Write-Host "[PAS][ASR] Preflight for: $ruleName"
+      Write-Host "[PAS][ASR] Rule GUID: $ruleId"
+      if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+          Write-Host "[PAS][ASR] WARNING: not elevated — writing to root\subscription will fail. Re-run PAS as Administrator."
+      }
+      try {
+          $mp = Get-MpComputerStatus
+          Write-Host "[PAS][ASR] AMRunningMode=$($mp.AMRunningMode)  RealTimeProtection=$($mp.RealTimeProtectionEnabled)"
+          if ($mp.AMRunningMode -ne 'Normal') {
+              Write-Host "[PAS][ASR] WARNING: Defender is not the active AV (mode $($mp.AMRunningMode)) — ASR rules will NOT enforce."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Get-MpComputerStatus unavailable: $_"
+      }
+      try {
+          $pref = Get-MpPreference
+          $ids  = @($pref.AttackSurfaceReductionRules_Ids)  | ForEach-Object { "$_".ToLower() }
+          $acts = @($pref.AttackSurfaceReductionRules_Actions)
+          $idx  = [array]::IndexOf($ids, $ruleId.ToLower())
+          if ($idx -ge 0) {
+              $map = @{ '0'='Disabled'; '1'='Block'; '2'='Audit'; '6'='Warn' }
+              $a   = "$($acts[$idx])"
+              Write-Host "[PAS][ASR] Configured action: $a ($($map[$a]))"
+          } else {
+              Write-Host "[PAS][ASR] WARNING: rule is NOT configured on this host. A non-block result is EXPECTED and does not mean the control failed. Set it to Audit or Block first (see docs/asr_testing.md)."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Get-MpPreference unavailable: $_"
+      }
+
+  - step: 3
+    type: exec_powershell
+    description: "Trigger — register a benign WMI event subscription (filter + CommandLineEventConsumer + binding)"
+    command: |
+      $ns = 'root\subscription'
+      Write-Host "[PAS][ASR] Registering benign WMI event subscription (consumer=calc.exe, removed immediately, will not fire)."
+      try {
+          $filter = Set-WmiInstance -Namespace $ns -Class __EventFilter -Arguments @{
+              Name           = 'PAS_ASR_Filter'
+              EventNamespace = 'root\cimv2'
+              QueryLanguage  = 'WQL'
+              Query          = "SELECT * FROM __InstanceModificationEvent WITHIN 3600 WHERE TargetInstance ISA 'Win32_LocalTime' AND TargetInstance.Second = 59"
+          } -ErrorAction Stop
+          Write-Host "[PAS][ASR] __EventFilter created."
+
+          $consumer = Set-WmiInstance -Namespace $ns -Class CommandLineEventConsumer -Arguments @{
+              Name                = 'PAS_ASR_Consumer'
+              CommandLineTemplate = 'calc.exe'
+          } -ErrorAction Stop
+          Write-Host "[PAS][ASR] CommandLineEventConsumer created (this is the object the rule targets)."
+
+          Set-WmiInstance -Namespace $ns -Class __FilterToConsumerBinding -Arguments @{
+              Filter   = $filter
+              Consumer = $consumer
+          } -ErrorAction Stop | Out-Null
+          Write-Host "[PAS][ASR] __FilterToConsumerBinding created. Subscription registered — expect Event 1122 if audited."
+      } catch {
+          Write-Host "[PAS][ASR] Subscription creation threw: $_"
+          Write-Host "[PAS][ASR] An exception here is consistent with the rule BLOCKING the subscription (this is success for a Block-mode test) — or a lack of elevation. Check the preflight output."
+      }
+
+  - step: 4
+    type: sleep
+    description: "Allow the ASR event to flush before teardown"
+    seconds: 5
+
+  - step: 5
+    type: exec_powershell
+    description: "ASR postflight — tail Defender Operational log for 1121/1122 on this rule"
+    command: |
+      $ruleId = 'e6db77e5-3df2-4cf1-b95a-636979351e5b'
+      Write-Host "[PAS][ASR] Checking Microsoft-Windows-Windows Defender/Operational for ASR events (1121=Block, 1122=Audit) in the last 5 minutes..."
+      try {
+          $ev = Get-WinEvent -FilterHashtable @{
+                    LogName   = 'Microsoft-Windows-Windows Defender/Operational'
+                    Id        = 1121,1122
+                    StartTime = (Get-Date).AddMinutes(-5)
+                } -ErrorAction SilentlyContinue
+          $mine = @($ev | Where-Object { $_.Message -match $ruleId })
+          if ($mine.Count -gt 0) {
+              foreach ($e in $mine | Select-Object -First 5) {
+                  $kind = if ($e.Id -eq 1121) { 'BLOCKED (1121)' } else { 'AUDITED (1122)' }
+                  Write-Host "[PAS][ASR] $kind at $($e.TimeCreated): $(($e.Message -split "`r?`n")[0])"
+              }
+          } else {
+              Write-Host "[PAS][ASR] No 1121/1122 events for this GUID. Rule not enabled, behavior did not match, or events not yet flushed."
+          }
+      } catch {
+          Write-Host "[PAS][ASR] Event query failed: $_"
+      }
+
+  - step: 6
+    type: marker
+    description: "Post-execution prompt"
+    message: "Check Defender log + MDE — a WMI-persistence ASR event (1121 or 1122) for GUID e6db77e5 should be visible now."
+
+cleanup:
+  - step: 1
+    type: exec_powershell
+    description: "Remove the benign WMI subscription (binding, consumer, filter)"
+    command: |
+      $ns = 'root\subscription'
+      Get-WmiObject -Namespace $ns -Class __FilterToConsumerBinding -ErrorAction SilentlyContinue |
+          Where-Object { $_.Filter -match 'PAS_ASR_Filter' -or $_.Consumer -match 'PAS_ASR_Consumer' } |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Get-WmiObject -Namespace $ns -Class CommandLineEventConsumer -Filter "Name='PAS_ASR_Consumer'" -ErrorAction SilentlyContinue |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Get-WmiObject -Namespace $ns -Class __EventFilter -Filter "Name='PAS_ASR_Filter'" -ErrorAction SilentlyContinue |
+          Remove-WmiObject -ErrorAction SilentlyContinue
+      Write-Host "[PAS][Cleanup] Removed PAS_ASR filter, consumer, and binding (if present)."
+
+  - step: 2
+    type: marker
+    description: "Cleanup complete"
+    message: "ASR WMI-persistence test cleanup complete — subscription removed from root\\subscription."
+
+analyst_checklist:
+  - "Defender event: Microsoft-Windows-Windows Defender/Operational Event ID 1121 (block) or 1122 (audit) referencing GUID e6db77e5-3df2-4cf1-b95a-636979351e5b"
+  - "WMI-Activity/Operational log: __FilterToConsumerBinding and CommandLineEventConsumer creation in root\\subscription"
+  - "MDE Advanced Hunting: DeviceEvents | where ActionType startswith 'Asr' and ActionType contains 'Wmi'"
+  - "MDE Advanced Hunting (robust): DeviceEvents | where Timestamp > ago(1h) | where ActionType startswith 'Asr' | project Timestamp, ActionType, FileName, InitiatingProcessFileName"
+  - "NOTE: this ASR rule supports no file/folder exclusions — if legitimate software uses WMI subscriptions, Block mode will affect it; validate in Audit first"
+  - "CONTROL CHECK: rule action from preflight — Audit yields 1122 (subscription created), Block yields 1121 (creation denied); Not Configured yields neither"

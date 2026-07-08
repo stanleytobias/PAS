@@ -1,0 +1,66 @@
+id: suite_asr_validation
+name: "Defender ASR Rule Validation"
+description: >
+  Validates that Microsoft Defender Attack Surface Reduction (ASR) rules are
+  configured, enforcing, and visible to your detection pipeline. Unlike a detection
+  suite, this exercises a PREVENTIVE control: each scenario reports the target rule's
+  configured mode, performs a benign behavior that matches the rule, and tails the
+  Defender Operational log for Event ID 1121 (block) or 1122 (audit). Run every rule
+  in Audit first (behavior completes, 1122 logs, nothing breaks), confirm the event
+  reaches your SIEM/MDE, then promote to Block and re-run to confirm 1121. See
+  docs/asr_testing.md for the full methodology and the rule → behavior map.
+author: stanleytobias
+created: "2026-07-08"
+platform: windows
+references:
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-reference
+  - https://learn.microsoft.com/en-us/defender-endpoint/attack-surface-reduction-rules-deployment
+
+scenarios:
+  - step: 1
+    technique: "T1047"
+    tactic: "execution"
+    scenario_file: "asr/T1047_asr_block_psexec_wmi_child_process.yml"
+    rationale: "WMI Win32_Process.Create child process — exercises 'Block process creations from PsExec and WMI' (d1e49aac). Deterministic, offline, benign cmd payload."
+
+  - step: 2
+    technique: "T1003.001"
+    tactic: "credential_access"
+    scenario_file: "asr/T1003.001_asr_block_lsass_credential_theft.yml"
+    rationale: "OpenProcess(PROCESS_VM_READ) on lsass then immediate close — exercises 'Block credential stealing from LSASS' (9e6c4e1f). No dump, no read; the handle request is the trigger."
+
+  - step: 3
+    technique: "T1546.003"
+    tactic: "persistence"
+    scenario_file: "asr/T1546.003_asr_block_wmi_event_subscription_persistence.yml"
+    rationale: "Register + immediately remove a benign WMI event subscription — exercises 'Block persistence through WMI event subscription' (e6db77e5). Requires Admin; rule supports no exclusions."
+
+analyst_narrative: >
+  These three rules are the deterministic, offline, benign-payload-safe members of the
+  ASR set — ideal for proving the end-to-end pipeline before you tackle the rules that
+  need Office, Adobe, Outlook, USB media, or cloud protection. Interpretation differs
+  from a detection suite: a step that the runner records as "failed" in Block mode is
+  the control WORKING, not a scenario bug (each scenario's trigger step says so
+  explicitly). Read each scenario's preflight output first — if a rule is Not
+  Configured or Defender is Passive, a "no event" result is a BLIND_SPOT for the rule's
+  configuration, not evidence the rule is broken. The decisive question this suite
+  answers is not "did the behavior get blocked" (Defender's job) but "did the 1121/1122
+  event reach my SIEM/MDE with rule context" (your pipeline's job).
+
+detection_chain:
+  - "Preflight (every scenario): Get-MpComputerStatus AMRunningMode=Normal + RealTimeProtectionEnabled=True; target GUID present in AttackSurfaceReductionRules_Ids with action Audit(2) or Block(1)"
+  - "Step 1: Defender 1121/1122 for d1e49aac + cmd.exe parented to WmiPrvSE.exe"
+  - "Step 2: Defender 1121/1122 for 9e6c4e1f + powershell.exe requesting PROCESS_VM_READ on lsass.exe"
+  - "Step 3: Defender 1121/1122 for e6db77e5 + CommandLineEventConsumer creation in root\\subscription"
+  - "Pipeline check: each of the above ALSO present in MDE DeviceEvents (ActionType startswith 'Asr') and/or Sentinel — local-only means PARTIAL"
+
+coverage_notes: >
+  Covers 3 of ~19 ASR rules — the subset triggerable with a pure PowerShell/WMI benign
+  payload and no external app or hardware. Extend by copying a shipped scenario, swapping
+  the GUID in the preflight/postflight steps, and replacing the trigger: obfuscated
+  scripts (5beb7efe), JS/VBScript launching a downloaded exe (d3e037e1), and copied/
+  impersonated system tools (c0033c00) are the next-easiest additions. The Office
+  (d4f940ab, 3b576869, 75668c1f, 92e97fa1, 26190899), Adobe (7674ba52), email
+  (be9ba2d9), USB (b2b3f03d), vulnerable-driver (56a863a9), and ransomware (c1db55ab)
+  rules require the corresponding app/hardware/cloud and are documented as env-dependent
+  in docs/asr_testing.md.
